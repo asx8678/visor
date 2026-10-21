@@ -42,9 +42,12 @@ defmodule VisorWeb.HarnessLiveTest do
     assert_receive {:agent, {:tool_end, %{name: "elixir"}}}, @flow_timeout
     assert_receive {:agent, {:status, :idle}}, @flow_timeout
 
-    assert has_element?(view, "#entries-turn-1")
-    assert has_element?(view, "#entries-turn-2")
-    assert has_element?(view, "#entries [id^='entries-tool-']", "elixir")
+    # The work folds into one line, and the answer stands below it.
+    work = "#entries [id^='entries-work-']"
+    assert has_element?(view, work, ~r/Worked [\d.]+ m?s/)
+    assert has_element?(view, work, "2 turns · 1 V call")
+    assert has_element?(view, "#{work} [id^='tool-'] summary", ~s|V.read("mix.exs")|)
+    assert has_element?(view, "#entries-answer-2", "Here is what came back")
     assert has_element?(view, "#last-request pre")
   end
 
@@ -56,8 +59,14 @@ defmodule VisorWeb.HarnessLiveTest do
     assert_receive {:agent, {:tool_end, %{name: "elixir", status: :ok}}}, @flow_timeout
     assert_receive {:agent, {:status, :idle}}, @flow_timeout
 
-    card = "#entries [id^='entries-tool-']"
-    assert has_element?(view, card, ~r/\d+ calls in one process/)
+    card = "#entries [id^='entries-work-'] [id^='tool-']"
+
+    assert has_element?(
+             view,
+             "#{card} summary",
+             ~r/V.glob\("lib\/\*\*\/\*.ex"\) · V.grep\(.* \+\d+ more/
+           )
+
     assert has_element?(view, "#{card} ol li", ~s|V.glob("lib/**/*.ex")|)
     assert has_element?(view, "#{card} ol li", ~s|V.grep(|)
   end

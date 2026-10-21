@@ -40,15 +40,15 @@ defmodule VisorWeb.HarnessLive do
         provider: Model.current().info(),
         status: :idle,
         settings: %{effort: "high", thinking: true},
+        # The running prompt's work entry and its streaming turn.
+        work: nil,
         live_turn: nil,
         turn_stats: nil,
         totals: %{turns: 0, usage: Usage.zero()},
         context_messages: 0,
         context_tokens: nil,
         last_request: nil,
-        tool_pids: %{},
         tools_running: 0,
-        code_runs: %{},
         examples: @examples,
         form: to_form(%{"text" => ""}, as: :prompt)
       )
@@ -159,7 +159,6 @@ defmodule VisorWeb.HarnessLive do
               :for={{id, entry} <- @streams.entries}
               id={id}
               entry={entry}
-              tool_pids={@tool_pids}
             />
           </div>
         </div>
@@ -514,11 +513,10 @@ defmodule VisorWeb.HarnessLive do
         |> assign(
           context_messages: 0,
           context_tokens: nil,
+          work: nil,
           live_turn: nil,
           turn_stats: nil,
-          last_request: nil,
-          tool_pids: %{},
-          code_runs: %{}
+          last_request: nil
         )
 
       {:error, :busy} ->
@@ -558,7 +556,25 @@ defmodule VisorWeb.HarnessLive do
 
   def handle_info({:agent, event}, socket), do: {:noreply, agent_event(event, socket)}
 
-  defp agent_event({:user, text}, socket), do: add_entry(socket, %{type: :user, text: text})
+  # A prompt shows as the user's text, one work entry that folds up every
+  # model turn and tool call it took, and the answer.
+  defp agent_event({:user, text}, socket) do
+    work = %{
+      id: "work-#{System.unique_integer([:positive])}",
+      type: :work,
+      steps: [],
+      status: :running,
+      started: System.monotonic_time(:millisecond),
+      ms: nil,
+      turns: 0,
+      usage: Usage.zero()
+    }
+
+    socket
+    |> add_entry(%{type: :user, text: text})
+    |> assign(work: work)
+    |> stream_insert(:entries, work)
+  end
 
   defp agent_event({:turn_start, info}, socket) do
     turn = %{
@@ -581,7 +597,7 @@ defmodule VisorWeb.HarnessLive do
       provider: info.provider,
       context_messages: info.messages
     )
-    |> stream_insert(:entries, turn)
+    |> put_step(turn)
   end
 
   defp agent_event({:request, turn, json}, socket) do
@@ -594,7 +610,7 @@ defmodule VisorWeb.HarnessLive do
 
     socket
     |> assign(live_turn: turn, turn_stats: %{socket.assigns.turn_stats | chunks: snapshot.chunks})
-    |> stream_insert(:entries, turn)
+    |> put_step(turn)
   end
 
   # A late chunk from a turn that already ended.
@@ -602,73 +618,80 @@ defmodule VisorWeb.HarnessLive do
 
   defp agent_event({:turn_end, %{turn: n} = info}, %{assigns: %{live_turn: %{turn: n}}} = socket) do
     final = Map.get(info, :final) || %{}
+    usage = Usage.from(info[:usage])
+    content = final[:content] || socket.assigns.live_turn.content
 
     turn =
-      %{
-        socket.assigns.live_turn
-        | streaming: false,
-          finish_reason: info.finish_reason,
-          stats: info
-      }
-      |> Map.merge(%{
+      Map.merge(socket.assigns.live_turn, %{
+        streaming: false,
+        finish_reason: info.finish_reason,
+        stats: info,
         reasoning: final[:reasoning] || socket.assigns.live_turn.reasoning,
-        content: final[:content] || socket.assigns.live_turn.content
+        content: content
       })
 
-    socket
-    |> assign(
-      live_turn: nil,
-      turn_stats: Map.merge(socket.assigns.turn_stats, info),
-      totals: add_usage(socket.assigns.totals, Usage.from(info[:usage])),
-      context_tokens: Usage.context(Usage.from(info[:usage])) || socket.assigns.context_tokens
-    )
-    |> stream_insert(:entries, turn)
+    # The reply that ends a prompt is its answer, shown below the work.
+    {turn, answer} =
+      if info.finish_reason in ["stop", "length"] and content not in [nil, ""],
+        do: {%{turn | content: ""}, %{id: "answer-#{n}", type: :answer, text: content}},
+        else: {turn, nil}
+
+    socket =
+      socket
+      |> assign(
+        live_turn: nil,
+        turn_stats: Map.merge(socket.assigns.turn_stats, info),
+        totals: add_usage(socket.assigns.totals, usage),
+        context_tokens: Usage.context(usage) || socket.assigns.context_tokens
+      )
+      |> update_work(&%{&1 | turns: &1.turns + 1, usage: Usage.add(&1.usage, usage)})
+      |> put_step(turn)
+
+    if answer, do: stream_insert(socket, :entries, answer), else: socket
   end
 
   defp agent_event({:turn_end, _info}, socket), do: socket
 
   defp agent_event({:tool_start, call}, socket) do
-    entry = tool_entry(call)
-
-    code_runs =
-      if call.name == "elixir",
-        do: Map.put(socket.assigns.code_runs, call.id, entry),
-        else: socket.assigns.code_runs
-
     socket
-    |> assign(
-      tool_pids: Map.put(socket.assigns.tool_pids, call.id, pid_text(call.pid)),
-      tools_running: socket.assigns.tools_running + 1,
-      code_runs: code_runs
-    )
-    |> stream_insert(:entries, entry)
+    |> assign(tools_running: socket.assigns.tools_running + 1)
+    |> put_step(Map.put(tool_entry(call), :pid, pid_text(call.pid)))
   end
 
   defp agent_event({:tool_end, call}, socket) do
-    {run, code_runs} = Map.pop(socket.assigns.code_runs, call.id)
     entry = tool_entry(call)
-    entry = if run, do: %{entry | calls: run.calls, call_count: run.call_count}, else: entry
+
+    entry =
+      case find_step(socket, entry.id) do
+        %{} = run -> %{entry | calls: run.calls, call_count: run.call_count, pid: run.pid}
+        nil -> entry
+      end
 
     socket
-    |> assign(tools_running: max(socket.assigns.tools_running - 1, 0), code_runs: code_runs)
-    |> stream_insert(:entries, entry)
+    |> assign(tools_running: max(socket.assigns.tools_running - 1, 0))
+    |> put_step(entry)
   end
 
-  # One V call inside a running elixir script.
+  # One V call inside a running elixir script. The full arguments and
+  # value, such as a file's contents, are for the session log.
   defp agent_event({:code_call, call_id, call}, socket) do
-    case socket.assigns.code_runs do
-      %{^call_id => entry} ->
-        # The full arguments and value, such as a file's contents, are for
-        # the session log.
-        entry = put_code_call(entry, Map.drop(call, [:args, :returned]))
-
-        socket
-        |> assign(:code_runs, Map.put(socket.assigns.code_runs, call_id, entry))
-        |> stream_insert(:entries, entry)
-
-      _ ->
-        socket
+    case find_step(socket, "tool-" <> dom_safe(call_id)) do
+      %{} = entry -> put_step(socket, put_code_call(entry, Map.drop(call, [:args, :returned])))
+      nil -> socket
     end
+  end
+
+  defp agent_event({:prompt_end, %{reason: reason}}, socket) do
+    status =
+      case reason do
+        :answered -> :done
+        :interrupted -> :stopped
+        _failed -> :failed
+      end
+
+    socket
+    |> update_work(&%{&1 | status: status, ms: System.monotonic_time(:millisecond) - &1.started})
+    |> assign(work: nil)
   end
 
   defp agent_event({:status, status}, socket) do
@@ -691,6 +714,30 @@ defmodule VisorWeb.HarnessLive do
   # Events only the session log uses, such as the request as sent.
   defp agent_event(_event, socket), do: socket
 
+  # Adds a step to the running work entry, or replaces the one with its id.
+  defp put_step(socket, step) do
+    update_work(socket, fn work ->
+      steps =
+        case Enum.find_index(work.steps, &(&1.id == step.id)) do
+          nil -> work.steps ++ [step]
+          index -> List.replace_at(work.steps, index, step)
+        end
+
+      %{work | steps: steps}
+    end)
+  end
+
+  defp find_step(%{assigns: %{work: %{steps: steps}}}, id), do: Enum.find(steps, &(&1.id == id))
+  defp find_step(_socket, _id), do: nil
+
+  # Events outside a prompt, such as after /clear, have no work to go in.
+  defp update_work(%{assigns: %{work: nil}} = socket, _fun), do: socket
+
+  defp update_work(socket, fun) do
+    work = fun.(socket.assigns.work)
+    socket |> assign(work: work) |> stream_insert(:entries, work)
+  end
+
   defp tool_entry(call) do
     %{
       id: "tool-" <> dom_safe(call.id),
@@ -701,6 +748,7 @@ defmodule VisorWeb.HarnessLive do
       status: call.status,
       result: Map.get(call, :result),
       ms: Map.get(call, :ms),
+      pid: nil,
       code: if(call.name == "elixir", do: script(call.arguments)),
       calls: [],
       call_count: 0

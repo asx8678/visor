@@ -270,7 +270,6 @@ defmodule VisorWeb.HarnessComponents do
 
   attr :id, :string, required: true
   attr :entry, :map, required: true
-  attr :tool_pids, :map, default: %{}
 
   def entry(%{entry: %{type: :user}} = assigns) do
     ~H"""
@@ -280,97 +279,48 @@ defmodule VisorWeb.HarnessComponents do
     """
   end
 
-  def entry(%{entry: %{type: :turn}} = assigns) do
-    ~H"""
-    <article id={@id} class="space-y-2">
-      <header class="flex items-center gap-2 text-xs text-ink-dim">
-        <span class={["lamp", if(@entry.streaming, do: "lamp-model", else: "lamp-exit")]} />
-        <span class="font-medium text-ink">Model turn {@entry.turn}</span>
-        <span class="font-mono text-xs">{@entry.pid}</span>
-        <span :if={@entry.streaming} class="live-dot text-sky">streaming</span>
-      </header>
+  # Everything a prompt did before its answer, folded into one line: the
+  # model turns and tool calls open below it. The turn streaming now
+  # shows under the line until it ends.
+  def entry(%{entry: %{type: :work}} = assigns) do
+    assigns = assign(assigns, :live, Enum.find(assigns.entry.steps, &Map.get(&1, :streaming)))
 
-      <details
-        :if={@entry.reasoning != ""}
-        open={@entry.streaming}
-        class="group border-l border-rule pl-3"
-      >
-        <summary class="cursor-pointer list-none text-xs text-ink-dim hover:text-ink">
+    ~H"""
+    <article id={@id} class="text-xs">
+      <details id={"#{@id}-steps"} class="group" phx-mounted={JS.ignore_attributes(["open"])}>
+        <summary class="flex cursor-pointer list-none items-center gap-2 py-0.5 text-ink-dim transition-colors hover:text-ink">
           <.icon
             name="hero-chevron-right-micro"
-            class="size-3.5 transition-transform group-open:rotate-90"
-          /> Reasoning, {word_count(@entry.reasoning)} words
+            class="size-3.5 flex-none transition-transform group-open:rotate-90"
+          />
+          <span class={["lamp flex-none", work_lamp(@entry.status)]} style="--lamp-size: 7px" />
+          <span class={["flex-none", work_color(@entry.status)]}>{work_headline(@entry)}</span>
+          <span class={["min-w-0 truncate", @entry.status == :running && "font-mono"]}>
+            {work_facts(@entry)}
+          </span>
         </summary>
-        <p class="mt-1.5 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-ink-dim">
-          {@entry.reasoning}
-        </p>
+        <div :if={@entry.steps != []} class="mt-2 ml-1.5 space-y-3 border-l border-rule pl-4">
+          <.step :for={step <- @entry.steps} :if={step != @live} step={step} />
+        </div>
       </details>
 
-      <.markdown :if={@entry.content != ""} text={@entry.content} />
-
-      <ul :if={@entry.streaming and @entry.tool_calls != []} class="space-y-1">
-        <li :for={call <- @entry.tool_calls} class="truncate font-mono text-xs text-amber">
-          {call.name} {call.arguments}
-        </li>
-      </ul>
-
-      <footer
-        :if={not @entry.streaming}
-        class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-dim"
-      >
-        <span class={finish_color(@entry.finish_reason)}>{finish_text(@entry.finish_reason)}</span>
-        <span :if={@entry.stats[:ms]}>{seconds(@entry.stats[:ms])}</span>
-        <span :if={@entry.stats[:ttft_ms]}>first token {seconds(@entry.stats[:ttft_ms])}</span>
-        <span :if={usage = Visor.Usage.from(@entry.stats[:usage])}>
-          {number(usage.prompt)} in, {number(usage.completion)} out
-        </span>
-      </footer>
+      <div :if={@live} class="mt-2 space-y-2">
+        <p
+          :if={@live.reasoning != ""}
+          class="max-h-24 overflow-hidden whitespace-pre-wrap break-words text-[13px] leading-relaxed text-ink-dim"
+        >
+          {@live.reasoning}
+        </p>
+        <.markdown :if={@live.content != ""} text={@live.content} />
+      </div>
     </article>
     """
   end
 
-  def entry(%{entry: %{type: :tool}} = assigns) do
+  def entry(%{entry: %{type: :answer}} = assigns) do
     ~H"""
-    <article id={@id} class="border border-rule bg-well">
-      <details class="group">
-        <summary class="flex cursor-pointer list-none items-center gap-2.5 px-3 py-2 text-xs phone:py-2.5">
-          <span class={["lamp", tool_lamp(@entry.status)]} />
-          <span class="font-medium text-ink">{@entry.name}</span>
-          <span class="min-w-0 flex-1 truncate font-mono text-ink-dim">{tool_summary(@entry)}</span>
-          <span :if={@entry.ms} class="flex-none text-ink-dim">{seconds(@entry.ms)}</span>
-          <span :if={@entry.status == :running} class="live-dot flex-none text-amber">running</span>
-          <span class="flex-none font-mono text-xs text-ink-dim phone:hidden">
-            {@tool_pids[@entry.call_id]}
-          </span>
-          <.icon
-            name="hero-chevron-down-micro"
-            class="size-3.5 flex-none text-ink-dim transition-transform group-open:rotate-180"
-          />
-        </summary>
-        <div :if={@entry.code} class="border-t border-rule">
-          <pre class="max-h-60 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink/90">{@entry.code}</pre>
-          <ol
-            :if={@entry.calls != []}
-            class="space-y-1 border-t border-rule px-3 py-2 font-mono text-xs"
-          >
-            <li :for={call <- @entry.calls} class="flex items-center gap-2">
-              <span class={["lamp", tool_lamp(call.status)]} style="--lamp-size: 7px" />
-              <span class="min-w-0 flex-1 truncate text-ink/85">V.{call.text}</span>
-              <span :if={call.ms} class="flex-none text-ink-dim">{seconds(call.ms)}</span>
-            </li>
-            <li :if={@entry.call_count > length(@entry.calls)} class="text-ink-dim">
-              and {@entry.call_count - length(@entry.calls)} more calls
-            </li>
-          </ol>
-        </div>
-        <pre
-          :if={@entry.result}
-          class={[
-            "max-h-72 overflow-auto border-t border-rule px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words",
-            if(@entry.status == :error, do: "text-alarm", else: "text-ink/85")
-          ]}
-        >{@entry.result}</pre>
-      </details>
+    <article id={@id}>
+      <.markdown text={@entry.text} />
     </article>
     """
   end
@@ -418,6 +368,80 @@ defmodule VisorWeb.HarnessComponents do
         to read the latest one.
       </p>
     </div>
+    """
+  end
+
+  attr :step, :map, required: true
+
+  defp step(%{step: %{type: :turn}} = assigns) do
+    ~H"""
+    <div class="space-y-1.5" title={"Model turn #{@step.turn} #{@step.pid}"}>
+      <details :if={@step.reasoning != ""} class="group/reasoning">
+        <summary class="cursor-pointer list-none text-ink-dim hover:text-ink">
+          <.icon
+            name="hero-chevron-right-micro"
+            class="size-3.5 transition-transform group-open/reasoning:rotate-90"
+          /> Reasoning, {word_count(@step.reasoning)} words
+        </summary>
+        <p class="mt-1.5 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-ink-dim">
+          {@step.reasoning}
+        </p>
+      </details>
+      <div :if={@step.content != ""} class="text-ink-dim">
+        <.markdown text={@step.content} />
+      </div>
+      <p
+        :if={@step.finish_reason not in [nil, "stop", "tool_calls"]}
+        class={finish_color(@step.finish_reason)}
+      >
+        {finish_text(@step.finish_reason)}
+      </p>
+    </div>
+    """
+  end
+
+  defp step(%{step: %{type: :tool}} = assigns) do
+    ~H"""
+    <details id={@step.id} class="group/tool" phx-mounted={JS.ignore_attributes(["open"])}>
+      <summary
+        class="flex cursor-pointer list-none items-center gap-2 text-ink-dim hover:text-ink"
+        title={@step.pid}
+      >
+        <span class={["lamp flex-none", tool_lamp(@step.status)]} style="--lamp-size: 7px" />
+        <span class="min-w-0 flex-1 truncate font-mono text-ink/85">{tool_summary(@step)}</span>
+        <span :if={@step.status == :running} class="live-dot flex-none text-amber">running</span>
+        <span :if={@step.ms} class="flex-none">{seconds(@step.ms)}</span>
+        <.icon
+          name="hero-chevron-down-micro"
+          class="size-3.5 flex-none transition-transform group-open/tool:rotate-180"
+        />
+      </summary>
+      <div class="mt-1.5 border border-rule bg-well">
+        <div :if={@step.code}>
+          <pre class="max-h-60 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink/90">{@step.code}</pre>
+          <ol
+            :if={@step.calls != []}
+            class="space-y-1 border-t border-rule px-3 py-2 font-mono text-xs"
+          >
+            <li :for={call <- @step.calls} class="flex items-center gap-2">
+              <span class={["lamp", tool_lamp(call.status)]} style="--lamp-size: 7px" />
+              <span class="min-w-0 flex-1 truncate text-ink/85">V.{call.text}</span>
+              <span :if={call.ms} class="flex-none text-ink-dim">{seconds(call.ms)}</span>
+            </li>
+            <li :if={@step.call_count > length(@step.calls)} class="text-ink-dim">
+              and {@step.call_count - length(@step.calls)} more calls
+            </li>
+          </ol>
+        </div>
+        <pre
+          :if={@step.result}
+          class={[
+            "max-h-72 overflow-auto border-t border-rule px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words first:border-t-0",
+            if(@step.status == :error, do: "text-alarm", else: "text-ink/85")
+          ]}
+        >{@step.result}</pre>
+      </div>
+    </details>
     """
   end
 
@@ -603,8 +627,13 @@ defmodule VisorWeb.HarnessComponents do
   defp tool_summary(%{name: "elixir", status: :running, calls: [_ | _] = calls}),
     do: "V." <> List.last(calls).text
 
-  defp tool_summary(%{name: "elixir", call_count: count}) when count > 0,
-    do: "#{count} #{if count == 1, do: "call", else: "calls"} in one process"
+  # What the script did, by its first calls.
+  defp tool_summary(%{name: "elixir", calls: [_ | _] = calls, call_count: count}) do
+    shown = Enum.take(calls, 3)
+    more = count - length(shown)
+    text = Enum.map_join(shown, " · ", &("V." <> &1.text))
+    if more > 0, do: "#{text} +#{more} more", else: text
+  end
 
   defp tool_summary(%{name: "elixir", code: code}),
     do: code |> String.split("\n", parts: 2) |> hd()
@@ -621,6 +650,46 @@ defmodule VisorWeb.HarnessComponents do
         arguments
     end
   end
+
+  defp work_lamp(:running), do: "lamp-busy"
+  defp work_lamp(:failed), do: "lamp-crash"
+  defp work_lamp(_ended), do: "lamp-exit"
+
+  defp work_color(:running), do: "text-ink"
+  defp work_color(:failed), do: "text-alarm"
+  defp work_color(_ended), do: "text-ink-dim"
+
+  defp work_headline(%{status: :running}), do: "Working"
+  defp work_headline(%{status: :done, ms: ms}), do: "Worked #{seconds(ms)}"
+  defp work_headline(%{status: :stopped, ms: ms}), do: "Stopped after #{seconds(ms)}"
+  defp work_headline(%{status: :failed, ms: ms}), do: "Failed after #{seconds(ms)}"
+
+  # While running, what it is doing now; after, what it took.
+  defp work_facts(%{status: :running, steps: steps}) do
+    case List.last(steps) do
+      %{type: :tool} = tool -> tool_summary(tool)
+      %{type: :turn, streaming: true, content: ""} -> "thinking"
+      %{type: :turn, streaming: true} -> "writing"
+      _ -> ""
+    end
+  end
+
+  defp work_facts(work) do
+    v_calls =
+      for %{type: :tool} = tool <- work.steps, reduce: 0, do: (n -> n + max(tool.call_count, 1))
+
+    [
+      count(work.turns, "turn"),
+      v_calls > 0 && count(v_calls, "V call"),
+      work.usage.prompt > 0 &&
+        "#{number(work.usage.prompt)} in / #{number(work.usage.completion)} out"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" · ")
+  end
+
+  defp count(1, noun), do: "1 #{noun}"
+  defp count(n, noun), do: "#{n} #{noun}s"
 
   defp tool_lamp(:running), do: "lamp-busy"
   defp tool_lamp(:ok), do: "lamp-idle"
