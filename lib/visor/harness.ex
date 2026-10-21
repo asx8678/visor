@@ -41,13 +41,21 @@ defmodule Visor.Harness do
   @doc """
   Starts a new agent session owned by `owner`. The session stops when the
   owner process exits.
+
+  The session is logged to `:log_dir` (default `Visor.SessionLog.dir/0`);
+  see `Visor.SessionLog`.
   """
-  def start_session(owner) do
+  def start_session(owner, opts \\ []) do
     id = random_id()
 
     case DynamicSupervisor.start_child(@sessions, {Session, id: id, owner: owner}) do
-      {:ok, _pid} -> {:ok, id}
-      {:error, reason} -> {:error, reason}
+      {:ok, pid} ->
+        log_dir = Keyword.get_lazy(opts, :log_dir, &Visor.SessionLog.dir/0)
+        Visor.SessionLog.start(id, owner, pid, log_dir)
+        {:ok, id}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

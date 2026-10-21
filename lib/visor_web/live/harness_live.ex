@@ -10,7 +10,7 @@ defmodule VisorWeb.HarnessLive do
 
   import VisorWeb.HarnessComponents
 
-  alias Visor.{Agent, Harness, Model, Observer}
+  alias Visor.{Agent, Harness, Model, Observer, SessionLog}
 
   @log_limit 150
   @empty_snapshot %{tree: [], lamps: [], stats: %{}, apps: [], history: []}
@@ -36,6 +36,7 @@ defmodule VisorWeb.HarnessLive do
         page_title: "Harness",
         client_layout: session["layout"] || "desktop",
         session_id: nil,
+        log_path: nil,
         snapshot: Observer.snapshot() || @empty_snapshot,
         provider: Model.current().info(),
         status: :idle,
@@ -64,6 +65,7 @@ defmodule VisorWeb.HarnessLive do
       {:ok,
        assign(socket,
          session_id: id,
+         log_path: log_path(id),
          settings: Map.take(settings, [:effort, :thinking]),
          provider: settings.provider
        )}
@@ -283,12 +285,14 @@ defmodule VisorWeb.HarnessLive do
 
         <div id="session-readings" class="space-y-3 border-t border-rule pt-4">
           <h3 class="text-[13px] text-ink-dim">This session</h3>
-          <.readings rows={[
-            {"Model turns", number(@totals.turns)},
-            {"Reasoning tokens", number(@totals.reasoning)},
-            {"Tokens in", number(@totals.prompt)},
-            {"Tokens out", number(@totals.completion)}
-          ]} />
+          <.readings rows={
+            [
+              {"Model turns", number(@totals.turns)},
+              {"Reasoning tokens", number(@totals.reasoning)},
+              {"Tokens in", number(@totals.prompt)},
+              {"Tokens out", number(@totals.completion)}
+            ] ++ if(@log_path, do: [{"Log", @log_path, :wide}], else: [])
+          } />
           <.cache_bar hit={@totals.cache_hit} miss={@totals.cache_miss} />
         </div>
 
@@ -835,4 +839,9 @@ defmodule VisorWeb.HarnessLive do
 
   defp placeholder(:idle), do: "Ask the agent, or type /help"
   defp placeholder(_status), do: "Working. Press Escape or Stop to interrupt."
+
+  # The session's log file, relative to the project when it is inside it.
+  defp log_path(id) do
+    with path when is_binary(path) <- SessionLog.path(id), do: Path.relative_to_cwd(path)
+  end
 end

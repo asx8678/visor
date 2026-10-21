@@ -131,6 +131,7 @@ defmodule Visor.Agent do
   def handle_call(:interrupt, _from, state), do: {:reply, {:error, :idle}, state}
 
   def handle_call(:reset, _from, %{status: :idle} = state) do
+    broadcast(state, {:context, 0})
     {:reply, :ok, %{state | messages: [], last_prompt_tokens: nil}}
   end
 

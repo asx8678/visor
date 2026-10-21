@@ -12,6 +12,8 @@ defmodule Visor.Application do
       Visor.Repo,
       {DNSCluster, query: Application.get_env(:visor, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Visor.PubSub},
+      # Session logs outlive their sessions' last moments, so they stop last.
+      {DynamicSupervisor, name: Visor.SessionLogs, strategy: :one_for_one},
       Visor.Harness,
       Visor.Observer,
       # Start to serve requests, typically the last entry

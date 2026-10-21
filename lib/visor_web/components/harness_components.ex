@@ -405,6 +405,11 @@ defmodule VisorWeb.HarnessComponents do
         Anything else goes to the model. Enter sends and Shift+Enter starts a new line.
         Up and down arrows recall earlier prompts. Escape stops a running prompt.
       </p>
+      <p class="mt-2 text-ink-dim">
+        Each session is logged to log/sessions. Run
+        <code class="font-mono text-xs text-ink">mix visor.log</code>
+        to read the latest one.
+      </p>
     </div>
     """
   end

@@ -37,3 +37,6 @@ npm-debug.log
 
 # Local secrets such as DEEPSEEK_API_KEY.
 /.env
+
+# Session logs (see Visor.SessionLog); they hold whatever the agent read.
+/log/

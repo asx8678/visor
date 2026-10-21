@@ -26,6 +26,9 @@ config :visor, Visor.Mailer, adapter: Swoosh.Adapters.Test
 # Never call a real model from tests; run the scripted one without delays.
 config :visor, model_provider: Visor.Model.Demo, demo_delay_ms: 0
 
+# Tests that check session logs pass their own directory.
+config :visor, session_log_dir: false
+
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 
