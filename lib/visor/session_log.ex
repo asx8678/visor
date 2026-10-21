@@ -213,7 +213,7 @@ defmodule Visor.SessionLog do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref} = state) do
     state =
       if state.pending_start == nil do
-        state = summarize(state, :session_stopped)
+        state = safely(state, :summary, &summarize(&1, :session_stopped))
         write(state, "stop", %{reason: reason, status: state.status})
         state
       else
@@ -251,7 +251,7 @@ defmodule Visor.SessionLog do
     # A session that stops on its own writes `stop` from its :DOWN; this
     # covers the log itself being shut down first, as at server shutdown.
     if reason != :normal and state.pending_start == nil do
-      state = summarize(state, :log_stopped)
+      state = safely(state, :summary, &summarize(&1, :log_stopped))
       write(state, "log_stop", %{reason: reason, status: state.status})
     end
   end

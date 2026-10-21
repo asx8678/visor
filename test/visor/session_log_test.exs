@@ -223,6 +223,21 @@ defmodule Visor.SessionLogTest do
            ] = for(%{"event" => "response"} = event <- events(path), do: event)
   end
 
+  test "still writes why the session stopped when it can't sum it up", %{tmp_dir: dir} do
+    %{id: id, session: session, log: log, path: path} = start_log(dir)
+    ref = Process.monitor(log)
+    broadcast(id, {:user, "first"})
+
+    # State from before a hot reload added the totals, as in dev.
+    :sys.replace_state(log, &Map.drop(&1, [:prompt, :totals]))
+    stop(session)
+    assert_receive {:DOWN, ^ref, :process, ^log, :normal}
+
+    assert %{"term" => "summary", "error" => error} = find(events(path), "unrecorded")
+    assert error =~ "key :prompt not found"
+    assert %{"reason" => "normal"} = find(events(path), "stop")
+  end
+
   test "sums up each prompt and the session", %{tmp_dir: dir} do
     %{id: id, owner: owner, session: session, log: log, path: path} = start_log(dir)
     ref = Process.monitor(log)
