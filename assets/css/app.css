@@ -116,22 +116,22 @@
 @font-face { font-family: "Barlow Condensed"; font-weight: 600; font-display: swap; src: url("/fonts/barlow-condensed-600.woff2") format("woff2"); }
 @font-face { font-family: "JetBrains Mono"; font-weight: 400; font-display: swap; src: url("/fonts/jetbrains-mono-400.woff2") format("woff2"); }
 
-/* Graphite panels with no green cast. Colour is kept for what is
-   happening: amber for work, sky for the model, red for crashes, green
-   only for success. Idle lamps are neutral. */
+/* Slate blue-grey panels. Colour is kept for what is happening: amber
+   for work, sky for the model, red for crashes, green only for success.
+   Idle lamps are neutral. */
 @theme {
-  --color-rack: #0d0f12;
-  --color-panel: #14171b;
-  --color-well: #0a0c0e;
-  --color-rule: #2a3038;
-  --color-ink: #e8eaed;
-  --color-ink-dim: #a3abb6;
-  --color-amber: #f0a83c;
-  --color-signal: #52b788;
-  --color-alarm: #ef5f5a;
-  --color-sky: #84b6f4;
-  --color-idle: #8b95a3;
-  --color-off: #3b424c;
+  --color-rack: #252b38;
+  --color-panel: #2d3443;
+  --color-well: #1f2430;
+  --color-rule: #414a5c;
+  --color-ink: #e9edf3;
+  --color-ink-dim: #b0b9c9;
+  --color-amber: #f4b860;
+  --color-signal: #6fcf9f;
+  --color-alarm: #ff7b76;
+  --color-sky: #8ec5ff;
+  --color-idle: #a3adbd;
+  --color-off: #566074;
 
   --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Barlow Condensed", "Barlow", ui-sans-serif, sans-serif;

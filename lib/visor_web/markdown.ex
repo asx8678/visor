@@ -5,7 +5,8 @@ defmodule VisorWeb.Markdown do
 
   Blocks: fenced code, headings, lists, quotes, tables, rules and
   paragraphs. Inline: code, bold, italics, links and bare URLs, where only
-  `http` and `https` links become links.
+  `http` and `https` links become links. Italics start only after a space
+  or an opening bracket, so glob paths such as `lib/**/*.ex` stay as typed.
 
   Any text parses, including a reply cut off while it streams in: an
   unclosed fence runs to the end, and an unclosed `**` stays as typed.
@@ -149,7 +150,7 @@ defmodule VisorWeb.Markdown do
 
   def inline(text) do
     pattern =
-      ~r/(`+)(.+?)\1|\*\*(?=\S)(.+?)(?<=\S)\*\*|__(?=\S)(.+?)(?<=\S)__|\*(?=[^\s*])(.+?)(?<=[^\s*])\*|(?<![\w\\])_(?=\S)(.+?)(?<=\S)_(?!\w)|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"*_]/s
+      ~r/(`+)(.+?)\1|\*\*(?=\S)(.+?)(?<=\S)\*\*|__(?=\S)(.+?)(?<=\S)__|(?<![^\s(\["'])\*(?=[^\s*])(.+?)(?<=[^\s*])\*|(?<![\w\\])_(?=\S)(.+?)(?<=\S)_(?!\w)|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"*_]/s
 
     case Regex.run(pattern, text, return: :index) do
       nil ->

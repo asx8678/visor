@@ -91,6 +91,9 @@ defmodule VisorWeb.MarkdownTest do
              "."
            ]
 
+    assert inline("lib/**/*.ex and *em* (*aside*)") ==
+             ["lib/**/*.ex and ", {:em, ["em"]}, " (", {:em, ["aside"]}, ")"]
+
     assert inline("[x](javascript:alert(1)) prompt_cache_hit_tokens and _em_") == [
              "[x](javascript:alert(1)) prompt_cache_hit_tokens and ",
              {:em, ["em"]}
