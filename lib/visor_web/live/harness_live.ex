@@ -298,7 +298,7 @@ defmodule VisorWeb.HarnessLive do
           </h3>
           <pre
             :if={@last_request}
-            class="max-h-96 overflow-auto bg-well p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words text-ink/80"
+            class="max-h-96 overflow-auto bg-well p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink/80"
           >{@last_request.json}</pre>
           <p :if={!@last_request} class="text-xs text-ink-dim">
             The request body appears here when the agent calls the model.

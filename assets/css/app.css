@@ -116,18 +116,22 @@
 @font-face { font-family: "Barlow Condensed"; font-weight: 600; font-display: swap; src: url("/fonts/barlow-condensed-600.woff2") format("woff2"); }
 @font-face { font-family: "JetBrains Mono"; font-weight: 400; font-display: swap; src: url("/fonts/jetbrains-mono-400.woff2") format("woff2"); }
 
+/* Graphite panels with no green cast. Colour is kept for what is
+   happening: amber for work, sky for the model, red for crashes, green
+   only for success. Idle lamps are neutral. */
 @theme {
-  --color-rack: #1c2a32;
-  --color-panel: #22323c;
-  --color-well: #16222a;
-  --color-rule: #33495a;
-  --color-ink: #d8e3e9;
-  --color-ink-dim: #93a9b5;
-  --color-amber: #ffb547;
-  --color-signal: #56d39a;
-  --color-alarm: #ff6159;
-  --color-sky: #7cc4ff;
-  --color-off: #4a5e6b;
+  --color-rack: #0d0f12;
+  --color-panel: #14171b;
+  --color-well: #0a0c0e;
+  --color-rule: #2a3038;
+  --color-ink: #e8eaed;
+  --color-ink-dim: #a3abb6;
+  --color-amber: #f0a83c;
+  --color-signal: #52b788;
+  --color-alarm: #ef5f5a;
+  --color-sky: #84b6f4;
+  --color-idle: #8b95a3;
+  --color-off: #3b424c;
 
   --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Barlow Condensed", "Barlow", ui-sans-serif, sans-serif;
@@ -224,7 +228,7 @@ body.visor-body {
   background: var(--color-off);
   transition: background-color 200ms, box-shadow 200ms, opacity 200ms;
 }
-.lamp-idle { background: color-mix(in oklab, var(--color-signal) 70%, var(--color-well)); }
+.lamp-idle { background: var(--color-idle); }
 .lamp-busy { background: var(--color-amber); box-shadow: 0 0 8px 1px color-mix(in oklab, var(--color-amber) 60%, transparent); }
 .lamp-supervisor { background: transparent; box-shadow: inset 0 0 0 2px var(--color-sky); }
 .lamp-model { background: var(--color-sky); box-shadow: 0 0 8px 1px color-mix(in oklab, var(--color-sky) 55%, transparent); }

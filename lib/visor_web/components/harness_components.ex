@@ -157,7 +157,7 @@ defmodule VisorWeb.HarnessComponents do
           title={"#{lamp.label} (#{lamp.id})"}
         />
       </div>
-      <ul class="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-1 text-[11px] text-ink-dim">
+      <ul class="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-1 text-xs text-ink-dim">
         <li :for={{state, label} <- lamp_legend()} class="flex items-center gap-1.5">
           <span class={["lamp [--lamp-size:7px]", "lamp-#{state}"]} />{label}
         </li>
@@ -200,10 +200,10 @@ defmodule VisorWeb.HarnessComponents do
         <span class="flex min-w-0 flex-1 items-center gap-2 pl-1">
           <span class={["lamp", "lamp-#{tree_lamp(node)}"]} />
           <span class={["truncate", label_color(node)]}>{node.label}</span>
-          <span :if={node.kind == :supervisor} class="text-[11px] text-ink-dim">{node.children}</span>
-          <span :if={node.queue > 0} class="text-[11px] text-amber">{node.queue} queued</span>
+          <span :if={node.kind == :supervisor} class="text-xs text-ink-dim">{node.children}</span>
+          <span :if={node.queue > 0} class="text-xs text-amber">{node.queue} queued</span>
         </span>
-        <span class="flex flex-none items-center gap-3 text-[11px] text-ink-dim">
+        <span class="flex flex-none items-center gap-3 text-xs text-ink-dim">
           <span class="hidden group-hover:inline">{node.id}</span>
           <span class="w-12 text-right">{kilobytes(node.memory)}</span>
         </span>
@@ -234,8 +234,8 @@ defmodule VisorWeb.HarnessComponents do
 
   def lifecycle_row(assigns) do
     ~H"""
-    <li id={@id} class="grid grid-cols-[76px_52px_minmax(0,1fr)] items-baseline gap-x-2 py-[3px]">
-      <span class="text-[11px] text-ink-dim">{@event.at}</span>
+    <li id={@id} class="grid grid-cols-[86px_54px_minmax(0,1fr)] items-baseline gap-x-2 py-[3px]">
+      <span class="text-xs text-ink-dim">{@event.at}</span>
       <span class={["text-xs font-medium", event_color(@event.kind)]}>{event_word(@event.kind)}</span>
       <span class="min-w-0 truncate text-xs">
         <span class={if(@event.kind == :exit, do: "text-ink-dim", else: "text-ink")}>
@@ -277,7 +277,7 @@ defmodule VisorWeb.HarnessComponents do
       <header class="flex items-center gap-2 text-xs text-ink-dim">
         <span class={["lamp", if(@entry.streaming, do: "lamp-model", else: "lamp-exit")]} />
         <span class="font-medium text-ink">Model turn {@entry.turn}</span>
-        <span class="font-mono text-[11px]">{@entry.pid}</span>
+        <span class="font-mono text-xs">{@entry.pid}</span>
         <span :if={@entry.streaming} class="live-dot text-sky">streaming</span>
       </header>
 
@@ -307,7 +307,7 @@ defmodule VisorWeb.HarnessComponents do
 
       <footer
         :if={not @entry.streaming}
-        class="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-dim"
+        class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-dim"
       >
         <span class={finish_color(@entry.finish_reason)}>{finish_text(@entry.finish_reason)}</span>
         <span :if={@entry.stats[:ms]}>{seconds(@entry.stats[:ms])}</span>
@@ -332,7 +332,7 @@ defmodule VisorWeb.HarnessComponents do
           <span class="min-w-0 flex-1 truncate font-mono text-ink-dim">{tool_summary(@entry)}</span>
           <span :if={@entry.ms} class="flex-none text-ink-dim">{seconds(@entry.ms)}</span>
           <span :if={@entry.status == :running} class="live-dot flex-none text-amber">running</span>
-          <span class="flex-none font-mono text-[11px] text-ink-dim phone:hidden">
+          <span class="flex-none font-mono text-xs text-ink-dim phone:hidden">
             {@tool_pids[@entry.call_id]}
           </span>
           <.icon
@@ -442,8 +442,8 @@ defmodule VisorWeb.HarnessComponents do
     assigns = assign(assigns, lang: lang, code: code)
 
     ~H"""
-    <figure class="border border-rule bg-well">
-      <figcaption class="flex items-center justify-between border-b border-rule pl-3 text-[11px] text-ink-dim">
+    <figure class="border border-rule bg-panel">
+      <figcaption class="flex items-center justify-between border-b border-rule pl-3 text-xs text-ink-dim">
         <span class="font-mono">{if(@lang == "", do: "code", else: @lang)}</span>
         <button
           type="button"
@@ -513,7 +513,7 @@ defmodule VisorWeb.HarnessComponents do
     ~H"""
     <div class="overflow-x-auto border border-rule">
       <table class="w-full text-[13px]">
-        <thead :if={@header} class="bg-well text-left text-ink-dim">
+        <thead :if={@header} class="bg-panel text-left text-ink-dim">
           <tr>
             <th :for={cell <- @header} class="border-b border-rule px-2.5 py-1.5 font-medium">
               <.md_inline nodes={cell} />
@@ -562,7 +562,7 @@ defmodule VisorWeb.HarnessComponents do
   defp md_node(%{node: {:code, code}} = assigns) do
     assigns = assign(assigns, :code, code)
 
-    ~H|<code class="bg-well px-1 py-px font-mono text-[0.86em] text-sky [font-variant-ligatures:none]">{@code}</code>|
+    ~H|<code class="bg-ink/8 px-1 py-px font-mono text-[0.86em] text-sky [font-variant-ligatures:none]">{@code}</code>|
   end
 
   defp md_node(%{node: {:strong, nodes}} = assigns) do
@@ -758,7 +758,7 @@ defmodule VisorWeb.HarnessComponents do
     ~H"""
     <dl class="grid grid-cols-2 gap-x-4 gap-y-2.5">
       <div :for={row <- @rows} class={["min-w-0", tuple_size(row) == 3 && "col-span-2"]}>
-        <dt class="text-[11px] text-ink-dim">{elem(row, 0)}</dt>
+        <dt class="text-xs text-ink-dim">{elem(row, 0)}</dt>
         <dd class="font-display text-[17px] font-medium leading-tight break-words text-ink">
           {elem(row, 1)}
         </dd>
@@ -782,7 +782,7 @@ defmodule VisorWeb.HarnessComponents do
 
     ~H"""
     <div id="context-meter">
-      <div class="flex justify-between text-[11px] text-ink-dim">
+      <div class="flex justify-between text-xs text-ink-dim">
         <span>Context</span>
         <span>{@messages} {if(@messages == 1, do: "message", else: "messages")}</span>
       </div>
@@ -819,7 +819,7 @@ defmodule VisorWeb.HarnessComponents do
 
     ~H"""
     <div>
-      <div class="flex justify-between text-[11px] text-ink-dim">
+      <div class="flex justify-between text-xs text-ink-dim">
         <span>Prompt cache</span>
         <span>{@share}% hit</span>
       </div>
