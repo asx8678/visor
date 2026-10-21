@@ -116,22 +116,22 @@
 @font-face { font-family: "Barlow Condensed"; font-weight: 600; font-display: swap; src: url("/fonts/barlow-condensed-600.woff2") format("woff2"); }
 @font-face { font-family: "JetBrains Mono"; font-weight: 400; font-display: swap; src: url("/fonts/jetbrains-mono-400.woff2") format("woff2"); }
 
-/* Slate blue-grey panels. Colour is kept for what is happening: amber
-   for work, sky for the model, red for crashes, green only for success.
-   Idle lamps are neutral. */
+/* Neutral greys with no tint. Colour marks state only: amber for work
+   and actions, sky for the model and links, red for crashes. Text, code
+   and finished work stay grey. */
 @theme {
-  --color-rack: #252b38;
-  --color-panel: #2d3443;
-  --color-well: #1f2430;
-  --color-rule: #414a5c;
-  --color-ink: #e9edf3;
-  --color-ink-dim: #b0b9c9;
-  --color-amber: #f4b860;
-  --color-signal: #6fcf9f;
-  --color-alarm: #ff7b76;
-  --color-sky: #8ec5ff;
-  --color-idle: #a3adbd;
-  --color-off: #566074;
+  --color-rack: #1c1c1e;
+  --color-panel: #242426;
+  --color-well: #161618;
+  --color-rule: #3a3a3c;
+  --color-ink: #f2f2f4;
+  --color-ink-dim: #a1a1a8;
+  --color-amber: #ff9f0a;
+  --color-signal: #32c766;
+  --color-alarm: #ff5a4f;
+  --color-sky: #5ea4ff;
+  --color-idle: #8e8e93;
+  --color-off: #4a4a4e;
 
   --font-sans: "Barlow", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Barlow Condensed", "Barlow", ui-sans-serif, sans-serif;
@@ -229,11 +229,11 @@ body.visor-body {
   transition: background-color 200ms, box-shadow 200ms, opacity 200ms;
 }
 .lamp-idle { background: var(--color-idle); }
-.lamp-busy { background: var(--color-amber); box-shadow: 0 0 8px 1px color-mix(in oklab, var(--color-amber) 60%, transparent); }
+.lamp-busy { background: var(--color-amber); }
 .lamp-supervisor { background: transparent; box-shadow: inset 0 0 0 2px var(--color-sky); }
-.lamp-model { background: var(--color-sky); box-shadow: 0 0 8px 1px color-mix(in oklab, var(--color-sky) 55%, transparent); }
+.lamp-model { background: var(--color-sky); }
 .lamp-exit { background: var(--color-off); opacity: 0.55; }
-.lamp-crash { background: var(--color-alarm); box-shadow: 0 0 9px 2px color-mix(in oklab, var(--color-alarm) 60%, transparent); }
+.lamp-crash { background: var(--color-alarm); }
 
 /* The one orchestrated moment: a lamp strikes on when its process starts. */
 .lamp-field .lamp { --lamp-size: 13px; animation: lamp-strike 520ms ease-out; }

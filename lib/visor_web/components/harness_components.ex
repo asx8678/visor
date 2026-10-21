@@ -252,7 +252,7 @@ defmodule VisorWeb.HarnessComponents do
   defp event_word(:exit), do: "exit"
   defp event_word(:crash), do: "crash"
 
-  defp event_color(:spawn), do: "text-signal"
+  defp event_color(:spawn), do: "text-ink"
   defp event_color(:restart), do: "text-sky"
   defp event_color(:exit), do: "text-ink-dim"
   defp event_color(:crash), do: "text-alarm"
@@ -341,7 +341,7 @@ defmodule VisorWeb.HarnessComponents do
           />
         </summary>
         <div :if={@entry.code} class="border-t border-rule">
-          <pre class="max-h-60 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-sky/90">{@entry.code}</pre>
+          <pre class="max-h-60 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink/90">{@entry.code}</pre>
           <ol
             :if={@entry.calls != []}
             class="space-y-1 border-t border-rule px-3 py-2 font-mono text-xs"
@@ -397,7 +397,7 @@ defmodule VisorWeb.HarnessComponents do
       <p class="mb-1.5 text-ink-dim">Commands</p>
       <dl class="grid grid-cols-[auto_1fr] gap-x-5 gap-y-1">
         <%= for {command, text} <- commands() do %>
-          <dt class="font-mono text-xs text-amber">{command}</dt>
+          <dt class="font-mono text-xs text-ink">{command}</dt>
           <dd class="text-ink-dim">{text}</dd>
         <% end %>
       </dl>
@@ -485,12 +485,7 @@ defmodule VisorWeb.HarnessComponents do
     ~H"""
     <ul class="space-y-1">
       <li :for={{marker, depth, nodes} <- @items} class={["flex gap-2", indent(depth)]}>
-        <span class={[
-          "min-w-4 flex-none tabular-nums",
-          if(marker == "•", do: "text-amber", else: "text-ink-dim")
-        ]}>
-          {marker}
-        </span>
+        <span class="min-w-4 flex-none tabular-nums text-ink-dim">{marker}</span>
         <span class="min-w-0 break-words"><.md_inline nodes={nodes} /></span>
       </li>
     </ul>
@@ -562,7 +557,7 @@ defmodule VisorWeb.HarnessComponents do
   defp md_node(%{node: {:code, code}} = assigns) do
     assigns = assign(assigns, :code, code)
 
-    ~H|<code class="bg-ink/8 px-1 py-px font-mono text-[0.86em] text-sky [font-variant-ligatures:none]">{@code}</code>|
+    ~H|<code class="bg-ink/8 px-1 py-px font-mono text-[0.86em] text-ink [font-variant-ligatures:none]">{@code}</code>|
   end
 
   defp md_node(%{node: {:strong, nodes}} = assigns) do
@@ -636,7 +631,7 @@ defmodule VisorWeb.HarnessComponents do
   defp finish_text("error"), do: "failed"
   defp finish_text(other), do: other || "ended"
 
-  defp finish_color(reason) when reason in ["stop", "tool_calls"], do: "text-signal"
+  defp finish_color(reason) when reason in ["stop", "tool_calls"], do: "text-ink-dim"
   defp finish_color("interrupted"), do: "text-ink"
   defp finish_color(_reason), do: "text-alarm"
 
@@ -801,7 +796,7 @@ defmodule VisorWeb.HarnessComponents do
 
   defp context_color(share) when share >= 90, do: "bg-alarm"
   defp context_color(share) when share >= 70, do: "bg-amber"
-  defp context_color(_share), do: "bg-sky"
+  defp context_color(_share), do: "bg-ink-dim"
 
   defp context_text(nil, nil), do: "No model turn yet"
   defp context_text(nil, window), do: "#{number(window)} token window"
@@ -824,7 +819,7 @@ defmodule VisorWeb.HarnessComponents do
         <span>{@share}% hit</span>
       </div>
       <div class="mt-1 h-1.5 bg-well">
-        <div class="h-full bg-signal transition-[width] duration-300" style={"width: #{@share}%"} />
+        <div class="h-full bg-ink-dim transition-[width] duration-300" style={"width: #{@share}%"} />
       </div>
     </div>
     """
