@@ -193,7 +193,7 @@ defmodule VisorWeb.HarnessComponents do
         :for={node <- @tree}
         id={"proc-" <> dom_safe(node.id)}
         class="group flex h-[23px] items-stretch pr-1 hover:bg-well"
-        title={"#{node.label} #{node.id}, #{node.reductions} reductions"}
+        title={tree_title(node)}
       >
         <span :for={on <- node.guides} class={["tree-guide", on && "on"]} />
         <span :if={node.depth > 0} class={["tree-elbow", node.last? && "last"]} />
@@ -210,6 +210,15 @@ defmodule VisorWeb.HarnessComponents do
       </li>
     </ul>
     """
+  end
+
+  # The hover text of a tree row, with the process's Elixir name when the
+  # row shows another one. A snapshot taken before a hot reload may not
+  # have the name yet.
+  defp tree_title(node) do
+    name = Map.get(node, :name)
+    name = if name && name != node.label, do: " (#{name})", else: ""
+    "#{node.label}#{name} #{node.id}, #{node.reductions} reductions"
   end
 
   defp tree_lamp(node) do

@@ -67,6 +67,10 @@ defmodule Visor.Observer do
     }
 
     send(self(), :sample)
+    # Interval timers, not a chain of send_after: while Mix recompiles this
+    # module in dev, gen_server drops the messages it can't deliver, and one
+    # dropped :sample would end the chain.
+    :timer.send_interval(@sample_ms, :sample)
     :timer.send_interval(@flush_ms, :flush)
     {:ok, state}
   end
@@ -80,11 +84,7 @@ defmodule Visor.Observer do
   end
 
   @impl true
-  def handle_info(:sample, state) do
-    Process.send_after(self(), :sample, @sample_ms)
-    {:noreply, sample(state)}
-  end
-
+  def handle_info(:sample, state), do: {:noreply, sample(state)}
   def handle_info(:flush, state), do: {:noreply, flush(state)}
 
   def handle_info({:trace, parent, :spawn, child, _mfa}, state) do
@@ -187,6 +187,7 @@ defmodule Visor.Observer do
       pid: pid,
       id: pid_id(pid),
       label: node_label(pid, meta),
+      name: elixir_name(pid, meta),
       kind: kind(meta),
       depth: depth,
       guides: guides,
@@ -369,10 +370,31 @@ defmodule Visor.Observer do
   end
 
   defp short(module) when is_atom(module) do
-    module |> inspect() |> String.replace_prefix("Visor.Harness.", "")
+    module |> inspect() |> String.replace_prefix("Visor.Harness.", "") |> plain()
   end
 
   defp short(other), do: inspect(other)
+
+  # Elixir's names for the harness registry and its worker say little, so
+  # the tree shows what they do; the tooltip keeps the Elixir name.
+  defp plain("Registry"), do: "Process names"
+  defp plain("Registry.PIDPartition0"), do: "name cleanup"
+  defp plain("Registry.PIDPartition" <> n), do: "name cleanup #{n}"
+  defp plain(name), do: name
+
+  # The name Elixir knows a process by, for the tree's tooltip.
+  defp elixir_name(pid, meta) do
+    case meta do
+      %{id: id} when is_atom(id) and id != :undefined ->
+        inspect(id)
+
+      _ ->
+        case Process.info(pid, :registered_name) do
+          {:registered_name, name} when is_atom(name) and name != [] -> inspect(name)
+          _ -> nil
+        end
+    end
+  end
 
   defp pid_id(pid) do
     pid

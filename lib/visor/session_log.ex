@@ -118,7 +118,9 @@ defmodule Visor.SessionLog do
         })
 
       state = %{state | pending_start: start}
-      schedule_tick(state)
+      # An interval, so a tick lost while Mix recompiles this module in dev
+      # doesn't end the stall checks.
+      :timer.send_interval(state.tick_ms, :tick)
       {:ok, watch_agent(state)}
     else
       {:error, reason} ->
@@ -189,10 +191,7 @@ defmodule Visor.SessionLog do
     {:noreply, %{state | agent: nil, status: :idle, running: %{}}}
   end
 
-  def handle_info(:tick, state) do
-    schedule_tick(state)
-    {:noreply, state |> watch_agent() |> check_stall()}
-  end
+  def handle_info(:tick, state), do: {:noreply, state |> watch_agent() |> check_stall()}
 
   def handle_info(_message, state), do: {:noreply, state}
 
@@ -442,8 +441,6 @@ defmodule Visor.SessionLog do
     |> :calendar.system_time_to_local_time(:second)
     |> NaiveDateTime.from_erl!({rem(ms, 1000) * 1000, 3})
   end
-
-  defp schedule_tick(state), do: Process.send_after(self(), :tick, state.tick_ms)
 
   defp now, do: System.monotonic_time(:millisecond)
 end
