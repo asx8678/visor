@@ -39,12 +39,12 @@ defmodule VisorWeb.HarnessLiveTest do
   test "runs a prompt through the agent and shows its turns and tools", %{view: view} do
     view |> form("#prompt-form", prompt: %{text: "read mix.exs"}) |> render_submit()
 
-    assert_receive {:agent, {:tool_end, %{name: "read_file"}}}, @flow_timeout
+    assert_receive {:agent, {:tool_end, %{name: "elixir"}}}, @flow_timeout
     assert_receive {:agent, {:status, :idle}}, @flow_timeout
 
     assert has_element?(view, "#entries-turn-1")
     assert has_element?(view, "#entries-turn-2")
-    assert has_element?(view, "#entries [id^='entries-tool-']", "read_file")
+    assert has_element?(view, "#entries [id^='entries-tool-']", "elixir")
     assert has_element?(view, "#last-request pre")
   end
 
@@ -64,7 +64,7 @@ defmodule VisorWeb.HarnessLiveTest do
 
   test "handles slash commands", %{view: view} do
     view |> form("#prompt-form", prompt: %{text: "/help"}) |> render_submit()
-    assert has_element?(view, "#entries", "/spawn [n] [seconds]")
+    assert has_element?(view, "#entries", "/effort low|high|max")
 
     view |> form("#prompt-form", prompt: %{text: "/effort max"}) |> render_submit()
     assert_receive {:agent, {:settings, %{effort: "max"}}}

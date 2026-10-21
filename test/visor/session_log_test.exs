@@ -15,7 +15,7 @@ defmodule Visor.SessionLogTest do
   defp waiting, do: spawn(fn -> receive do: (:stop -> :ok) end)
 
   defp broadcast(id, event),
-    do: Phoenix.PubSub.broadcast(Visor.PubSub, Agent.topic(id), {:agent, event})
+    do: Visor.Agent.Event.broadcast(id, event)
 
   # Starts a log for a stand-in session with no agent, so the test can
   # send it any event.
@@ -88,7 +88,7 @@ defmodule Visor.SessionLogTest do
     assert %{"prompts" => 1, "endings" => %{"answered" => 1}, "turns" => 2} =
              find(events, "summary")
 
-    assert %{"name" => "list_dir", "status" => "ok", "result" => listing} =
+    assert %{"name" => "elixir", "status" => "ok", "result" => listing} =
              find(events, "tool_end")
 
     assert listing =~ "mix.exs"

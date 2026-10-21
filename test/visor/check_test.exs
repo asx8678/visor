@@ -171,7 +171,7 @@ defmodule Visor.CheckTest do
       assert {:error, message} = Code.run(~S|V.check()|, context)
       assert message =~ "V.check needs a Mix project"
 
-      File.write!(Path.join(Visor.Tools.workspace(), "mix.exs"), "")
+      File.write!(Path.join(Visor.Workspace.root(), "mix.exs"), "")
       assert {:error, message} = Code.run(~S|V.check("test; rm -rf /")|, context)
       assert message =~ "V.check takes a test path"
     end

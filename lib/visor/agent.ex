@@ -6,25 +6,25 @@ defmodule Visor.Agent do
   session's task supervisor. That keeps the loop responsive (it can be
   interrupted mid-stream) and puts every step in the process view.
 
-  Events are broadcast on `topic(id)` as `{:agent, event}`.
+  It publishes what it does as events; see `Visor.Agent.Event`.
   """
   use GenServer
 
-  alias Visor.{Harness, Model, Tools}
+  alias Visor.{Harness, Model, Tools, Usage}
+  alias Visor.Agent.Event
 
   # Model calls allowed for one prompt before the loop gives up.
   @max_steps 24
   @efforts ~w(low high max)
 
   @system """
-  You are Visor, a coding agent running inside an Elixir/OTP harness. You can explore, \
-  read and change the user's project and run shell commands in it with your tools. Every \
-  model call and tool call you make runs in its own supervised BEAM process, which the user \
-  watches in a live process view.
+  You are Visor, a coding agent running inside an Elixir/OTP harness. You explore, read \
+  and change the user's project and run shell commands in it with the elixir tool. Every \
+  model call and script you run is its own supervised BEAM process, which the user watches \
+  in a live process view.
 
-  Work in code mode: prefer the elixir tool, and write one script per step that does every \
-  read, search, edit and command the step needs, then returns only what you need to see. \
-  Use the single tools only for a quick one-off lookup.
+  Work in code mode: write one script per step that does every read, search, edit and \
+  command the step needs, then returns only what you need to see.
 
   A change usually takes three steps:
   1. Look: read and search everything the change needs in one script.
@@ -50,9 +50,9 @@ defmodule Visor.Agent do
     steps: 0,
     effort: "high",
     thinking: true,
-    tool_tasks: %{},
-    tool_results: %{},
-    pending_calls: [],
+    # The running batch of tool calls by task ref, each as %{call, index,
+    # task, started, result}; the results go back in call order.
+    tools: %{},
     # Prompt tokens the last request sent, to notice when the next one
     # misses the provider's cache.
     last_prompt_tokens: nil
@@ -62,8 +62,7 @@ defmodule Visor.Agent do
     GenServer.start_link(__MODULE__, opts, name: via(Keyword.fetch!(opts, :id)))
   end
 
-  def topic(id), do: "agent:#{id}"
-  def subscribe(id), do: Phoenix.PubSub.subscribe(Visor.PubSub, topic(id))
+  defdelegate subscribe(id), to: Event
   def efforts, do: @efforts
 
   @doc "Sends a user prompt. Returns `{:error, :busy}` while a prompt is running."
@@ -106,24 +105,26 @@ defmodule Visor.Agent do
     {:reply, :ok, finish(%{state | model_task: nil}, :interrupted)}
   end
 
-  def handle_call(:interrupt, _from, state) when map_size(state.tool_tasks) > 0 do
-    for {_ref, {task, call, _started}} <- state.tool_tasks do
-      # A shutdown rather than a kill, so linked helpers such as Dune's
-      # sandbox exit quietly instead of logging a crash.
-      Task.shutdown(task)
+  def handle_call(:interrupt, _from, %{status: :tools} = state) do
+    tools =
+      Map.new(state.tools, fn
+        {ref, %{result: nil} = tool} ->
+          # A shutdown rather than a kill, so linked helpers such as Dune's
+          # sandbox exit quietly instead of logging a crash.
+          Task.shutdown(tool.task)
 
-      broadcast(
-        state,
-        {:tool_end, Map.merge(call, %{status: :error, result: "Cancelled.", ms: nil})}
-      )
-    end
+          broadcast(
+            state,
+            {:tool_end, Map.merge(tool.call, %{status: :error, result: "Cancelled.", ms: nil})}
+          )
 
-    results =
-      Map.new(state.pending_calls, fn call ->
-        {call.id, Map.get(state.tool_results, call.id, "Cancelled by the user.")}
+          {ref, %{tool | result: "Cancelled by the user."}}
+
+        finished ->
+          finished
       end)
 
-    state = append_tool_results(%{state | tool_tasks: %{}, tool_results: results})
+    state = append_tool_results(%{state | tools: tools})
     note(state, :info, "Stopped. The running tools were cancelled.")
     {:reply, :ok, finish(state, :interrupted)}
   end
@@ -156,7 +157,7 @@ defmodule Visor.Agent do
     {:noreply, handle_model_result(result, %{state | model_task: nil})}
   end
 
-  def handle_info({ref, result}, state) when is_map_key(state.tool_tasks, ref) do
+  def handle_info({ref, result}, state) when is_map_key(state.tools, ref) do
     Process.demonitor(ref, [:flush])
     {:noreply, finish_tool(state, ref, result)}
   end
@@ -172,7 +173,7 @@ defmodule Visor.Agent do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state)
-      when is_map_key(state.tool_tasks, ref) do
+      when is_map_key(state.tools, ref) do
     {:noreply,
      finish_tool(state, ref, {:error, "The tool crashed: #{Exception.format_exit(reason)}"})}
   end
@@ -291,21 +292,32 @@ defmodule Visor.Agent do
   # provider's cache than the previous request sent. The conversation only
   # grows at its end, so the cache should cover at least that much; less
   # means its start changed (or the cache wasn't ready yet).
-  def cache_warning(previous, %{"prompt_cache_hit_tokens" => hit, "prompt_tokens" => prompt})
-      when is_integer(previous) and previous >= 4096 and is_integer(hit) and hit < previous * 0.8 do
-    "The cache served #{hit} of this request's #{prompt} prompt tokens, but the previous " <>
-      "request sent #{previous}. The start of the conversation changed, or the cache " <>
-      "wasn't ready yet."
+  def cache_warning(previous, usage) when is_integer(previous) and previous >= 4096 do
+    case Usage.from(usage) do
+      %Usage{cached: hit, prompt: prompt} when is_integer(hit) and hit < previous * 0.8 ->
+        "The cache served #{hit} of this request's #{prompt} prompt tokens, but the " <>
+          "previous request sent #{previous}. The start of the conversation changed, or the " <>
+          "cache wasn't ready yet."
+
+      _enough ->
+        nil
+    end
   end
 
   def cache_warning(_previous, _usage), do: nil
 
-  defp prompt_tokens(%{"prompt_tokens" => tokens}, _previous) when is_integer(tokens), do: tokens
-  defp prompt_tokens(_usage, previous), do: previous
+  defp prompt_tokens(usage, previous) do
+    case Usage.from(usage) do
+      %Usage{prompt: tokens} when is_integer(tokens) -> tokens
+      _unknown -> previous
+    end
+  end
 
   defp run_tools(state, calls) do
-    tool_tasks =
-      Map.new(calls, fn call ->
+    tools =
+      calls
+      |> Enum.with_index()
+      |> Map.new(fn {call, index} ->
         context = %{session: state.id, call_id: call.id}
 
         task =
@@ -314,29 +326,25 @@ defmodule Visor.Agent do
           end)
 
         broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
-        {task.ref, {task, call, now()}}
+        {task.ref, %{call: call, index: index, task: task, started: now(), result: nil}}
       end)
 
-    set_status(%{state | tool_tasks: tool_tasks, tool_results: %{}, pending_calls: calls}, :tools)
+    set_status(%{state | tools: tools}, :tools)
   end
 
-  defp finish_tool(state, ref, result) do
-    {{_task, call, started}, tool_tasks} = Map.pop(state.tool_tasks, ref)
-    {status, output} = result
+  defp finish_tool(state, ref, {status, output}) do
+    tool = state.tools[ref]
 
     broadcast(
       state,
-      {:tool_end, Map.merge(call, %{status: status, result: output, ms: now() - started})}
+      {:tool_end,
+       Map.merge(tool.call, %{status: status, result: output, ms: now() - tool.started})}
     )
 
-    state = %{
-      state
-      | tool_tasks: tool_tasks,
-        tool_results: Map.put(state.tool_results, call.id, output)
-    }
+    state = put_in(state.tools[ref].result, output)
 
     cond do
-      map_size(tool_tasks) > 0 ->
+      Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
         state
 
       state.steps >= @max_steps ->
@@ -351,11 +359,11 @@ defmodule Visor.Agent do
 
   defp append_tool_results(state) do
     messages =
-      for call <- state.pending_calls do
-        %{"role" => "tool", "tool_call_id" => call.id, "content" => state.tool_results[call.id]}
+      for tool <- state.tools |> Map.values() |> Enum.sort_by(& &1.index) do
+        %{"role" => "tool", "tool_call_id" => tool.call.id, "content" => tool.result}
       end
 
-    %{state | messages: state.messages ++ messages, pending_calls: [], tool_results: %{}}
+    %{state | messages: state.messages ++ messages, tools: %{}}
   end
 
   # After an interrupted model call the last message is an unanswered user
@@ -417,8 +425,7 @@ defmodule Visor.Agent do
 
   defp broadcast(%__MODULE__{id: id}, event), do: broadcast(id, event)
 
-  defp broadcast(id, event),
-    do: Phoenix.PubSub.broadcast(Visor.PubSub, topic(id), {:agent, event})
+  defp broadcast(id, event), do: Event.broadcast(id, event)
 
   # What the request looks like on the wire, shortened for display.
   defp request_preview(request, info) do

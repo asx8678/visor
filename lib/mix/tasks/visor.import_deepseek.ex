@@ -68,7 +68,7 @@ defmodule Mix.Tasks.Visor.ImportDeepseek do
     model = choice.model
     max_tokens = count(model && model.output)
     context_window = count(model && model.context)
-    path = Path.join(Visor.Tools.workspace(), ".env")
+    path = Path.join(Visor.Workspace.root(), ".env")
 
     write_env(path, [
       {"DEEPSEEK_API_KEY", choice.key},

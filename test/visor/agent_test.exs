@@ -18,8 +18,8 @@ defmodule Visor.AgentTest do
     assert_receive {:agent, {:turn_start, %{turn: 1, pid: model_task}}}
     assert is_pid(model_task)
     assert_receive {:agent, {:turn_end, %{turn: 1, finish_reason: "tool_calls"}}}
-    assert_receive {:agent, {:tool_start, %{name: "list_dir", status: :running}}}
-    assert_receive {:agent, {:tool_end, %{name: "list_dir", status: :ok, result: listing}}}
+    assert_receive {:agent, {:tool_start, %{name: "elixir", status: :running}}}
+    assert_receive {:agent, {:tool_end, %{name: "elixir", status: :ok, result: listing}}}
     assert listing =~ "mix.exs"
 
     assert_receive {:agent,
@@ -30,6 +30,19 @@ defmodule Visor.AgentTest do
 
     # user, assistant with tool call, tool result, final answer
     assert %{messages: 4} = Agent.settings(id)
+  end
+
+  test "cancels running tools and answers their calls", %{id: id} do
+    assert :ok = Agent.prompt(id, "$ sleep 5")
+    assert_receive {:agent, {:tool_start, %{name: "elixir", status: :running}}}, 1_000
+
+    assert :ok = Agent.interrupt(id)
+    assert_receive {:agent, {:tool_end, %{status: :error, result: "Cancelled."}}}
+    assert_receive {:agent, {:prompt_end, %{reason: :interrupted}}}
+
+    # user, assistant with tool call, the cancelled call's result
+    assert %{status: :idle, messages: 3} = Agent.settings(id)
+    assert {:error, :idle} = Agent.interrupt(id)
   end
 
   test "rejects a prompt while one is running", %{id: id} do

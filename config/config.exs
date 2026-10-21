@@ -7,10 +7,6 @@
 # General application configuration
 import Config
 
-config :visor,
-  ecto_repos: [Visor.Repo],
-  generators: [timestamp_type: :utc_datetime]
-
 # Configure the endpoint
 config :visor, VisorWeb.Endpoint,
   url: [host: "localhost"],
@@ -26,15 +22,6 @@ config :visor, VisorWeb.Endpoint,
 config :phoenix_live_view,
   # the attribute set on all root tags. Used for Phoenix.LiveView.ColocatedCSS.
   root_tag_attribute: "phx-r"
-
-# Configure the mailer
-#
-# By default it uses the "Local" adapter which stores the emails
-# locally. You can see the emails in your browser, at "/dev/mailbox".
-#
-# For production it's recommended to configure a different adapter
-# at the `config/runtime.exs`.
-config :visor, Visor.Mailer, adapter: Swoosh.Adapters.Local
 
 # The model the agent talks to. The API key is read from DEEPSEEK_API_KEY
 # or from a .env file in the project folder, where DEEPSEEK_BASE_URL and

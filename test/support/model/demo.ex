@@ -2,7 +2,7 @@ defmodule Visor.Model.Demo do
   @moduledoc """
   A scripted stand-in model for the tests (see `config/test.exs`).
 
-  It streams canned reasoning and calls the real tools, so the harness and
+  It streams canned reasoning and runs real scripts, so the harness and
   the process view can be tested without network access.
   """
   @behaviour Visor.Model
@@ -114,39 +114,32 @@ defmodule Visor.Model.Demo do
 
       match = Regex.run(~r/^\s*\$\s*(.+)$/s, text) ->
         command = String.trim(List.last(match))
-
-        call(
-          "bash",
-          %{command: command},
-          "The user typed a shell command. I'll run it with bash."
-        )
+        script("V.sh(#{inspect(command)})", "The user typed a shell command. I'll run it.")
 
       match = Regex.run(~r/read\s+([\w.\/-]+)/i, text) ->
         path = List.last(match)
-        call("read_file", %{path: path}, "The user wants the contents of #{path}. I'll read it.")
+
+        script(
+          "V.read(#{inspect(path)})",
+          "The user wants the contents of #{path}. I'll read it."
+        )
 
       match = Regex.run(~r/(?:search|grep|find)\s+(?:for\s+)?["']?([\w.:-]+)/i, text) ->
         pattern = List.last(match)
 
-        call(
-          "grep",
-          %{pattern: pattern},
+        script(
+          "V.grep(#{inspect(pattern)})",
           "I should search the project for #{pattern} and show where it appears."
         )
 
       String.contains?(lower, ["beam", "process", "memory", "runtime"]) ->
-        call(
-          "beam_stats",
-          %{},
+        script(
+          "V.beam_stats()",
           "This is a question about the runtime. BEAM stats will answer it."
         )
 
       String.contains?(lower, ["list", "files", "folder", "directory", "ls"]) ->
-        call(
-          "list_dir",
-          %{path: "."},
-          "Listing the project root first gives me the lay of the land."
-        )
+        script("V.ls()", "Listing the project root first gives me the lay of the land.")
 
       true ->
         {"I have no model behind me, so I can only follow a script.",
@@ -158,6 +151,8 @@ defmodule Visor.Model.Demo do
            "\"> V.glob(\"lib/**/*.ex\") |> length()\".", []}
     end
   end
+
+  defp script(code, reasoning), do: call("elixir", %{code: code}, reasoning)
 
   defp call(name, args, reasoning) do
     id = "demo_#{System.unique_integer([:positive])}"

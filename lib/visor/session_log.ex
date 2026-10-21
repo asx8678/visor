@@ -45,7 +45,7 @@ defmodule Visor.SessionLog do
 
   require Logger
 
-  alias Visor.{Agent, Harness, Model}
+  alias Visor.{Agent, Harness, Model, Usage}
 
   @supervisor Visor.SessionLogs
   @stream_every_ms 5_000
@@ -159,7 +159,7 @@ defmodule Visor.SessionLog do
           max_tokens: provider.max_tokens,
           context_window: provider.context_window,
           key_from: provider.key,
-          workspace: Visor.Tools.workspace(),
+          workspace: Visor.Workspace.root(),
           owner: owner,
           node: node(),
           elixir: System.version(),
@@ -313,14 +313,13 @@ defmodule Visor.SessionLog do
   defp counts({:turn_start, _info}), do: %{turns: 1}
 
   defp counts({:turn_end, info}) do
-    usage = Map.get(info, :usage) || %{}
-    details = usage["completion_tokens_details"] || %{}
+    usage = Usage.from(Map.get(info, :usage)) || %Usage{}
 
     %{
-      prompt_tokens: whole(usage["prompt_tokens"]),
-      cached_tokens: whole(usage["prompt_cache_hit_tokens"]),
-      completion_tokens: whole(usage["completion_tokens"]),
-      reasoning_tokens: whole(details["reasoning_tokens"]),
+      prompt_tokens: whole(usage.prompt),
+      cached_tokens: whole(usage.cached),
+      completion_tokens: whole(usage.completion),
+      reasoning_tokens: whole(usage.reasoning),
       model_ms: whole(Map.get(info, :ms))
     }
   end

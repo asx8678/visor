@@ -321,10 +321,8 @@ defmodule VisorWeb.HarnessComponents do
         <span class={finish_color(@entry.finish_reason)}>{finish_text(@entry.finish_reason)}</span>
         <span :if={@entry.stats[:ms]}>{seconds(@entry.stats[:ms])}</span>
         <span :if={@entry.stats[:ttft_ms]}>first token {seconds(@entry.stats[:ttft_ms])}</span>
-        <span :if={@entry.stats[:usage]}>
-          {number(@entry.stats.usage["prompt_tokens"])} in, {number(
-            @entry.stats.usage["completion_tokens"]
-          )} out
+        <span :if={usage = Visor.Usage.from(@entry.stats[:usage])}>
+          {number(usage.prompt)} in, {number(usage.completion)} out
         </span>
       </footer>
     </article>
@@ -425,8 +423,6 @@ defmodule VisorWeb.HarnessComponents do
 
   def commands do
     [
-      {"/spawn [n] [seconds]", "Start n workers (default 5) that run for a while, then exit"},
-      {"/crash", "Kill a random worker so its supervisor restarts it"},
       {"/stop", "Stop the running model call or tools"},
       {"/clear", "Forget the conversation and clear the console"},
       {"/effort low|high|max", "Set the reasoning effort"},
@@ -612,13 +608,6 @@ defmodule VisorWeb.HarnessComponents do
 
   defp tool_summary(%{name: "elixir", code: code}),
     do: code |> String.split("\n", parts: 2) |> hd()
-
-  defp tool_summary(%{name: "bash", arguments: arguments}) do
-    case Jason.decode(arguments) do
-      {:ok, %{"command" => command}} -> "$ " <> command
-      _ -> arguments
-    end
-  end
 
   defp tool_summary(%{arguments: arguments}) do
     case Jason.decode(arguments) do

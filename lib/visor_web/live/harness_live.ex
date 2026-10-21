@@ -10,11 +10,10 @@ defmodule VisorWeb.HarnessLive do
 
   import VisorWeb.HarnessComponents
 
-  alias Visor.{Agent, Harness, Model, Observer, SessionLog}
+  alias Visor.{Agent, Harness, Model, Observer, SessionLog, Usage}
 
   @log_limit 150
   @empty_snapshot %{tree: [], lamps: [], stats: %{}, apps: [], history: []}
-  @empty_totals %{turns: 0, prompt: 0, completion: 0, cache_hit: 0, cache_miss: 0, reasoning: 0}
 
   @examples [
     "List the files in this project",
@@ -43,7 +42,7 @@ defmodule VisorWeb.HarnessLive do
         settings: %{effort: "high", thinking: true},
         live_turn: nil,
         turn_stats: nil,
-        totals: @empty_totals,
+        totals: %{turns: 0, usage: Usage.zero()},
         context_messages: 0,
         context_tokens: nil,
         last_request: nil,
@@ -86,27 +85,7 @@ defmodule VisorWeb.HarnessLive do
         aria-label="Processes"
       >
         <div class="space-y-3 border-b border-rule px-4 py-3">
-          <div class="flex items-center justify-between gap-3">
-            <h2 class="font-display text-lg font-medium text-ink">Processes</h2>
-            <div class="flex gap-1.5">
-              <button
-                id="spawn-workers"
-                type="button"
-                phx-click="spawn"
-                class="touch-manipulation border border-rule px-2.5 py-1 text-xs text-ink transition-colors hover:border-signal hover:text-signal phone:px-3 phone:py-2 phone:text-[13px]"
-              >
-                Spawn workers
-              </button>
-              <button
-                id="crash-worker"
-                type="button"
-                phx-click="crash"
-                class="touch-manipulation border border-rule px-2.5 py-1 text-xs text-ink transition-colors hover:border-alarm hover:text-alarm phone:px-3 phone:py-2 phone:text-[13px]"
-              >
-                Crash a worker
-              </button>
-            </div>
-          </div>
+          <h2 class="font-display text-lg font-medium text-ink">Processes</h2>
           <.app_strip apps={@snapshot.apps} />
           <.lamp_field lamps={@snapshot.lamps} />
         </div>
@@ -288,12 +267,12 @@ defmodule VisorWeb.HarnessLive do
           <.readings rows={
             [
               {"Model turns", number(@totals.turns)},
-              {"Reasoning tokens", number(@totals.reasoning)},
-              {"Tokens in", number(@totals.prompt)},
-              {"Tokens out", number(@totals.completion)}
+              {"Reasoning tokens", number(@totals.usage.reasoning)},
+              {"Tokens in", number(@totals.usage.prompt)},
+              {"Tokens out", number(@totals.usage.completion)}
             ] ++ if(@log_path, do: [{"Log", @log_path, :wide}], else: [])
           } />
-          <.cache_bar hit={@totals.cache_hit} miss={@totals.cache_miss} />
+          <.cache_bar hit={@totals.usage.cached} miss={@totals.usage.uncached} />
         </div>
 
         <div id="last-request" class="space-y-2 border-t border-rule pt-4">
@@ -486,13 +465,6 @@ defmodule VisorWeb.HarnessLive do
 
   def handle_event("clear", _params, socket), do: {:noreply, run_command(socket, "clear", [])}
 
-  def handle_event("spawn", _params, socket) do
-    Harness.spawn_workers(5, 8_000)
-    {:noreply, socket}
-  end
-
-  def handle_event("crash", _params, socket), do: {:noreply, run_command(socket, "crash", [])}
-
   def handle_event("configure", %{"key" => "effort", "value" => effort}, socket) do
     {:noreply, configure(socket, effort: effort)}
   end
@@ -526,28 +498,6 @@ defmodule VisorWeb.HarnessLive do
   ## Slash commands
 
   defp run_command(socket, "help", _args), do: add_entry(socket, %{type: :help})
-
-  defp run_command(socket, "spawn", args) do
-    count = int_arg(args, 0, 5, 1..50)
-    seconds = int_arg(args, 1, 8, 1..120)
-    Harness.spawn_workers(count, seconds * 1000)
-
-    note(
-      socket,
-      :info,
-      "Started #{count} workers that run for #{seconds} s. Watch them in the tree."
-    )
-  end
-
-  defp run_command(socket, "crash", _args) do
-    case Harness.crash_worker() do
-      {:ok, label} ->
-        note(socket, :info, "Killed #{label}. Its supervisor starts it again.")
-
-      {:error, :no_workers} ->
-        note(socket, :info, "No workers are running. Start some with /spawn.")
-    end
-  end
 
   defp run_command(socket, "stop", _args) do
     case Agent.interrupt(socket.assigns.session_id) do
@@ -586,15 +536,6 @@ defmodule VisorWeb.HarnessLive do
 
   defp run_command(socket, command, _args) do
     note(socket, :error, "There is no /#{command} command. Type /help for the list.")
-  end
-
-  defp int_arg(args, index, default, range) do
-    with value when is_binary(value) <- Enum.at(args, index),
-         {n, ""} <- Integer.parse(value) do
-      n |> max(range.first) |> min(range.last)
-    else
-      _ -> default
-    end
   end
 
   defp configure(socket, settings) do
@@ -678,8 +619,8 @@ defmodule VisorWeb.HarnessLive do
     |> assign(
       live_turn: nil,
       turn_stats: Map.merge(socket.assigns.turn_stats, info),
-      totals: add_usage(socket.assigns.totals, info[:usage]),
-      context_tokens: context_tokens(info[:usage]) || socket.assigns.context_tokens
+      totals: add_usage(socket.assigns.totals, Usage.from(info[:usage])),
+      context_tokens: Usage.context(Usage.from(info[:usage])) || socket.assigns.context_tokens
     )
     |> stream_insert(:entries, turn)
   end
@@ -795,40 +736,21 @@ defmodule VisorWeb.HarnessLive do
     )
   end
 
-  defp add_usage(totals, nil), do: %{totals | turns: totals.turns + 1}
-
-  defp add_usage(totals, usage) do
-    %{
-      totals
-      | turns: totals.turns + 1,
-        prompt: totals.prompt + (usage["prompt_tokens"] || 0),
-        completion: totals.completion + (usage["completion_tokens"] || 0),
-        cache_hit: totals.cache_hit + (usage["prompt_cache_hit_tokens"] || 0),
-        cache_miss: totals.cache_miss + (usage["prompt_cache_miss_tokens"] || 0),
-        reasoning:
-          totals.reasoning +
-            (get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) || 0)
-    }
-  end
-
-  defp context_tokens(%{"prompt_tokens" => prompt, "completion_tokens" => completion})
-       when is_integer(prompt) and is_integer(completion),
-       do: prompt + completion
-
-  defp context_tokens(_usage), do: nil
+  defp add_usage(totals, usage),
+    do: %{turns: totals.turns + 1, usage: Usage.add(totals.usage, usage)}
 
   defp turn_rows(stats) do
-    usage = stats[:usage] || %{}
+    usage = Usage.from(stats[:usage]) || %Usage{}
 
     [
       {"First token", seconds(stats[:ttft_ms])},
       {"Duration", seconds(stats[:ms])},
       {"Chunks", number(stats[:chunks])},
       {"Finish", stats[:finish_reason] || "streaming"},
-      {"Tokens in", number(usage["prompt_tokens"])},
-      {"Tokens out", number(usage["completion_tokens"])},
-      {"Cached", number(usage["prompt_cache_hit_tokens"])},
-      {"Reasoning", number(get_in(usage, ["completion_tokens_details", "reasoning_tokens"]))}
+      {"Tokens in", number(usage.prompt)},
+      {"Tokens out", number(usage.completion)},
+      {"Cached", number(usage.cached)},
+      {"Reasoning", number(usage.reasoning)}
     ]
   end
 

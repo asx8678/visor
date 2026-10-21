@@ -11,13 +11,7 @@ defmodule V do
   for the model when the script ends (see `Visor.Feedback.Script`).
   """
 
-  alias Visor.{Check, Code, Feedback, Tools}
-
-  @max_read_bytes 2_000_000
-  @max_matches 1_000
-  # A runaway loop of calls would flood the console and the session log
-  # long before the script's time limit.
-  @max_calls 2_000
+  alias Visor.{Check, Code, Feedback, Limits, Tools, Workspace}
 
   defmodule Error do
     defexception [:message]
@@ -49,9 +43,9 @@ defmodule V do
   def exists?(path) when is_binary(path),
     do: track(:exists?, [path], fn -> Tools.exists(path) end)
 
-  @doc "A text file's contents (up to 2 MB)."
+  @doc "A text file's contents (up to `Visor.Limits.read_bytes/0`)."
   def read(path) when is_binary(path),
-    do: track(:read, [path], fn -> Tools.read(path, @max_read_bytes) end)
+    do: track(:read, [path], fn -> Tools.read(path) end)
 
   @doc """
   Lines matching a regular expression, given as a string or a `~r` regex,
@@ -61,7 +55,7 @@ defmodule V do
 
   def grep(pattern, path)
       when (is_binary(pattern) or is_struct(pattern, Regex)) and is_binary(path),
-      do: track(:grep, [pattern, path], fn -> Tools.search(pattern, path, @max_matches) end)
+      do: track(:grep, [pattern, path], fn -> Tools.search(pattern, path) end)
 
   def grep(pattern, path) do
     raise Error,
@@ -102,7 +96,7 @@ defmodule V do
     track(:check, List.wrap(path), fn ->
       session = session()
       changed = Feedback.changed_files(session)
-      root = Tools.workspace()
+      root = Workspace.root()
       stats = Map.new(changed, &{&1, stat(Path.join(root, &1))})
 
       with {:ok, check, output} <- Check.run(path) do
@@ -138,7 +132,7 @@ defmodule V do
   # same second) would look unchanged, so it gets an mtime a second
   # earlier. Mix only asks whether the mtime differs.
   defp change(path, write) do
-    root = Tools.workspace()
+    root = Workspace.root()
     full = Path.expand(path, root)
     before = stat(full)
 
@@ -190,10 +184,13 @@ defmodule V do
   defp track(name, args, fun) do
     context = Process.get(Code)
     n = Process.get(:visor_calls, 0) + 1
+    # A runaway loop of calls would flood the console and the session log
+    # long before the script's time limit.
+    max_calls = Limits.v_calls()
 
-    if n > @max_calls do
+    if n > max_calls do
       raise Error,
-            "The script made #{@max_calls} V calls, the most one script may make. " <>
+            "The script made #{max_calls} V calls, the most one script may make. " <>
               "Use fewer, larger calls, such as one V.grep over a folder instead of one per file."
     end
 

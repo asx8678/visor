@@ -1,0 +1,30 @@
+defmodule Visor.UsageTest do
+  use ExUnit.Case, async: true
+
+  alias Visor.Usage
+
+  test "reads a provider's usage map, leaving out what it didn't report" do
+    raw = %{
+      "prompt_tokens" => 100,
+      "prompt_cache_hit_tokens" => 60,
+      "prompt_cache_miss_tokens" => 40,
+      "completion_tokens" => 20,
+      "completion_tokens_details" => %{"reasoning_tokens" => 5}
+    }
+
+    assert %Usage{prompt: 100, cached: 60, uncached: 40, completion: 20, reasoning: 5} =
+             Usage.from(raw)
+
+    assert %Usage{prompt: 7, cached: nil, reasoning: nil} = Usage.from(%{"prompt_tokens" => 7})
+    assert Usage.from(nil) == nil
+  end
+
+  test "adds usages and measures the context" do
+    a = Usage.from(%{"prompt_tokens" => 100, "completion_tokens" => 20})
+    sum = Usage.zero() |> Usage.add(a) |> Usage.add(nil) |> Usage.add(a)
+
+    assert %Usage{prompt: 200, completion: 40, cached: 0} = sum
+    assert Usage.context(a) == 120
+    assert Usage.context(Usage.from(%{"prompt_tokens" => 1})) == nil
+  end
+end

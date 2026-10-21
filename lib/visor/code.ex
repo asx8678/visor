@@ -17,11 +17,12 @@ defmodule Visor.Code do
           └── elixir script
   """
 
-  alias Visor.{Agent, Feedback}
+  alias Visor.Feedback
+  alias Visor.Agent.Event
 
   @opts [
     allowlist: Visor.Code.Allowlist,
-    timeout: 120_000,
+    timeout: Visor.Limits.script_timeout_ms(),
     # Reductions include the work V does for the script (reading and
     # searching files), so this is high; the timeout is the real bound.
     max_reductions: 2_000_000_000,
@@ -50,11 +51,7 @@ defmodule Visor.Code do
   # The script's whole output and value, before the summary for the model
   # cuts them, for the session log.
   defp log_script(%{session: session, call_id: call_id}, result) do
-    Phoenix.PubSub.broadcast(
-      Visor.PubSub,
-      Agent.topic(session),
-      {:agent, {:script_end, call_id, script_info(result)}}
-    )
+    Event.broadcast(session, {:script_end, call_id, script_info(result)})
   end
 
   defp log_script(_context, _result), do: :ok
@@ -98,11 +95,7 @@ defmodule Visor.Code do
     with %{runner: runner} <- context, do: send(runner, {__MODULE__, :call, call})
 
     with %{session: session, call_id: call_id} <- context do
-      Phoenix.PubSub.broadcast(
-        Visor.PubSub,
-        Agent.topic(session),
-        {:agent, {:code_call, call_id, call}}
-      )
+      Event.broadcast(session, {:code_call, call_id, call})
     end
 
     :ok

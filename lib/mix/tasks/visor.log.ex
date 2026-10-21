@@ -188,15 +188,17 @@ defmodule Mix.Tasks.Visor.Log do
       prompts = Enum.count(events, &(&1["event"] == "user"))
       turns = Enum.count(events, &(&1["event"] == "turn_start"))
       tools = Enum.count(events, &(&1["event"] == "tool_start"))
-      usage = for %{"event" => "turn_end", "usage" => %{} = usage} <- events, do: usage
-      tokens_in = usage |> Enum.map(&(&1["prompt_tokens"] || 0)) |> Enum.sum()
-      tokens_out = usage |> Enum.map(&(&1["completion_tokens"] || 0)) |> Enum.sum()
+
+      usage =
+        for(%{"event" => "turn_end", "usage" => usage} <- events, do: Visor.Usage.from(usage))
+        |> Enum.reduce(Visor.Usage.zero(), &Visor.Usage.add(&2, &1))
+
       took = events |> List.last(%{}) |> Map.get("elapsed_ms")
 
       Mix.shell().info(
         "#{started}  #{id}  #{count(prompts, "prompt")}, #{count(turns, "turn")}, " <>
-          "#{count(tools, "tool call")}, #{number(tokens_in)} tokens in, " <>
-          "#{number(tokens_out)} out, #{seconds(took)}  #{ending(events)}"
+          "#{count(tools, "tool call")}, #{number(usage.prompt)} tokens in, " <>
+          "#{number(usage.completion)} out, #{seconds(took)}  #{ending(events)}"
       )
     end
 
@@ -350,13 +352,13 @@ defmodule Mix.Tasks.Visor.Log do
   end
 
   defp describe(%{"event" => "turn_end", "usage" => usage} = e, opts) when is_map(usage) do
-    cached = usage["prompt_cache_hit_tokens"]
-    cached = if is_integer(cached), do: " (#{number(cached)} cached)", else: ""
+    usage = Visor.Usage.from(usage)
+    cached = if usage.cached, do: " (#{number(usage.cached)} cached)", else: ""
 
     head =
       "turn #{e["turn"]}  #{e["finish_reason"]} after #{seconds(e["ms"])} " <>
-        "(first token #{seconds(e["ttft_ms"])}), #{number(usage["prompt_tokens"])} tokens in" <>
-        "#{cached}, #{number(usage["completion_tokens"])} out"
+        "(first token #{seconds(e["ttft_ms"])}), #{number(usage.prompt)} tokens in" <>
+        "#{cached}, #{number(usage.completion)} out"
 
     reasoning =
       if opts[:full] && e["reasoning"] not in [nil, ""],

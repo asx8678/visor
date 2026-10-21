@@ -14,12 +14,10 @@ defmodule Visor.Feedback.Script do
   behind a ref such as `r3`, which `V.output/2` reads back.
   """
 
-  alias Visor.Tools
+  alias Visor.{Limits, Tools}
 
-  @max_value_bytes 24_000
-  @max_printed_bytes 8_000
   @max_command_chars 100
-  # Bounds on inspecting a value, which is cut at @max_value_bytes anyway;
+  # Bounds on inspecting a value, which is cut at Limits.value_bytes() anyway;
   # what goes past the cut is kept behind a ref.
   @max_inspect_items 10_000
   @max_inspect_bytes 2_000_000
@@ -117,7 +115,7 @@ defmodule Visor.Feedback.Script do
   defp printed(stdio, keep) do
     if String.trim(stdio) != "" do
       text = String.trim_trailing(stdio)
-      ["printed:", cut(text, text, @max_printed_bytes, keep)]
+      ["printed:", cut(text, text, Limits.printed_bytes(), keep)]
     end
   end
 
@@ -128,7 +126,7 @@ defmodule Visor.Feedback.Script do
       # The whole of a long string is kept as text, so V.output/2 can read
       # it by lines.
       whole = if is_binary(value) and String.valid?(value), do: value, else: inspected
-      "=> " <> cut(inspected, whole, @max_value_bytes, keep)
+      "=> " <> cut(inspected, whole, Limits.value_bytes(), keep)
     end
   end
 

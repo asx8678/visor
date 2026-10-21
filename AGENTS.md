@@ -1,3 +1,39 @@
+# Visor
+
+Visor is an agent harness: a Phoenix LiveView console (`VisorWeb.HarnessLive`)
+for a coding agent (`Visor.Agent`) that runs under OTP supervision, with the
+live supervision tree beside it. There is no database.
+
+## How it fits together
+
+- `Visor.Harness` supervises one `Visor.Harness.Session` per console page:
+  the agent, a task supervisor for its model and tool calls, and its
+  `Visor.Feedback` collector. Closing or reloading the page stops the session.
+- The agent's events are documented in `Visor.Agent.Event`. The console,
+  `Visor.SessionLog` and `mix visor.log` all read them; change the event
+  shapes there and keep the session log's JSON keys stable, since
+  `mix visor.log` reads old log files.
+- The model is always DeepSeek (`Visor.Model.DeepSeek`). Tests use the
+  scripted `Visor.Model.Demo` in `test/support`; never add a demo fallback.
+- The agent has one tool, `elixir` (code mode): one script per step, run in a
+  Dune sandbox, calling the project through `V` (`lib/v.ex`). `V.check/1`
+  compiles and runs the tests and returns only the failures.
+- Every path a tool touches goes through `Visor.Workspace`, which confines
+  it to the project, follows symlinks itself and refuses `.env` files.
+  Tool limits live in `Visor.Limits`.
+
+## Rules
+
+- The DeepSeek key lives in the gitignored `.env`. Never print it, read it
+  through a tool, or commit it; scan staged files before committing.
+- Writes and shell commands need no approval; don't add an approval step.
+- Session logs: `mix visor.log [latest|ID] [--full]`; server log:
+  `mix visor.log server`. Start there when a task hung or failed.
+- In dev, Elixir changes hot-load into the running server. A message that
+  reaches a GenServer while Mix recompiles its module is dropped, so use
+  `:timer.send_interval` for periodic work, not a `Process.send_after`
+  chain, and read new state fields with `Map.get` in long-lived processes.
+
 This is a web application written using the Phoenix web framework.
 
 ## Project guidelines
@@ -78,7 +114,7 @@ custom classes must fully style the input
         end
 
 - **Never** nest multiple modules in the same file as it can cause cyclic dependencies and compilation errors
-- **Never** use map access syntax (`changeset[:field]`) on structs as they do not implement the Access behaviour by default. For regular structs, you **must** access the fields directly, such as `my_struct.field` or use higher level APIs that are available on the struct if they exist, `Ecto.Changeset.get_field/2` for changesets
+- **Never** use map access syntax (`changeset[:field]`) on structs as they do not implement the Access behaviour by default. For regular structs, you **must** access the fields directly, such as `my_struct.field` or use higher level APIs that are available on the struct if they exist
 - Elixir's standard library has everything necessary for date and time manipulation. Familiarize yourself with the common `Time`, `Date`, `DateTime`, and `Calendar` interfaces by accessing their documentation as necessary. **Never** install additional dependencies unless asked or for date/time parsing (which you can use the `date_time_parser` package)
 - Don't use `String.to_atom/1` on user input (memory leak risk)
 - Predicate function names should not start with `is_` and should end in a question mark. Names like `is_thing` should be reserved for guards
@@ -120,18 +156,6 @@ custom classes must fully style the input
 
 - `Phoenix.View` no longer is needed or included with Phoenix, don't use it
 <!-- phoenix:phoenix-end -->
-
-<!-- phoenix:ecto-start -->
-## Ecto Guidelines
-
-- **Always** preload Ecto associations in queries when they'll be accessed in templates, ie a message that needs to reference the `message.user.email`
-- Remember `import Ecto.Query` and other supporting modules when you write `seeds.exs`
-- `Ecto.Schema` fields always use the `:string` type, even for `:text`, columns, ie: `field :name, :string`
-- `Ecto.Changeset.validate_number/2` **DOES NOT SUPPORT the `:allow_nil` option**. By default, Ecto validations only run if a change for the given field exists and the change value is not nil, so such as option is never needed
-- You **must** use `Ecto.Changeset.get_field(changeset, :field)` to access changeset fields
-- Fields which are set programmatically, such as `user_id`, must not be listed in `cast` calls or similar for security purposes. Instead they must be explicitly set when creating the struct
-- **Always** invoke `mix ecto.gen.migration migration_name_using_underscores` when generating migration files, so the correct timestamp and conventions are applied
-<!-- phoenix:ecto-end -->
 
 <!-- phoenix:html-start -->
 ## Phoenix HTML guidelines
@@ -400,31 +424,6 @@ You can also specify a name to nest the params:
     def handle_event("submitted", %{"user" => user_params}, socket) do
       {:noreply, assign(socket, form: to_form(user_params, as: :user))}
     end
-
-#### Creating a form from changesets
-
-When using changesets, the underlying data, form params, and errors are retrieved from it. The `:as` option is automatically computed too. E.g. if you have a user schema:
-
-    defmodule MyApp.Users.User do
-      use Ecto.Schema
-      ...
-    end
-
-And then you create a changeset that you pass to `to_form`:
-
-    %MyApp.Users.User{}
-    |> Ecto.Changeset.change()
-    |> to_form()
-
-Once the form is submitted, the params will be available under `%{"user" => user_params}`.
-
-In the template, the form form assign can be passed to the `<.form>` function component:
-
-    <.form for={@form} id="todo-form" phx-change="validate" phx-submit="save">
-      <.input field={@form[:field]} type="text" />
-    </.form>
-
-Always give the form an explicit, unique DOM ID, like `id="todo-form"`.
 
 #### Avoiding form errors
 

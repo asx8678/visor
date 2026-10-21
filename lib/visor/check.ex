@@ -77,7 +77,7 @@ defmodule Visor.Check do
   end
 
   defp mix_project do
-    if File.regular?(Path.join(Tools.workspace(), "mix.exs")),
+    if File.regular?(Path.join(Visor.Workspace.root(), "mix.exs")),
       do: :ok,
       else: {:error, "V.check needs a Mix project, and the project folder has no mix.exs."}
   end

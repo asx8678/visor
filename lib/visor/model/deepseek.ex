@@ -195,7 +195,7 @@ defmodule Visor.Model.DeepSeek do
   end
 
   defp dotenv(name) do
-    case File.read(Path.join(Visor.Tools.workspace(), ".env")) do
+    case File.read(Path.join(Visor.Workspace.root(), ".env")) do
       {:ok, contents} ->
         contents
         |> String.split("\n")
