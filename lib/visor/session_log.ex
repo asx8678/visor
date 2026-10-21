@@ -9,10 +9,28 @@ defmodule Visor.SessionLog do
   opened and closed again leaves nothing behind.
 
   A line holds the local time (`at`), the milliseconds since the session
-  started (`elapsed_ms`) and the `event`: prompts, model turns and their
-  replies, tool calls and their results, script calls, status changes and
-  notes. Long text is cut at #{64 * 1024} characters. Stream progress is
-  kept to one line every few seconds per turn.
+  started (`elapsed_ms`) and the `event`. Nothing is cut. The events:
+
+    * `start`: the provider, model, endpoint and versions;
+    * `user`: a prompt, numbered;
+    * `turn_start`, `turn_end`: each model call, with its step out of the
+      prompt's limit, timing, token usage, and the reasoning, reply and
+      tool calls in full;
+    * `request`, `response`: the request exactly as sent and what came
+      back (status, headers, an error's body). A request's messages are
+      the whole conversation, so a request writes only the messages the
+      one before it didn't have, from index `messages_from`, and its tools
+      only when they change; `mix visor.log ID --request N` puts it back
+      together;
+    * `tool_start`, `tool_end`: each tool call and the result the model saw;
+    * `code_call`: each `V` call of a script, with its full arguments and
+      the value it returned (`returned`); `script_end`: the script's whole
+      output and value before they were cut for the model;
+    * `prompt_end`: how a prompt ended (`reason`) and what it used: model
+      calls, tool and `V` calls, errors, tokens, time; `summary`: the same
+      for the whole session, before its last line;
+    * `stream` (one line every few seconds per turn), `status`, `note`,
+      `settings` and `context`.
 
   The log runs beside its session rather than inside it, so a bug here
   never stops an agent, and an agent crash shows up in the log instead of
@@ -30,10 +48,26 @@ defmodule Visor.SessionLog do
   alias Visor.{Agent, Harness, Model}
 
   @supervisor Visor.SessionLogs
-  @max_chars 64 * 1024
   @stream_every_ms 5_000
   @tick_ms 10_000
   @stall_after_ms 30_000
+
+  # What a prompt, and the whole session, used.
+  @totals %{
+    turns: 0,
+    tool_calls: 0,
+    tool_errors: 0,
+    v_calls: 0,
+    v_errors: 0,
+    errors: 0,
+    prompt_tokens: 0,
+    cached_tokens: 0,
+    completion_tokens: 0,
+    reasoning_tokens: 0,
+    model_ms: 0,
+    tool_ms: 0,
+    request_bytes: 0
+  }
 
   @doc "The directory session logs go to, or `nil` when logging is off."
   def dir do
@@ -102,7 +136,16 @@ defmodule Visor.SessionLog do
         tick_ms: Keyword.get(opts, :tick_ms, @tick_ms),
         stall_after_ms: Keyword.get(opts, :stall_after_ms, @stall_after_ms),
         # The first line, until the first event writes it.
-        pending_start: nil
+        pending_start: nil,
+        # The running prompt (its number, start and totals), the session's
+        # totals and how its prompts ended.
+        prompt: nil,
+        prompts: 0,
+        totals: @totals,
+        endings: %{},
+        # The last request's messages and tools, so the next request writes
+        # only what is new.
+        last_request: nil
       }
 
       provider = Model.current().info()
@@ -113,8 +156,15 @@ defmodule Visor.SessionLog do
           provider: provider.provider,
           model: provider.model,
           endpoint: provider.endpoint,
+          max_tokens: provider.max_tokens,
+          context_window: provider.context_window,
+          key_from: provider.key,
           workspace: Visor.Tools.workspace(),
-          owner: owner
+          owner: owner,
+          node: node(),
+          elixir: System.version(),
+          otp: System.otp_release(),
+          visor: to_string(Application.spec(:visor, :vsn))
         })
 
       state = %{state | pending_start: start}
@@ -132,14 +182,8 @@ defmodule Visor.SessionLog do
   @impl true
   def handle_info({:agent, event}, state) do
     state = %{started(watch_agent(state)) | last_event: now(), stall_logged: nil}
-
-    try do
-      {:noreply, record(event, track(event, state))}
-    rescue
-      error ->
-        write(state, "unrecorded", %{term: event, error: Exception.message(error)})
-        {:noreply, state}
-    end
+    state = safely(state, event, &tally(track(event, &1), event))
+    {:noreply, safely(state, event, &record(event, &1))}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{owner_ref: ref} = state) do
@@ -167,8 +211,14 @@ defmodule Visor.SessionLog do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{session_ref: ref} = state) do
-    if state.pending_start == nil,
-      do: write(state, "stop", %{reason: reason, status: state.status})
+    state =
+      if state.pending_start == nil do
+        state = summarize(state, :session_stopped)
+        write(state, "stop", %{reason: reason, status: state.status})
+        state
+      else
+        state
+      end
 
     {:stop, :normal, state}
   end
@@ -188,6 +238,7 @@ defmodule Visor.SessionLog do
       running: running_labels(state)
     })
 
+    state = end_prompt(state, :agent_crashed, nil)
     {:noreply, %{state | agent: nil, status: :idle, running: %{}}}
   end
 
@@ -199,8 +250,20 @@ defmodule Visor.SessionLog do
   def terminate(reason, state) do
     # A session that stops on its own writes `stop` from its :DOWN; this
     # covers the log itself being shut down first, as at server shutdown.
-    if reason != :normal and state.pending_start == nil,
-      do: write(state, "log_stop", %{reason: reason, status: state.status})
+    if reason != :normal and state.pending_start == nil do
+      state = summarize(state, :log_stopped)
+      write(state, "log_stop", %{reason: reason, status: state.status})
+    end
+  end
+
+  # A bug in handling an event costs that event's line or counts, not
+  # the log.
+  defp safely(state, event, fun) do
+    fun.(state)
+  rescue
+    error ->
+      write(state, "unrecorded", %{term: event, error: Exception.message(error)})
+      state
   end
 
   defp started(%{pending_start: nil} = state), do: state
@@ -231,11 +294,80 @@ defmodule Visor.SessionLog do
 
   defp track(_event, state), do: state
 
-  defp record({:user, text}, state), do: logged(state, "user", %{text: text})
+  # Counts what the running prompt and the session use.
+  defp tally(state, {:user, _text}) do
+    n = state.prompts + 1
+    %{state | prompts: n, prompt: %{n: n, started: now(), totals: @totals}}
+  end
+
+  defp tally(state, event), do: add(state, counts(event))
+
+  defp add(state, counts) when counts == %{}, do: state
+
+  defp add(state, counts) do
+    sum = &Map.merge(&1, counts, fn _key, a, b -> a + b end)
+    prompt = state.prompt && %{state.prompt | totals: sum.(state.prompt.totals)}
+    %{state | totals: sum.(state.totals), prompt: prompt}
+  end
+
+  defp counts({:turn_start, _info}), do: %{turns: 1}
+
+  defp counts({:turn_end, info}) do
+    usage = Map.get(info, :usage) || %{}
+    details = usage["completion_tokens_details"] || %{}
+
+    %{
+      prompt_tokens: whole(usage["prompt_tokens"]),
+      cached_tokens: whole(usage["prompt_cache_hit_tokens"]),
+      completion_tokens: whole(usage["completion_tokens"]),
+      reasoning_tokens: whole(details["reasoning_tokens"]),
+      model_ms: whole(Map.get(info, :ms))
+    }
+  end
+
+  defp counts({:tool_start, _call}), do: %{tool_calls: 1}
+
+  defp counts({:tool_end, call}),
+    do: %{tool_errors: error(call.status), tool_ms: whole(Map.get(call, :ms))}
+
+  defp counts({:code_call, _call_id, %{status: :running}}), do: %{}
+  defp counts({:code_call, _call_id, call}), do: %{v_calls: 1, v_errors: error(call.status)}
+  defp counts({:note, :error, _text}), do: %{errors: 1}
+  defp counts(_event), do: %{}
+
+  defp error(:error), do: 1
+  defp error(_status), do: 0
+
+  defp whole(n) when is_integer(n), do: n
+  defp whole(_other), do: 0
+
+  # Writes the running prompt's totals and how it ended.
+  defp end_prompt(%{prompt: nil} = state, _reason, _steps), do: state
+
+  defp end_prompt(state, reason, steps) do
+    %{n: n, started: started, totals: totals} = state.prompt
+    fields = %{prompt: n, reason: reason, steps: steps, ms: now() - started}
+    write(state, "prompt_end", Map.merge(totals, fields))
+    %{state | prompt: nil, endings: Map.update(state.endings, to_string(reason), 1, &(&1 + 1))}
+  end
+
+  # The session's totals, before its last line. A prompt still running
+  # ends with the session.
+  defp summarize(state, reason) do
+    state = end_prompt(state, reason, nil)
+    fields = %{prompts: state.prompts, endings: state.endings, ms: now() - state.started}
+    write(state, "summary", Map.merge(state.totals, fields))
+    state
+  end
+
+  defp record({:user, text}, state),
+    do: logged(state, "user", %{prompt: state.prompt.n, text: text})
 
   defp record({:turn_start, info}, state) do
     logged(state, "turn_start", %{
       turn: info.turn,
+      step: Map.get(info, :step),
+      max_steps: Map.get(info, :max_steps),
       model: info.provider[:model],
       effort: info.effort,
       thinking: info.thinking,
@@ -306,10 +438,45 @@ defmodule Visor.SessionLog do
   defp record({:context, messages}, state),
     do: logged(state, "context", %{messages: messages})
 
-  # The request preview repeats what turn_start and the earlier lines hold.
+  # The console's short preview; the request as sent follows.
   defp record({:request, _turn, _preview}, state), do: state
 
+  defp record({:wire_request, turn, %{url: url, body: body}}, state) do
+    {messages, params} = Map.pop(body, :messages, [])
+    {tools, params} = Map.pop(params, :tools)
+    last = state.last_request || %{messages: [], tools: nil, tools_turn: nil}
+    from = if prefix?(last.messages, messages), do: length(last.messages), else: 0
+    same_tools? = last.tools_turn != nil and last.tools == tools
+    bytes = body |> Jason.encode_to_iodata!() |> IO.iodata_length()
+
+    write(state, "request", %{
+      turn: turn,
+      url: url,
+      bytes: bytes,
+      params: params,
+      messages_total: length(messages),
+      messages_from: from,
+      messages: Enum.drop(messages, from),
+      tools: if(same_tools?, do: "same as turn #{last.tools_turn}", else: tools)
+    })
+
+    tools_turn = if same_tools?, do: last.tools_turn, else: turn
+    last_request = %{messages: messages, tools: tools, tools_turn: tools_turn}
+    add(%{state | last_request: last_request}, %{request_bytes: bytes})
+  end
+
+  defp record({:wire_response, turn, info}, state),
+    do: logged(state, "response", Map.put(info, :turn, turn))
+
+  defp record({:script_end, call_id, info}, state),
+    do: logged(state, "script_end", Map.put(info, :call_id, call_id))
+
+  defp record({:prompt_end, info}, state),
+    do: end_prompt(state, info.reason, Map.get(info, :steps))
+
   defp record(event, state), do: logged(state, "event", %{term: event})
+
+  defp prefix?(prefix, list), do: Enum.take(list, length(prefix)) == prefix
 
   defp logged(state, event, fields) do
     write(state, event, fields)
@@ -404,32 +571,25 @@ defmodule Visor.SessionLog do
 
   @doc false
   # Turns any term into something JSON can hold: maps and lists keep their
-  # shape, long text is cut, and pids, tuples and the like are inspected.
+  # shape, and pids, tuples and the like are inspected in full.
   def json(%NaiveDateTime{} = time), do: NaiveDateTime.to_iso8601(time)
-  def json(%_{} = struct), do: inspect(struct, limit: 50)
+  def json(%_{} = struct), do: inspect(struct, limit: :infinity, printable_limit: :infinity)
   def json(map) when is_map(map), do: Map.new(map, fn {k, v} -> {key(k), json(v)} end)
   def json(list) when is_list(list), do: Enum.map(list, &json/1)
   def json(value) when is_binary(value), do: text(value)
   def json(value) when is_number(value) or is_boolean(value) or is_nil(value), do: value
   def json(value) when is_atom(value), do: Atom.to_string(value)
-  def json(value), do: inspect(value, limit: 50)
+  def json(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
 
   defp key(key) when is_binary(key), do: key
   defp key(key) when is_atom(key), do: Atom.to_string(key)
   defp key(key), do: inspect(key)
 
+  # Bytes that aren't UTF-8 text are written as an Elixir binary.
   defp text(value) do
-    cond do
-      not String.valid?(value) ->
-        inspect(value, limit: 50, printable_limit: @max_chars)
-
-      byte_size(value) > @max_chars and String.length(value) > @max_chars ->
-        cut = String.length(value) - @max_chars
-        String.slice(value, 0, @max_chars) <> "… [#{cut} more characters cut]"
-
-      true ->
-        value
-    end
+    if String.valid?(value),
+      do: value,
+      else: inspect(value, limit: :infinity, printable_limit: :infinity)
   end
 
   # Local time to the millisecond, to line up with the server log.

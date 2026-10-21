@@ -5,17 +5,50 @@ defmodule Mix.Tasks.Visor.LogTest do
 
   @moduletag :tmp_dir
 
+  @totals %{
+    turns: 1,
+    tool_calls: 1,
+    tool_errors: 0,
+    v_calls: 1,
+    v_errors: 0,
+    errors: 0,
+    prompt_tokens: 12_345,
+    cached_tokens: 9000,
+    completion_tokens: 678,
+    reasoning_tokens: 0,
+    model_ms: 6400,
+    tool_ms: 0,
+    request_bytes: 2048
+  }
+
   @events [
     %{event: "start", session: "abc123", provider: "DeepSeek", model: "flash", workspace: "/w"},
-    %{event: "user", text: "make a website"},
+    %{event: "user", prompt: 1, text: "make a website"},
     %{
       event: "turn_start",
       turn: 1,
       messages: 1,
       effort: "high",
       thinking: true,
-      pid: "#PID<0.1.0>"
+      pid: "#PID<0.1.0>",
+      step: 1,
+      max_steps: 24
     },
+    %{
+      event: "request",
+      turn: 1,
+      url: "https://gw.test/v1/chat/completions",
+      bytes: 2048,
+      params: %{model: "flash", stream: true},
+      messages_total: 2,
+      messages_from: 0,
+      messages: [
+        %{role: "system", content: "Be brief."},
+        %{role: "user", content: "make a website"}
+      ],
+      tools: [%{type: "function", function: %{name: "elixir"}}]
+    },
+    %{event: "response", turn: 1, status: 200, headers: %{"x-request-id" => ["r1"]}},
     %{
       event: "turn_end",
       turn: 1,
@@ -37,6 +70,8 @@ defmodule Mix.Tasks.Visor.LogTest do
       status: "tools",
       running: ["tool elixir c1"]
     },
+    Map.merge(@totals, %{event: "prompt_end", prompt: 1, reason: "session_stopped", ms: 8000}),
+    Map.merge(@totals, %{event: "summary", prompts: 1, endings: %{session_stopped: 1}, ms: 9000}),
     %{event: "stop", reason: "shutdown", status: "tools"}
   ]
 
@@ -67,15 +102,16 @@ defmodule Mix.Tasks.Visor.LogTest do
     Log.run(["--dir", dir])
 
     assert output() =~
-             "2026-10-21T19:03:10  abc123  1 prompt, 1 turn, 1 tool call  " <>
-               "page closed or reloaded while tools"
+             "2026-10-21T19:03:10  abc123  1 prompt, 1 turn, 1 tool call, 12,345 tokens in, " <>
+               "678 out, 13s  page closed or reloaded while tools"
   end
 
   test "prints a session as a timeline", %{tmp_dir: dir} do
     Log.run(["abc123", "--dir", dir])
     out = output()
 
-    assert out =~ "19:03:11     +1.0s  prompt\n" <> String.duplicate(" ", 20) <> "make a website"
+    assert out =~
+             "19:03:11     +1.0s  prompt 1\n" <> String.duplicate(" ", 20) <> "make a website"
 
     assert out =~
              "tool_calls after 6.4s (first token 1.2s), 12,345 tokens in (9,000 cached), 678 out"
@@ -90,7 +126,74 @@ defmodule Mix.Tasks.Visor.LogTest do
              "PAGE    The console page closed or reloaded while the session was busy (tools)."
 
     assert out =~ "running: tool elixir c1"
+
+    assert out =~
+             "turn 1  model call with 1 message, step 1 of 24, thinking on, effort high"
+
+    assert out =~
+             "request POST https://gw.test/v1/chat/completions, 2 messages (2 new), 2,048 bytes"
+
+    assert out =~ "response HTTP 200"
+    assert out =~ "done    prompt 1 unfinished when the session stopped after 8.0s"
+
+    assert out =~
+             "1 model call, 1 tool call, 1 V call, 0 errors, 12,345 tokens in (9,000 cached), " <>
+               "678 out, model 6.4s, tools 0.0s, 2,048 bytes sent"
+
+    assert out =~ "summary 1 prompt (1 session_stopped) in 9.0s"
     assert out =~ "stop    session stopped (shutdown)"
+  end
+
+  test "puts a request back together from the lines that hold its parts", %{tmp_dir: dir} do
+    system = %{"role" => "system", "content" => "Be brief."}
+    tools = [%{"type" => "function", "function" => %{"name" => "elixir"}}]
+    params = %{"model" => "flash", "stream" => true}
+
+    requests = [
+      # The first request, then one that adds a reply and a tool result,
+      # then one after the conversation was cleared.
+      {1, 0, [system, %{"role" => "user", "content" => "hi"}], tools},
+      {2, 2, [%{"role" => "assistant", "content" => "A"}, %{"role" => "tool", "content" => "B"}],
+       "same as turn 1"},
+      {3, 0, [system, %{"role" => "user", "content" => "again"}], "same as turn 1"}
+    ]
+
+    lines =
+      for {turn, from, messages, tools} <- requests do
+        Jason.encode!(%{
+          event: "request",
+          turn: turn,
+          params: params,
+          messages_from: from,
+          messages_total: from + length(messages),
+          messages: messages,
+          tools: tools
+        })
+      end
+
+    File.write!(Path.join(dir, "2026-10-21T190400-def456.jsonl"), Enum.join(lines, "\n") <> "\n")
+
+    Log.run(["def456", "--dir", dir, "--request", "2"])
+
+    assert Jason.decode!(output()) ==
+             Map.merge(params, %{
+               "messages" => [
+                 system,
+                 %{"role" => "user", "content" => "hi"},
+                 %{"role" => "assistant", "content" => "A"},
+                 %{"role" => "tool", "content" => "B"}
+               ],
+               "tools" => tools
+             })
+
+    Log.run(["def456", "--dir", dir, "--request", "3"])
+
+    assert %{"messages" => [^system, %{"content" => "again"}], "tools" => ^tools} =
+             Jason.decode!(output())
+
+    assert_raise Mix.Error, "No request for model call 9 in this log.", fn ->
+      Log.run(["def456", "--dir", dir, "--request", "9"])
+    end
   end
 
   test "reads the latest session", %{tmp_dir: dir} do

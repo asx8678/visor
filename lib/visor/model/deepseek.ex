@@ -52,13 +52,17 @@ defmodule Visor.Model.DeepSeek do
   end
 
   defp do_stream(key, request, emit) do
+    url = base_url() <> "/chat/completions"
+    body = body(request)
+    # Before sending, so a request that hangs or is rejected is on record.
+    emit.({:request, %{url: url, body: body}})
     started = now()
 
     result =
       Req.post(
-        base_url() <> "/chat/completions",
+        url,
         [
-          json: body(request),
+          json: body,
           auth: {:bearer, key},
           # Thinking at high effort can stay silent for a long time.
           receive_timeout: 600_000,
@@ -66,6 +70,8 @@ defmodule Visor.Model.DeepSeek do
           into: fn {:data, data}, {req, resp} -> {:cont, {req, handle_data(resp, data, emit)}} end
         ] ++ Keyword.get(config(), :req_options, [])
       )
+
+    emit.({:response, response_info(result)})
 
     case result do
       {:ok, %Req.Response{status: 200} = resp} ->
@@ -130,6 +136,21 @@ defmodule Visor.Model.DeepSeek do
       Req.Response.get_private(resp, :error_body, "") <> data
     )
   end
+
+  # What came back, for the session log. The key travels in a request
+  # header, which is never part of it.
+  defp response_info({:ok, %Req.Response{status: 200} = resp}),
+    do: %{status: 200, headers: resp.headers}
+
+  defp response_info({:ok, %Req.Response{} = resp}) do
+    %{
+      status: resp.status,
+      headers: resp.headers,
+      body: Req.Response.get_private(resp, :error_body, "")
+    }
+  end
+
+  defp response_info({:error, exception}), do: %{error: Exception.message(exception)}
 
   defp api_error(status, body) do
     detail =

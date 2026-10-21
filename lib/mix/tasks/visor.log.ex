@@ -4,18 +4,24 @@ defmodule Mix.Tasks.Visor.Log do
   @moduledoc """
   Reads the session logs `Visor.SessionLog` writes.
 
-      mix visor.log              # the latest sessions and how each ended
+      mix visor.log              # the latest sessions, what they used and how each ended
       mix visor.log latest       # the latest session as a timeline
       mix visor.log 3fa9c1       # one session by its id
       mix visor.log latest --full
+      mix visor.log 3fa9c1 --request 4
 
   Long replies, scripts and tool results are cut to a few lines unless
-  `--full` is given. `--dir` reads logs from another directory and
-  `--limit` sets how many sessions the list shows (default 15).
+  `--full` is given, which also shows reasoning, status changes, response
+  headers, each script's whole output and the full arguments of `V` calls.
+  `--request N` prints the request of model call N as it was sent: the
+  same content, though not the same key order. The values `V` calls
+  returned are only in the JSON lines (`returned`). `--dir` reads logs
+  from another directory and `--limit` sets how many sessions the list
+  shows (default 15).
   """
   use Mix.Task
 
-  @switches [full: :boolean, dir: :string, limit: :integer]
+  @switches [full: :boolean, dir: :string, limit: :integer, request: :integer]
   @preview_chars 700
   @preview_lines 14
 
@@ -29,10 +35,40 @@ defmodule Mix.Tasks.Visor.Log do
 
     case rest do
       [] -> list(files, dir, opts[:limit] || 15)
-      ["latest"] -> timeline(List.last(files) || Mix.raise("No session logs in #{dir}."), opts)
-      [id] -> timeline(find(files, id), opts)
-      _ -> Mix.raise("Usage: mix visor.log [latest | ID] [--full] [--dir DIR] [--limit N]")
+      ["latest"] -> show(List.last(files) || Mix.raise("No session logs in #{dir}."), opts)
+      [id] -> show(find(files, id), opts)
+      _ -> Mix.raise("Usage: mix visor.log [latest | ID] [--full | --request N] [--dir DIR]")
     end
+  end
+
+  defp show(file, opts) do
+    if turn = opts[:request],
+      do: Mix.shell().info(Jason.encode!(request(read(file), turn), pretty: true)),
+      else: timeline(file, opts)
+  end
+
+  # A request put back together: its own line has the messages the one
+  # before it didn't, and the tools when they changed.
+  defp request(events, turn) do
+    requests = for %{"event" => "request"} = event <- events, do: event
+
+    # After an agent crash, turns count from 1 again; the latest wins.
+    last =
+      Enum.find_index(Enum.reverse(requests), &(&1["turn"] == turn)) ||
+        Mix.raise("No request for model call #{turn} in this log.")
+
+    requests = Enum.take(requests, length(requests) - last)
+
+    messages =
+      Enum.reduce(requests, [], fn r, messages ->
+        Enum.take(messages, r["messages_from"]) ++ r["messages"]
+      end)
+
+    tools =
+      requests |> Enum.reverse() |> Enum.find_value(&if(is_list(&1["tools"]), do: &1["tools"]))
+
+    body = Map.put(List.last(requests)["params"], "messages", messages)
+    if tools, do: Map.put(body, "tools", tools), else: body
   end
 
   defp find(files, id) do
@@ -52,14 +88,19 @@ defmodule Mix.Tasks.Visor.Log do
       prompts = Enum.count(events, &(&1["event"] == "user"))
       turns = Enum.count(events, &(&1["event"] == "turn_start"))
       tools = Enum.count(events, &(&1["event"] == "tool_start"))
+      usage = for %{"event" => "turn_end", "usage" => %{} = usage} <- events, do: usage
+      tokens_in = usage |> Enum.map(&(&1["prompt_tokens"] || 0)) |> Enum.sum()
+      tokens_out = usage |> Enum.map(&(&1["completion_tokens"] || 0)) |> Enum.sum()
+      took = events |> List.last(%{}) |> Map.get("elapsed_ms")
 
       Mix.shell().info(
         "#{started}  #{id}  #{count(prompts, "prompt")}, #{count(turns, "turn")}, " <>
-          "#{count(tools, "tool call")}  #{ending(events)}"
+          "#{count(tools, "tool call")}, #{number(tokens_in)} tokens in, " <>
+          "#{number(tokens_out)} out, #{seconds(took)}  #{ending(events)}"
       )
     end
 
-    Mix.shell().info("\nRead one with: mix visor.log ID")
+    Mix.shell().info("\nRead one with: mix visor.log ID, or ID --request N for a request as sent")
   end
 
   defp count(1, noun), do: "1 #{noun}"
@@ -130,14 +171,69 @@ defmodule Mix.Tasks.Visor.Log do
     ["session #{e["session"]} started, #{e["provider"]} #{e["model"]}, in #{e["workspace"]}"]
   end
 
-  defp describe(%{"event" => "user"} = e, opts), do: ["prompt" | preview(e["text"], opts)]
+  defp describe(%{"event" => "user"} = e, opts) do
+    n = if e["prompt"], do: " #{e["prompt"]}", else: ""
+    ["prompt#{n}" | preview(e["text"], opts)]
+  end
 
   defp describe(%{"event" => "turn_start"} = e, _opts) do
     thinking = if e["thinking"], do: "thinking on, effort #{e["effort"]}", else: "thinking off"
+    step = if e["step"], do: "step #{e["step"]} of #{e["max_steps"]}, ", else: ""
 
     [
-      "turn #{e["turn"]}  model call with #{count(e["messages"], "message")}, #{thinking} " <>
-        "#{e["pid"]}"
+      "turn #{e["turn"]}  model call with #{count(e["messages"], "message")}, #{step}" <>
+        "#{thinking} #{e["pid"]}"
+    ]
+  end
+
+  defp describe(%{"event" => "request"} = e, _opts) do
+    new = e["messages_total"] - e["messages_from"]
+
+    [
+      "turn #{e["turn"]}  request POST #{e["url"]}, #{count(e["messages_total"], "message")} " <>
+        "(#{number(new)} new), #{number(e["bytes"])} bytes"
+    ]
+  end
+
+  defp describe(%{"event" => "response", "error" => error} = e, _opts),
+    do: ["turn #{e["turn"]}  response: request failed: #{error}"]
+
+  defp describe(%{"event" => "response"} = e, opts) do
+    headers =
+      if opts[:full],
+        do:
+          for(
+            {name, values} <- e["headers"] || %{},
+            do: "#{name}: #{Enum.join(List.wrap(values), ", ")}"
+          ),
+        else: []
+
+    ["turn #{e["turn"]}  response HTTP #{e["status"]}" | headers ++ preview(e["body"], opts)]
+  end
+
+  defp describe(%{"event" => "script_end"} = e, opts) do
+    if opts[:full] do
+      printed =
+        if e["stdio"] not in [nil, ""], do: ["printed:" | preview(e["stdio"], opts)], else: []
+
+      value = if e["value"], do: ["value:" | preview(e["value"], opts)], else: []
+      error = if e["message"], do: ["#{e["type"]}:" | preview(e["message"], opts)], else: []
+      ["script  #{e["call_id"]} #{e["status"]}, whole output" | printed ++ value ++ error]
+    else
+      []
+    end
+  end
+
+  defp describe(%{"event" => "prompt_end"} = e, _opts) do
+    ["done    prompt #{e["prompt"]} #{reason(e)} after #{seconds(e["ms"])}", totals(e)]
+  end
+
+  defp describe(%{"event" => "summary"} = e, _opts) do
+    endings = Enum.map_join(e["endings"] || %{}, ", ", fn {reason, n} -> "#{n} #{reason}" end)
+
+    [
+      "summary #{count(e["prompts"], "prompt")} (#{endings}) in #{seconds(e["ms"])}",
+      totals(e)
     ]
   end
 
@@ -189,10 +285,23 @@ defmodule Mix.Tasks.Visor.Log do
     ["tool    #{e["name"]} #{e["id"]} #{e["status"]}#{ms}" | preview(e["result"], opts)]
   end
 
-  defp describe(%{"event" => "code_call"} = e, _opts) do
+  defp describe(%{"event" => "code_call"} = e, opts) do
     ms = if e["ms"], do: " #{e["ms"]} ms", else: ""
     error = if e["error"], do: ": #{e["error"]}", else: ""
-    ["  V     #{e["text"]} #{e["status"]}#{ms}#{error}"]
+
+    # The call's text cuts long arguments; --full shows them whole.
+    args =
+      if opts[:full],
+        do:
+          for(
+            {arg, i} <- Enum.with_index(e["args"] || [], 1),
+            is_binary(arg) and (String.length(arg) > 60 or String.contains?(arg, "\n")),
+            line <- ["argument #{i}:" | preview(arg, opts)],
+            do: line
+          ),
+        else: []
+
+    ["  V     #{e["text"]} #{e["status"]}#{ms}#{error}" | args]
   end
 
   defp describe(%{"event" => "status"} = e, opts),
@@ -234,6 +343,33 @@ defmodule Mix.Tasks.Visor.Log do
   defp describe(e, _opts), do: ["#{e["event"]}  #{inspect(Map.drop(e, ["at", "ms", "event"]))}"]
 
   defp running(labels), do: "running: " <> Enum.join(labels, ", ")
+
+  defp reason(%{"reason" => "answered"}), do: "answered"
+  defp reason(%{"reason" => "step_limit"}), do: "stopped at the limit of model calls"
+  defp reason(%{"reason" => "max_tokens"}), do: "cut off at max_tokens"
+  defp reason(%{"reason" => "interrupted"}), do: "interrupted"
+  defp reason(%{"reason" => "model_error"}), do: "ended by a model error"
+  defp reason(%{"reason" => "model_crashed"}), do: "ended by a model call crash"
+  defp reason(%{"reason" => "unfinished"}), do: "ended with the model unfinished"
+  defp reason(%{"reason" => "agent_crashed"}), do: "ended by an agent crash"
+  defp reason(%{"reason" => "session_stopped"}), do: "unfinished when the session stopped"
+  defp reason(%{"reason" => "log_stopped"}), do: "unfinished when the server stopped"
+  defp reason(%{"reason" => other}), do: "ended: #{other}"
+
+  # What a prompt or a session used.
+  defp totals(e) do
+    failed = fn n -> if n > 0, do: " (#{number(n)} failed)", else: "" end
+    cached = if e["cached_tokens"] > 0, do: " (#{number(e["cached_tokens"])} cached)", else: ""
+
+    reasoning =
+      if e["reasoning_tokens"] > 0, do: " (#{number(e["reasoning_tokens"])} reasoning)", else: ""
+
+    "#{count(e["turns"], "model call")}, #{count(e["tool_calls"], "tool call")}" <>
+      "#{failed.(e["tool_errors"])}, #{count(e["v_calls"], "V call")}#{failed.(e["v_errors"])}, " <>
+      "#{count(e["errors"], "error")}, #{number(e["prompt_tokens"])} tokens in#{cached}, " <>
+      "#{number(e["completion_tokens"])} out#{reasoning}, model #{seconds(e["model_ms"])}, " <>
+      "tools #{seconds(e["tool_ms"])}, #{number(e["request_bytes"])} bytes sent"
+  end
 
   # Tool arguments are a JSON string; a script reads better as its code.
   defp arguments(text) when is_binary(text) do

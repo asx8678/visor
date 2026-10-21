@@ -104,4 +104,53 @@ defmodule Visor.Model.DeepSeekTest do
     refute Map.has_key?(body, "reasoning_effort")
     assert DeepSeek.info().max_tokens == nil
   end
+
+  test "emits the request as sent and the response, for the session log", %{tmp_dir: dir} do
+    File.write!(Path.join(dir, ".env"), "DEEPSEEK_API_KEY=sk-test\n")
+
+    Req.Test.stub(DeepSeek, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(self(), {:sent, Jason.decode!(body)})
+
+      conn
+      |> Plug.Conn.put_resp_header("x-request-id", "r1")
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.send_resp(
+        200,
+        sse([%{"choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]}])
+      )
+    end)
+
+    request = %{
+      system: "Be brief.",
+      messages: [%{"role" => "user", "content" => "hi"}],
+      tools: [],
+      effort: "high",
+      thinking: true
+    }
+
+    test = self()
+    emit = &send(test, {:emitted, &1})
+
+    assert {:ok, _result} = DeepSeek.stream(request, emit)
+    assert_received {:sent, sent}
+
+    assert_received {:emitted,
+                     {:request, %{url: "https://api.deepseek.com/chat/completions", body: body}}}
+
+    assert body |> Jason.encode!() |> Jason.decode!() == sent
+    refute inspect(body) =~ "sk-test"
+    assert_received {:emitted, {:response, %{status: 200, headers: %{"x-request-id" => ["r1"]}}}}
+
+    Req.Test.stub(DeepSeek, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(400, ~s|{"error":{"message":"bad request"}}|)
+    end)
+
+    assert {:error, "DeepSeek returned HTTP 400. bad request"} = DeepSeek.stream(request, emit)
+
+    assert_received {:emitted,
+                     {:response, %{status: 400, body: ~s|{"error":{"message":"bad request"}}|}}}
+  end
 end

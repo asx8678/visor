@@ -43,7 +43,32 @@ defmodule Visor.Code do
     # V.__begin__/0 finds this context and names the script's processes.
     Process.put(__MODULE__, Map.put(context, :runner, self()))
     result = Dune.eval_string("V.__begin__(); " <> code, @opts)
+    log_script(context, result)
     Feedback.Script.render(result, calls(), &Feedback.keep(context[:session], &1))
+  end
+
+  # The script's whole output and value, before the summary for the model
+  # cuts them, for the session log.
+  defp log_script(%{session: session, call_id: call_id}, result) do
+    Phoenix.PubSub.broadcast(
+      Visor.PubSub,
+      Agent.topic(session),
+      {:agent, {:script_end, call_id, script_info(result)}}
+    )
+  end
+
+  defp log_script(_context, _result), do: :ok
+
+  defp script_info(%Dune.Success{} = success) do
+    %{
+      status: :ok,
+      stdio: success.stdio,
+      value: Feedback.Script.inspected(success, :infinity, :infinity)
+    }
+  end
+
+  defp script_info(failure) do
+    %{status: :error, type: failure.type, message: failure.message, stdio: failure.stdio}
   end
 
   # The script's V calls, each as its last report. The script sent them

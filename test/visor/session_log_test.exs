@@ -30,6 +30,19 @@ defmodule Visor.SessionLogTest do
     %{id: id, owner: owner, session: session, log: log, path: SessionLog.path(id)}
   end
 
+  defp turn_start(turn) do
+    %{
+      turn: turn,
+      step: turn,
+      max_steps: 24,
+      provider: %{model: "flash"},
+      effort: "high",
+      thinking: true,
+      messages: turn,
+      pid: self()
+    }
+  end
+
   # Stops a process the test started and waits until it is gone.
   defp stop(pid) do
     ref = Process.monitor(pid)
@@ -61,12 +74,19 @@ defmodule Visor.SessionLogTest do
     names = Enum.map(events, & &1["event"])
 
     assert hd(names) == "start"
-    assert Enum.take(names, -2) == ["owner_down", "stop"]
+    assert Enum.take(names, -3) == ["owner_down", "summary", "stop"]
 
-    for name <- ~w(user turn_start stream turn_end tool_start tool_end status context),
+    for name <- ~w(user turn_start stream turn_end tool_start tool_end status context prompt_end),
         do: assert(name in names, "no #{name} line")
 
-    assert %{"text" => "list the files"} = find(events, "user")
+    assert %{"text" => "list the files", "prompt" => 1} = find(events, "user")
+    assert %{"step" => 1, "max_steps" => 24} = find(events, "turn_start")
+
+    assert %{"prompt" => 1, "reason" => "answered", "steps" => 2, "turns" => 2, "tool_calls" => 1} =
+             find(events, "prompt_end")
+
+    assert %{"prompts" => 1, "endings" => %{"answered" => 1}, "turns" => 2} =
+             find(events, "summary")
 
     assert %{"name" => "list_dir", "status" => "ok", "result" => listing} =
              find(events, "tool_end")
@@ -100,7 +120,9 @@ defmodule Visor.SessionLogTest do
     assert_receive {:DOWN, ^ref, :process, ^log, :normal}
 
     events = events(path)
-    assert events |> Enum.map(& &1["event"]) |> Enum.take(-2) == ["owner_down", "stop"]
+
+    assert events |> Enum.map(& &1["event"]) |> Enum.take(-3) ==
+             ["owner_down", "summary", "stop"]
 
     assert %{"status" => "tools", "running" => ["tool elixir c1"], "text" => text} =
              find(events, "owner_down")
@@ -134,9 +156,9 @@ defmodule Visor.SessionLogTest do
     assert %{"label" => "tool sh c1", "status" => "waiting", "stacktrace" => [_ | _]} = process
   end
 
-  test "keeps logging events JSON can't hold as they are", %{tmp_dir: dir} do
+  test "keeps logging events JSON can't hold as they are, and cuts nothing", %{tmp_dir: dir} do
     %{id: id, log: log, path: path} = start_log(dir)
-    long = String.duplicate("x", 70_000)
+    long = String.duplicate("x", 200_000)
 
     broadcast(id, {:something_new, self(), make_ref(), {:a, 1}, <<255, 0>>})
 
@@ -152,7 +174,115 @@ defmodule Visor.SessionLogTest do
 
     assert %{"term" => term} = find(events, "event")
     assert term =~ "{:something_new, #PID<"
-    assert %{"result" => result} = find(events, "tool_end")
-    assert result == String.duplicate("x", 65_536) <> "… [4464 more characters cut]"
+    assert %{"result" => ^long} = find(events, "tool_end")
+  end
+
+  test "writes each request's new messages, and the response", %{tmp_dir: dir} do
+    %{id: id, log: log, path: path} = start_log(dir)
+    url = "https://gateway.test/v1/chat/completions"
+    params = %{model: "flash", stream: true}
+    tools = [%{type: "function", function: %{name: "elixir"}}]
+    system = %{role: "system", content: "Be brief."}
+    hi = %{"role" => "user", "content" => "hi"}
+    reply = %{"role" => "assistant", "content" => "hello"}
+    again = %{"role" => "user", "content" => "again"}
+
+    request = fn turn, messages ->
+      broadcast(
+        id,
+        {:wire_request, turn,
+         %{url: url, body: Map.merge(params, %{messages: messages, tools: tools})}}
+      )
+    end
+
+    request.(1, [system, hi])
+    broadcast(id, {:wire_response, 1, %{status: 200, headers: %{"x-request-id" => ["r1"]}}})
+    request.(2, [system, hi, reply, again])
+    # After the conversation is cleared, nothing carries over.
+    request.(3, [system, again])
+    broadcast(id, {:wire_response, 3, %{status: 400, headers: %{}, body: ~s|{"error":"bad"}|}})
+    sync(log)
+
+    requests = for %{"event" => "request"} = event <- events(path), do: event
+
+    assert [
+             %{"messages_from" => 0, "messages_total" => 2, "messages" => [_, ^hi]} = first,
+             %{"messages_from" => 2, "messages" => [^reply, ^again], "tools" => "same as turn 1"},
+             %{"messages_from" => 0, "messages" => [_, ^again], "tools" => "same as turn 1"}
+           ] = requests
+
+    assert %{"url" => ^url, "params" => %{"model" => "flash", "stream" => true}} = first
+    assert [%{"function" => %{"name" => "elixir"}}] = first["tools"]
+
+    body = Map.merge(params, %{messages: [system, hi], tools: tools})
+    assert first["bytes"] == byte_size(Jason.encode!(body))
+
+    assert [
+             %{"turn" => 1, "status" => 200, "headers" => %{"x-request-id" => ["r1"]}},
+             %{"turn" => 3, "status" => 400, "body" => ~s|{"error":"bad"}|}
+           ] = for(%{"event" => "response"} = event <- events(path), do: event)
+  end
+
+  test "sums up each prompt and the session", %{tmp_dir: dir} do
+    %{id: id, owner: owner, session: session, log: log, path: path} = start_log(dir)
+    ref = Process.monitor(log)
+
+    usage = %{
+      "prompt_tokens" => 1000,
+      "prompt_cache_hit_tokens" => 800,
+      "completion_tokens" => 50
+    }
+
+    broadcast(id, {:user, "first"})
+    broadcast(id, {:turn_start, turn_start(1)})
+    broadcast(id, {:turn_end, %{turn: 1, finish_reason: "tool_calls", usage: usage, ms: 900}})
+    broadcast(id, {:tool_start, %{id: "c1", name: "elixir", arguments: "{}", pid: self()}})
+    broadcast(id, {:code_call, "c1", %{n: 1, text: ~s|read("a")|, status: :running}})
+    broadcast(id, {:code_call, "c1", %{n: 1, text: ~s|read("a")|, status: :ok, returned: "A"}})
+    broadcast(id, {:code_call, "c1", %{n: 2, text: ~s|read("b")|, status: :error, error: "no"}})
+    broadcast(id, {:tool_end, %{id: "c1", name: "elixir", status: :error, ms: 30, result: "no"}})
+    broadcast(id, {:turn_start, turn_start(2)})
+    broadcast(id, {:turn_end, %{turn: 2, finish_reason: "stop", usage: usage, ms: 600}})
+    broadcast(id, {:prompt_end, %{reason: :answered, steps: 2}})
+
+    # A second prompt still running when the session stops.
+    broadcast(id, {:user, "second"})
+    broadcast(id, {:note, :error, "DeepSeek returned HTTP 500."})
+    stop(owner)
+    sync(log)
+    stop(session)
+    assert_receive {:DOWN, ^ref, :process, ^log, :normal}
+
+    events = events(path)
+
+    assert [first, second] = for(%{"event" => "prompt_end"} = event <- events, do: event)
+
+    assert %{
+             "prompt" => 1,
+             "reason" => "answered",
+             "steps" => 2,
+             "turns" => 2,
+             "tool_calls" => 1,
+             "tool_errors" => 1,
+             "v_calls" => 2,
+             "v_errors" => 1,
+             "errors" => 0,
+             "prompt_tokens" => 2000,
+             "cached_tokens" => 1600,
+             "completion_tokens" => 100,
+             "model_ms" => 1500,
+             "tool_ms" => 30
+           } = first
+
+    assert is_integer(first["ms"])
+    assert %{"prompt" => 2, "reason" => "session_stopped", "turns" => 0, "errors" => 1} = second
+
+    assert %{
+             "prompts" => 2,
+             "endings" => %{"answered" => 1, "session_stopped" => 1},
+             "turns" => 2,
+             "errors" => 1,
+             "prompt_tokens" => 2000
+           } = find(events, "summary")
   end
 end

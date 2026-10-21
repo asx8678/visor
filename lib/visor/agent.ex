@@ -103,7 +103,7 @@ defmodule Visor.Agent do
     Task.shutdown(task, :brutal_kill)
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "interrupted"}})
     note(state, :info, "Stopped. The partial response was discarded.")
-    {:reply, :ok, set_status(%{state | model_task: nil}, :idle)}
+    {:reply, :ok, finish(%{state | model_task: nil}, :interrupted)}
   end
 
   def handle_call(:interrupt, _from, state) when map_size(state.tool_tasks) > 0 do
@@ -125,7 +125,7 @@ defmodule Visor.Agent do
 
     state = append_tool_results(%{state | tool_tasks: %{}, tool_results: results})
     note(state, :info, "Stopped. The running tools were cancelled.")
-    {:reply, :ok, set_status(state, :idle)}
+    {:reply, :ok, finish(state, :interrupted)}
   end
 
   def handle_call(:interrupt, _from, state), do: {:reply, {:error, :idle}, state}
@@ -168,7 +168,7 @@ defmodule Visor.Agent do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{model_task: %Task{ref: ref}} = state) do
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "crashed"}})
     note(state, :error, "The model call crashed: #{Exception.format_exit(reason)}")
-    {:noreply, set_status(%{state | model_task: nil}, :idle)}
+    {:noreply, finish(%{state | model_task: nil}, :model_crashed)}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state)
@@ -193,16 +193,24 @@ defmodule Visor.Agent do
       thinking: state.thinking
     }
 
+    # The request and response as sent and received go to the session
+    # log; the console shows the snapshots.
+    emit = fn
+      {:request, wire} -> broadcast(id, {:wire_request, turn, wire})
+      {:response, wire} -> broadcast(id, {:wire_response, turn, wire})
+      snapshot -> broadcast(id, {:stream, turn, snapshot})
+    end
+
     task =
-      Harness.async(state.tasks, "model turn #{turn}", fn ->
-        provider.stream(request, &broadcast(id, {:stream, turn, &1}))
-      end)
+      Harness.async(state.tasks, "model turn #{turn}", fn -> provider.stream(request, emit) end)
 
     broadcast(
       state,
       {:turn_start,
        %{
          turn: turn,
+         step: state.steps + 1,
+         max_steps: @max_steps,
          provider: info,
          effort: state.effort,
          thinking: state.thinking,
@@ -246,7 +254,7 @@ defmodule Visor.Agent do
           state |> append(result.message) |> run_tools(calls)
 
         {"stop", _calls} ->
-          state |> append(result.message) |> set_status(:idle)
+          state |> append(result.message) |> finish(:answered)
 
         {"length", _calls} ->
           note(
@@ -255,7 +263,7 @@ defmodule Visor.Agent do
             "The response hit the max_tokens limit and was cut off. Its tool calls were not run."
           )
 
-          state |> append(Map.delete(result.message, "tool_calls")) |> set_status(:idle)
+          state |> append(Map.delete(result.message, "tool_calls")) |> finish(:max_tokens)
 
         {reason, _calls} ->
           note(
@@ -264,7 +272,7 @@ defmodule Visor.Agent do
             "The model stopped without finishing (finish_reason: #{reason || "none"})."
           )
 
-          set_status(state, :idle)
+          finish(state, :unfinished)
       end
 
     # The reply, when kept, is now part of the conversation.
@@ -275,7 +283,7 @@ defmodule Visor.Agent do
   defp handle_model_result({:error, message}, state) do
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "error"}})
     note(state, :error, message)
-    set_status(state, :idle)
+    finish(state, :model_error)
   end
 
   @doc false
@@ -334,7 +342,7 @@ defmodule Visor.Agent do
       state.steps >= @max_steps ->
         state = append_tool_results(state)
         note(state, :error, "Stopped after #{@max_steps} model calls for one prompt.")
-        set_status(state, :idle)
+        finish(state, :step_limit)
 
       true ->
         state |> append_tool_results() |> start_turn()
@@ -392,6 +400,12 @@ defmodule Visor.Agent do
       messages: length(state.messages),
       provider: Model.current().info()
     }
+  end
+
+  # Ends the running prompt: the reply came, or why it didn't.
+  defp finish(state, reason) do
+    broadcast(state, {:prompt_end, %{reason: reason, steps: state.steps}})
+    set_status(state, :idle)
   end
 
   defp set_status(state, status) do

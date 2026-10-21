@@ -134,18 +134,23 @@ defmodule Visor.Feedback.Script do
 
   defp value(_failure, _calls, _keep), do: nil
 
+  @doc false
   # Dune inspects with Elixir's default limits, which cut strings at 4 KB
   # and lists at 50 items. Inspect again with room for everything up to
   # the cut, unless the value holds atoms Dune renamed (atoms the script
   # made up), whose names only Dune's own inspect knows.
-  defp inspected(%Dune.Success{value: value, inspected: inspected}) do
+  def inspected(
+        %Dune.Success{value: value, inspected: inspected},
+        limit \\ @max_inspect_items,
+        printable_limit \\ @max_inspect_bytes
+      ) do
     if renamed_atoms?(value) do
       inspected
     else
       inspect(value,
         pretty: true,
-        limit: @max_inspect_items,
-        printable_limit: @max_inspect_bytes,
+        limit: limit,
+        printable_limit: printable_limit,
         custom_options: [sort_maps: true]
       )
     end

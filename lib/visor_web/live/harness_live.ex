@@ -717,7 +717,9 @@ defmodule VisorWeb.HarnessLive do
   defp agent_event({:code_call, call_id, call}, socket) do
     case socket.assigns.code_runs do
       %{^call_id => entry} ->
-        entry = put_code_call(entry, call)
+        # The full arguments and value, such as a file's contents, are for
+        # the session log.
+        entry = put_code_call(entry, Map.drop(call, [:args, :returned]))
 
         socket
         |> assign(:code_runs, Map.put(socket.assigns.code_runs, call_id, entry))
@@ -744,6 +746,9 @@ defmodule VisorWeb.HarnessLive do
       context_messages: settings.messages
     )
   end
+
+  # Events only the session log uses, such as the request as sent.
+  defp agent_event(_event, socket), do: socket
 
   defp tool_entry(call) do
     %{

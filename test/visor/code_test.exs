@@ -158,4 +158,33 @@ defmodule Visor.CodeTest do
     assert_receive {:agent,
                     {:code_call, "c1", %{n: 2, text: ~s|read("lib/app.ex")|, status: :ok}}}
   end
+
+  test "sends the session log each call's whole arguments and value, and the whole output" do
+    %{session: id} = context = session()
+    Agent.subscribe(id)
+    long = String.duplicate("y", 300)
+
+    script =
+      ~s|V.write("lib/long.txt", "#{long}")\n| <>
+        ~S|IO.puts(String.duplicate("z", 10_000)); V.read("lib/app.ex")|
+
+    assert {:ok, summary} = Code.run(script, context)
+
+    assert_receive {:agent,
+                    {:code_call, "c1", %{n: 1, status: :ok, args: ["lib/long.txt", ^long]}}}
+
+    assert_receive {:agent,
+                    {:code_call, "c1", %{n: 2, status: :ok, returned: "defmodule App do" <> _}}}
+
+    assert_receive {:agent, {:script_end, "c1", %{status: :ok, stdio: stdio, value: value}}}
+    assert stdio == String.duplicate("z", 10_000) <> "\n"
+    assert value =~ "defmodule App do"
+    # The model still sees the value, and the printed output cut.
+    assert summary =~ ~s|=> "defmodule App do|
+    assert summary =~ "[cut at"
+
+    assert {:error, _message} = Code.run(~S|V.ls("lib"); {:ok, _} = :error|, context)
+    assert_receive {:agent, {:script_end, "c1", %{status: :error, message: message}}}
+    assert message =~ "MatchError"
+  end
 end

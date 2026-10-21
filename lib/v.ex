@@ -163,13 +163,14 @@ defmodule V do
   # Runs a call and reports it to the console and the script's runner:
   # first as running, then finished. `fun` returns `{:ok, value}`,
   # `{:ok, value, info}` with facts for the script's result, or
-  # `{:error, message}`.
+  # `{:error, message}`. The reports carry the full arguments and the
+  # value returned for the session log; `text` is the short form.
   defp track(name, args, fun) do
     context = Process.get(Code)
     n = Process.get(:visor_calls, 0) + 1
     Process.put(:visor_calls, n)
 
-    call = %{n: n, name: name, text: call_text(name, args), status: :running, ms: nil}
+    call = %{n: n, name: name, text: call_text(name, args), args: args, status: :running, ms: nil}
     Code.report(context, call)
     started = System.monotonic_time(:millisecond)
     result = fun.()
@@ -177,11 +178,11 @@ defmodule V do
 
     case result do
       {:ok, value} ->
-        Code.report(context, %{call | status: :ok})
+        Code.report(context, Map.put(%{call | status: :ok}, :returned, value))
         value
 
       {:ok, value, info} ->
-        Code.report(context, Map.merge(%{call | status: :ok}, info))
+        Code.report(context, Map.merge(%{call | status: :ok}, Map.put(info, :returned, value)))
         value
 
       {:error, message} ->
