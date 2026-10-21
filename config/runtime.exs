@@ -23,19 +23,17 @@ end
 config :visor, VisorWeb.Endpoint, http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
 if config_env() == :dev do
-  # Reload browser tabs when matching files change.
+  # Never reload the page: a console session lives as long as its page, and
+  # the agent edits this project, so a reload would stop it mid-task.
   config :visor, VisorWeb.Endpoint,
     live_reload: [
       web_console_logger: true,
-      patterns: [
-        # Static assets, except user uploads
-        ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
-        # Gettext translations
-        ~r"priv/gettext/.*\.po$"E,
-        # Router, Controllers, LiveViews and LiveComponents
-        ~r"lib/visor_web/router\.ex$"E,
-        ~r"lib/visor_web/(controllers|live|components)/.*\.(ex|heex)$"E
-      ]
+      # Changed Elixir code is compiled and hot-loaded into the running VM,
+      # and open LiveViews re-render in place with their state.
+      notify: [live_view: [~r"lib/.*\.(ex|heex)$"E, ~r"priv/gettext/.*\.po$"E]],
+      # Visor's own stylesheet is swapped in place. New JavaScript waits
+      # for the next page load.
+      patterns: [~r"priv/static/assets/.*\.css$"E]
     ]
 end
 
