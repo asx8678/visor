@@ -114,7 +114,20 @@ defmodule Visor.Code.Allowlist do
   use Dune.Allowlist, extend: Dune.Allowlist.Default
 
   allow V,
-    only: [:__begin__, :ls, :glob, :read, :grep, :write, :edit, :sh, :check, :output, :beam_stats]
+    only: [
+      :__begin__,
+      :ls,
+      :glob,
+      :exists?,
+      :read,
+      :grep,
+      :write,
+      :edit,
+      :sh,
+      :check,
+      :output,
+      :beam_stats
+    ]
 
   allow Path, only: [:join, :basename, :dirname, :extname, :rootname, :split]
 end

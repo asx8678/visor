@@ -82,6 +82,31 @@ defmodule Visor.CodeTest do
     refute message =~ "lib/v.ex"
   end
 
+  test "checks whether a file exists, since a script can't rescue a failed read" do
+    assert {:ok, "ok: 2 calls\n=> {true, false}"} =
+             Code.run(~S|{V.exists?("lib/app.ex"), V.exists?("lib/nope.ex")}|, %{})
+
+    assert {:error, message} = Code.run(~S|V.exists?("../x")|, %{})
+    assert message =~ "../x is outside the project folder."
+  end
+
+  test "greps with a ~r regex, options included, or explains what it takes" do
+    assert {:ok, "ok: 1 call\n=> 2"} =
+             Code.run(~S'V.grep(~r/DEFMODULE/i, "lib") |> length()', %{})
+
+    assert {:error, message} = Code.run(~S|V.grep(:def, "lib")|, %{})
+    assert message =~ "V.grep takes a regex, as a string or ~r//, and a path string, not :def"
+  end
+
+  test "stops a script at 2,000 V calls" do
+    assert {:ok, "ok: 2000 calls\n=> :done"} =
+             Code.run(~S|for _ <- 1..2000, do: V.exists?("lib"); :done|, %{})
+
+    assert {:error, message} = Code.run(~S|for _ <- 1..2001, do: V.exists?("lib"); :done|, %{})
+    assert message =~ "failed after 2000 calls:"
+    assert message =~ "The script made 2000 V calls, the most one script may make."
+  end
+
   test "keeps scripts away from secrets and the rest of the system" do
     assert {:error, message} = Code.run(~S|V.read(".env")|, %{})
     assert message =~ "holds secrets"

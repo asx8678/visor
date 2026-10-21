@@ -36,7 +36,9 @@ defmodule Visor.Tools do
           V.ls(path \\\\ ".")            names in a folder; folders end in /
           V.glob(pattern)               paths matching a wildcard, e.g. V.glob("lib/**/*.ex")
           V.read(path)                  a text file's contents (up to 2 MB)
-          V.grep(regex, path \\\\ ".")    matches as %{file: path, line: n, text: line}
+          V.exists?(path)               whether a file or folder exists
+          V.grep(pattern, path \\\\ ".")  matches of a regex (a string or ~r//) as
+                                        %{file: path, line: n, text: line}
           V.write(path, contents)       write a file, creating folders; returns :ok
           V.edit(path, old, new)        replace the one occurrence of old; returns :ok
           V.sh(command)                 run a shell command; returns %{status: code, output: text}
@@ -53,7 +55,9 @@ defmodule Visor.Tools do
 
         Kernel, Enum, String, Map, List, Keyword, Integer, Regex and Path.join/basename/dirname/\
         extname are available. import, alias, try/rescue, processes, File and System are not. \
-        A failing V call raises and stops the script; its error comes back to you.\
+        A failing V call raises and stops the script; its error comes back to you, so check \
+        with V.exists? before reading a file that may be missing. A script may make up to \
+        2,000 V calls: grep a folder once rather than each file.\
         """,
         %{code: %{type: "string", description: "The Elixir script to run."}},
         ["code"]
@@ -234,16 +238,63 @@ defmodule Visor.Tools do
       # Braces like {..,lib} can still reach outside, so check every match.
       {:ok,
        root
-       |> Path.join(pattern)
-       |> Path.wildcard()
+       |> wildcard(Path.split(pattern))
+       |> Enum.uniq()
+       |> Enum.sort()
        |> Enum.map(&Path.expand/1)
-       |> Enum.filter(&String.starts_with?(&1, root <> "/"))
+       |> Enum.filter(&(inside?(&1, root) and not secret_file?(&1)))
        |> Enum.map(&Path.relative_to(&1, root))
        |> Enum.reject(fn path ->
          Enum.any?(Path.split(path), &(&1 in @skip_dirs or secret?(&1)))
        end)
        |> Enum.take(@max_glob)}
     end
+  end
+
+  # Path.wildcard, except that it walks the folders a ** stands for itself:
+  # Path.wildcard follows symlinked folders, and one that leads to a folder
+  # above it makes the walk loop until the path is too long.
+  defp wildcard(base, parts) do
+    case Enum.split_while(parts, &(&1 != "**")) do
+      {_no_globstar, []} ->
+        Path.wildcard(Path.join([base | parts]))
+
+      {prefix, ["**" | rest]} ->
+        for dir <- Path.wildcard(Path.join([base | prefix])),
+            File.dir?(dir),
+            path <- below(dir, rest),
+            do: path
+    end
+  end
+
+  defp below(dir, []), do: tree(dir)
+
+  defp below(dir, rest),
+    do: Enum.flat_map([dir | Enum.filter(tree(dir), &folder?/1)], &wildcard(&1, rest))
+
+  # Everything in a folder, all the way down, as ** matches it: without
+  # dot names, the folders tools skip, or what symlinked folders hold.
+  defp tree(dir) do
+    case File.ls(dir) do
+      {:ok, names} ->
+        names
+        |> Enum.reject(&(String.starts_with?(&1, ".") or &1 in @skip_dirs))
+        |> Enum.flat_map(fn name ->
+          path = Path.join(dir, name)
+          if folder?(path), do: [path | tree(path)], else: [path]
+        end)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  # A folder, not a symlink to one.
+  defp folder?(path), do: match?({:ok, %{type: :directory}}, File.lstat(path))
+
+  @doc "Whether a file or folder exists in the project."
+  def exists(path) do
+    with {:ok, full} <- resolve(path), do: {:ok, File.exists?(full)}
   end
 
   @doc "A text file's contents. Files over `max_bytes` are refused."
@@ -427,25 +478,73 @@ defmodule Visor.Tools do
     root = workspace()
     full = Path.expand(path, root)
 
-    if full == root or String.starts_with?(full, root <> "/") do
-      {:ok, full}
-    else
-      {:error, "#{path} is outside the project folder."}
+    if inside?(full, root),
+      do: {:ok, full},
+      else: {:error, "#{path} is outside the project folder."}
+  end
+
+  # Whether a path is in the project both as written and once each symlink
+  # in it is followed, so a link can't lead outside.
+  defp inside?(full, root), do: under?(full, root) and real_under?(full, root)
+
+  defp real_under?(full, root) do
+    case {real(root), real(full)} do
+      {{:ok, real_root}, {:ok, real}} -> under?(real, real_root)
+      _loop -> false
+    end
+  end
+
+  defp under?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  @max_links 40
+
+  # The path the OS opens for `full`: each symlink in it followed, as far
+  # as it exists. `:loop` for a link that leads back to itself.
+  defp real(full) do
+    [top | parts] = Path.split(full)
+    follow(parts, top, 0)
+  end
+
+  defp follow(_parts, _path, links) when links > @max_links, do: :loop
+  defp follow([], path, _links), do: {:ok, path}
+  defp follow(["." | parts], path, links), do: follow(parts, path, links)
+  defp follow([".." | parts], path, links), do: follow(parts, Path.dirname(path), links)
+
+  defp follow([part | parts], path, links) do
+    next = Path.join(path, part)
+
+    case File.read_link(next) do
+      # A relative target starts from the link's folder.
+      {:ok, target} ->
+        case Path.split(target) do
+          ["/" | target] -> follow(target ++ parts, "/", links + 1)
+          target -> follow(target ++ parts, path, links + 1)
+        end
+
+      {:error, _not_a_link} ->
+        follow(parts, next, links)
     end
   end
 
   # .env holds the API key; keep it out of tool results (and so out of the
-  # transcript and the request body).
+  # transcript and the request body), under its own name or a link's.
   defp readable(full, path) do
-    if secret?(Path.basename(full)),
+    if secret_file?(full),
       do: {:error, "#{path} holds secrets and can't be read."},
       else: :ok
   end
 
   defp writable(full, path) do
-    if secret?(Path.basename(full)),
+    if secret_file?(full),
       do: {:error, "#{path} holds secrets and can't be changed."},
       else: :ok
+  end
+
+  defp secret_file?(full) do
+    case real(full) do
+      {:ok, real} -> secret?(Path.basename(full)) or secret?(Path.basename(real))
+      :loop -> secret?(Path.basename(full))
+    end
   end
 
   defp secret?(name), do: name == ".env" or String.starts_with?(name, ".env.")
@@ -466,6 +565,8 @@ defmodule Visor.Tools do
 
   defp describe_error({:error, reason}, path, verb),
     do: {:error, "Could not #{verb} #{path}: #{reason}."}
+
+  defp compile(%Regex{} = regex), do: {:ok, regex}
 
   defp compile(pattern) do
     case Regex.compile(pattern) do
@@ -488,7 +589,9 @@ defmodule Visor.Tools do
             names
             |> Enum.sort()
             |> Enum.reject(&(&1 in @skip_dirs or secret?(&1)))
-            |> Stream.flat_map(&files(Path.join(path, &1), root))
+            |> Enum.map(&Path.join(path, &1))
+            |> Enum.filter(&searchable?(&1, root))
+            |> Stream.flat_map(&files(&1, root))
 
           {:error, _} ->
             []
@@ -496,6 +599,19 @@ defmodule Visor.Tools do
 
       true ->
         []
+    end
+  end
+
+  # Symlinked folders aren't searched, since one can lead back up and
+  # loop. A symlinked file is, if it leads to a file in the project that
+  # isn't a secret. Anything else was checked with its folder.
+  defp searchable?(path, root) do
+    case File.lstat(path) do
+      {:ok, %{type: :symlink}} ->
+        File.regular?(path) and real_under?(path, root) and not secret_file?(path)
+
+      _other ->
+        true
     end
   end
 

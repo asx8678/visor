@@ -59,4 +59,56 @@ defmodule Visor.ToolsTest do
     assert {:error, "Missing required argument path."} = Tools.run("read_file", "{}")
     assert {:error, "Unknown tool rm_rf."} = Tools.run("rm_rf", "{}")
   end
+
+  test "follows symlinks before deciding a path is in the project", %{tmp_dir: tmp_dir} do
+    outside = tmp_dir <> "-outside"
+    File.mkdir_p!(outside)
+    on_exit(fn -> File.rm_rf!(outside) end)
+    File.write!(Path.join(outside, "secret.txt"), "Supervisor outside\n")
+    File.write!(Path.join(tmp_dir, ".env"), "DEEPSEEK_API_KEY=Supervisor\n")
+
+    File.ln_s!(outside, Path.join(tmp_dir, "out"))
+    File.ln_s!("../..", Path.join(tmp_dir, "lib/up"))
+    File.ln_s!(".env", Path.join(tmp_dir, "notes.txt"))
+    File.ln_s!("lib", Path.join(tmp_dir, "code"))
+    File.ln_s!("loop", Path.join(tmp_dir, "loop"))
+
+    for path <- ["out/secret.txt", "out", "lib/up/x", "loop"] do
+      assert {:error, message} = Tools.read(path, 1_000_000)
+      assert message == "#{path} is outside the project folder."
+    end
+
+    assert {:error, "out is outside the project folder."} = Tools.list("out")
+    assert {:error, _outside} = Tools.write("out/new.txt", "x")
+    refute File.exists?(Path.join(outside, "new.txt"))
+    assert {:error, "out/* is outside the project folder."} = Tools.glob("out/*")
+
+    # A link to .env under another name is still .env.
+    assert {:error, "notes.txt holds secrets and can't be read."} =
+             Tools.read("notes.txt", 1_000_000)
+
+    assert {:error, "notes.txt holds secrets and can't be changed."} =
+             Tools.write("notes.txt", "x")
+
+    # Links that stay inside work when named. Globs and searches leave out
+    # the ones that don't, and don't go into linked folders, which can loop
+    # (lib/up leads back above the project).
+    assert {:ok, "defmodule App do" <> _} = Tools.read("code/app.ex", 1_000_000)
+    assert {:ok, true} = Tools.exists("code/app.ex")
+    assert {:ok, ["code/app.ex"]} = Tools.glob("code/*.ex")
+    assert {:ok, ["code", "lib", "lib/app.ex"]} = Tools.glob("**/*")
+    assert {:ok, [%{file: "lib/app.ex"}]} = Tools.search("Supervisor", ".", 100)
+    assert {:ok, [%{file: "code/app.ex"}]} = Tools.search("Supervisor", "code", 100)
+  end
+
+  test "works in a project reached through a symlink", %{tmp_dir: tmp_dir} do
+    link = tmp_dir <> "-link"
+    File.ln_s!(tmp_dir, link)
+    on_exit(fn -> File.rm(link) end)
+    Application.put_env(:visor, :workspace, link)
+
+    assert {:ok, "defmodule App do" <> _} = Tools.read("lib/app.ex", 1_000_000)
+    assert {:ok, ["lib/app.ex"]} = Tools.glob("lib/*.ex")
+    assert {:error, "../x is outside the project folder."} = Tools.read("../x", 1_000_000)
+  end
 end

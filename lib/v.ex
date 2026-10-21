@@ -15,6 +15,9 @@ defmodule V do
 
   @max_read_bytes 2_000_000
   @max_matches 1_000
+  # A runaway loop of calls would flood the console and the session log
+  # long before the script's time limit.
+  @max_calls 2_000
 
   defmodule Error do
     defexception [:message]
@@ -39,13 +42,32 @@ defmodule V do
   def glob(pattern) when is_binary(pattern),
     do: track(:glob, [pattern], fn -> Tools.glob(pattern) end)
 
+  @doc """
+  Whether a file or folder exists. Scripts can't rescue a failing call, so
+  this is how a script reads a file only if it's there.
+  """
+  def exists?(path) when is_binary(path),
+    do: track(:exists?, [path], fn -> Tools.exists(path) end)
+
   @doc "A text file's contents (up to 2 MB)."
   def read(path) when is_binary(path),
     do: track(:read, [path], fn -> Tools.read(path, @max_read_bytes) end)
 
-  @doc "Lines matching a regular expression, as `%{file: path, line: n, text: line}`."
-  def grep(pattern, path \\ ".") when is_binary(pattern) and is_binary(path),
-    do: track(:grep, [pattern, path], fn -> Tools.search(pattern, path, @max_matches) end)
+  @doc """
+  Lines matching a regular expression, given as a string or a `~r` regex,
+  as `%{file: path, line: n, text: line}`.
+  """
+  def grep(pattern, path \\ ".")
+
+  def grep(pattern, path)
+      when (is_binary(pattern) or is_struct(pattern, Regex)) and is_binary(path),
+      do: track(:grep, [pattern, path], fn -> Tools.search(pattern, path, @max_matches) end)
+
+  def grep(pattern, path) do
+    raise Error,
+          "V.grep takes a regex, as a string or ~r//, and a path string, " <>
+            "not #{inspect(pattern)} and #{inspect(path)}."
+  end
 
   @doc "Writes a file, creating its folder if needed."
   def write(path, contents) when is_binary(path) and is_binary(contents) do
@@ -168,6 +190,13 @@ defmodule V do
   defp track(name, args, fun) do
     context = Process.get(Code)
     n = Process.get(:visor_calls, 0) + 1
+
+    if n > @max_calls do
+      raise Error,
+            "The script made #{@max_calls} V calls, the most one script may make. " <>
+              "Use fewer, larger calls, such as one V.grep over a folder instead of one per file."
+    end
+
     Process.put(:visor_calls, n)
 
     call = %{n: n, name: name, text: call_text(name, args), args: args, status: :running, ms: nil}

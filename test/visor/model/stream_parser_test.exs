@@ -35,6 +35,14 @@ defmodule Visor.Model.StreamParserTest do
            }
   end
 
+  test "reads reasoning from gateways that send it as reasoning" do
+    body = sse([delta(%{"reasoning" => "Think"}), delta(%{"reasoning" => "ing."})])
+    parser = StreamParser.feed(StreamParser.new(), body, 10)
+
+    assert %{reasoning: "Thinking."} = StreamParser.snapshot(parser)
+    assert %{"reasoning_content" => "Thinking."} = StreamParser.message(parser)
+  end
+
   test "merges tool call fragments by index and keeps finish reason and usage" do
     usage = %{"prompt_tokens" => 12, "completion_tokens" => 7}
 

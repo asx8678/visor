@@ -109,7 +109,9 @@ defmodule Visor.Model.StreamParser do
       delta = choice["delta"] || %{}
 
       parser
-      |> append(:reasoning, delta["reasoning_content"], now)
+      # DeepSeek's own API calls it reasoning_content; OpenRouter-style
+      # gateways, reasoning.
+      |> append(:reasoning, delta["reasoning_content"] || delta["reasoning"], now)
       |> append(:content, delta["content"], now)
       |> merge_tool_calls(delta["tool_calls"], now)
       |> Map.update!(:finish_reason, &(choice["finish_reason"] || &1))
