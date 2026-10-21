@@ -200,4 +200,57 @@ defmodule Mix.Tasks.Visor.LogTest do
     Log.run(["latest", "--dir", dir])
     assert output() =~ "session abc123 started, DeepSeek flash, in /w"
   end
+
+  test "prints a server log, leaving out what is less severe than --level", %{tmp_dir: dir} do
+    dir = Path.join(dir, "server")
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "2026-10-21T180000.jsonl"), "")
+
+    lines = [
+      %{at: "2026-10-21T19:00:00.001", level: "info", message: "Writing the server log"},
+      %{
+        at: "2026-10-21T19:00:01.250",
+        level: "error",
+        message: "GenServer Visor.Observer terminating\n** (RuntimeError) boom",
+        pid: "#PID<0.1.0>",
+        mfa: "Visor.Observer.handle_info/2",
+        file: "lib/visor/observer.ex",
+        line: 40,
+        metadata: %{registered_name: "Visor.Observer"}
+      }
+    ]
+
+    File.write!(
+      Path.join(dir, "2026-10-21T190000.jsonl"),
+      Enum.map_join(lines, &(Jason.encode!(&1) <> "\n")) <> "not json\n"
+    )
+
+    Log.run(["server", "--dir", dir, "--level", "warning"])
+    out = output()
+    refute out =~ "Writing the server log"
+
+    assert out =~
+             "19:00:01.250  error     GenServer Visor.Observer terminating\n" <>
+               String.duplicate(" ", 24) <> "** (RuntimeError) boom\n"
+
+    assert out =~ ~s|"not json\\n"|
+    refute out =~ "lib/visor/observer.ex"
+
+    Log.run(["server", "2026-10-21T19", "--dir", dir, "--full"])
+    out = output()
+    assert out =~ "19:00:00.001  info      Writing the server log"
+    assert out =~ "at Visor.Observer.handle_info/2, lib/visor/observer.ex:40, #PID<0.1.0>"
+    assert out =~ ~s|{"registered_name":"Visor.Observer"}|
+
+    Log.run(["server", "2026-10-21T18", "--dir", dir])
+    assert output() =~ "2026-10-21T180000.jsonl"
+
+    assert_raise Mix.Error, ~r/No server log started at 2025/, fn ->
+      Log.run(["server", "2025", "--dir", dir])
+    end
+
+    assert_raise Mix.Error, ~r/--level takes one of/, fn ->
+      Log.run(["server", "--dir", dir, "--level", "loud"])
+    end
+  end
 end

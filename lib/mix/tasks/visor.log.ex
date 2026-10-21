@@ -1,5 +1,5 @@
 defmodule Mix.Tasks.Visor.Log do
-  @shortdoc "Lists session logs or prints one as a timeline"
+  @shortdoc "Lists session logs, prints one as a timeline, or prints the server log"
 
   @moduledoc """
   Reads the session logs `Visor.SessionLog` writes.
@@ -9,6 +9,8 @@ defmodule Mix.Tasks.Visor.Log do
       mix visor.log 3fa9c1       # one session by its id
       mix visor.log latest --full
       mix visor.log 3fa9c1 --request 4
+      mix visor.log server       # what the latest server start logged
+      mix visor.log server 2026-10-21T2201 --level warning
 
   Long replies, scripts and tool results are cut to a few lines unless
   `--full` is given, which also shows reasoning, status changes, response
@@ -18,10 +20,20 @@ defmodule Mix.Tasks.Visor.Log do
   returned are only in the JSON lines (`returned`). `--dir` reads logs
   from another directory and `--limit` sets how many sessions the list
   shows (default 15).
+
+  `server` prints a server log (`Visor.ServerLog`): the latest, or the
+  one whose start time begins with the given text. `--level` leaves out
+  what is less severe, and `--full` shows where each line came from.
   """
   use Mix.Task
 
-  @switches [full: :boolean, dir: :string, limit: :integer, request: :integer]
+  @switches [full: :boolean, dir: :string, limit: :integer, request: :integer, level: :string]
+  @levels ~w(emergency alert critical error warning notice info debug)
+
+  @usage """
+  Usage: mix visor.log [latest | ID] [--full | --request N] [--dir DIR]
+         mix visor.log server [latest | START] [--level LEVEL] [--full] [--dir DIR]\
+  """
   @preview_chars 700
   @preview_lines 14
 
@@ -30,14 +42,102 @@ defmodule Mix.Tasks.Visor.Log do
     {opts, rest} = OptionParser.parse!(args, strict: @switches)
     Mix.Task.run("app.config")
 
+    case rest do
+      ["server" | rest] -> server(rest, opts)
+      rest -> sessions(rest, opts)
+    end
+  end
+
+  defp sessions(rest, opts) do
     dir = opts[:dir] || Visor.SessionLog.dir() || Mix.raise("Session logging is turned off.")
     files = dir |> Path.join("*.jsonl") |> Path.wildcard() |> Enum.sort()
 
     case rest do
-      [] -> list(files, dir, opts[:limit] || 15)
-      ["latest"] -> show(List.last(files) || Mix.raise("No session logs in #{dir}."), opts)
-      [id] -> show(find(files, id), opts)
-      _ -> Mix.raise("Usage: mix visor.log [latest | ID] [--full | --request N] [--dir DIR]")
+      [] ->
+        list(files, dir, opts[:limit] || 15)
+        server_hint()
+
+      ["latest"] ->
+        show(List.last(files) || Mix.raise("No session logs in #{dir}."), opts)
+
+      [id] ->
+        show(find(files, id), opts)
+
+      _ ->
+        Mix.raise(@usage)
+    end
+  end
+
+  defp server(rest, opts) do
+    dir = opts[:dir] || Visor.ServerLog.dir() || Mix.raise("The server log is turned off.")
+    files = server_files(dir)
+
+    file =
+      case rest do
+        latest when latest in [[], ["latest"]] ->
+          List.last(files) || Mix.raise("No server logs in #{dir}.")
+
+        [start] ->
+          Enum.find(Enum.reverse(files), &String.starts_with?(Path.basename(&1), start)) ||
+            Mix.raise("No server log started at #{start} in #{dir}.")
+
+        _ ->
+          Mix.raise(@usage)
+      end
+
+    least = opts[:level] || "debug"
+    least in @levels || Mix.raise("--level takes one of: #{Enum.join(@levels, ", ")}")
+    Mix.shell().info(Path.relative_to_cwd(file) <> "\n")
+
+    for line <- read(file), severe?(line["level"], least) do
+      [head | body] = preview(line["message"] || inspect(line), opts) ++ source(line, opts)
+      time = line |> Map.get("at", "") |> String.slice(11, 12)
+
+      Mix.shell().info(
+        Enum.join([time, String.pad_trailing(line["level"] || "?", 8), head], "  ")
+      )
+
+      Enum.each(body, &Mix.shell().info(String.duplicate(" ", 24) <> &1))
+    end
+  end
+
+  defp server_files(dir), do: dir |> Path.join("*.jsonl") |> Path.wildcard() |> Enum.sort()
+
+  # A line without a known level, such as one that isn't JSON, is shown.
+  defp severe?(level, least) do
+    case Enum.find_index(@levels, &(&1 == level)) do
+      nil -> true
+      n -> n <= Enum.find_index(@levels, &(&1 == least))
+    end
+  end
+
+  defp source(line, opts) do
+    if opts[:full] do
+      where = Enum.reject([line["mfa"], file_line(line), line["pid"]], &is_nil/1)
+      metadata = if line["metadata"], do: [Jason.encode!(line["metadata"])], else: []
+      if(where == [], do: [], else: ["at " <> Enum.join(where, ", ")]) ++ metadata
+    else
+      []
+    end
+  end
+
+  defp file_line(%{"file" => file, "line" => line}) when is_integer(line), do: "#{file}:#{line}"
+  defp file_line(%{"file" => file}), do: file
+  defp file_line(_line), do: nil
+
+  # Under the session list: how to see what the server logged.
+  defp server_hint do
+    with dir when is_binary(dir) <- Visor.ServerLog.dir(),
+         file when is_binary(file) <- List.last(server_files(dir)) do
+      counts = file |> read() |> Enum.frequencies_by(& &1["level"])
+
+      problems =
+        for level <- ~w(error warning),
+            Map.has_key?(counts, level),
+            do: count(counts[level], level)
+
+      since = if problems == [], do: "nothing wrong", else: Enum.join(problems, ", ")
+      Mix.shell().info("\nServer log since the last start: #{since} (mix visor.log server)")
     end
   end
 

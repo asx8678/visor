@@ -7,6 +7,9 @@ defmodule Visor.Application do
 
   @impl true
   def start(_type, _args) do
+    # First, so a crash while the rest starts is in the server log.
+    Visor.ServerLog.install()
+
     children = [
       VisorWeb.Telemetry,
       Visor.Repo,
