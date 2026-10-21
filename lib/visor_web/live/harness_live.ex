@@ -44,6 +44,7 @@ defmodule VisorWeb.HarnessLive do
         turn_stats: nil,
         totals: @empty_totals,
         context_messages: 0,
+        context_tokens: nil,
         last_request: nil,
         tool_pids: %{},
         tools_running: 0,
@@ -149,6 +150,7 @@ defmodule VisorWeb.HarnessLive do
           <div
             id="entries"
             phx-update="stream"
+            phx-hook=".CopyCode"
             class="mx-auto max-w-3xl space-y-5 px-5 py-6 phone:px-4 phone:py-5"
           >
             <div id="console-empty" class="hidden only:block">
@@ -187,26 +189,32 @@ defmodule VisorWeb.HarnessLive do
           phx-submit="submit"
           class="border-t border-rule bg-panel px-5 py-3 phone:px-3 phone:py-2.5"
         >
-          <div class="mx-auto flex max-w-3xl items-center gap-3 border border-rule bg-well pr-1.5 pl-3 transition-colors focus-within:border-amber">
-            <span class="font-mono text-amber" aria-hidden="true">&gt;</span>
+          <div class="mx-auto flex max-w-3xl items-end gap-3 border border-rule bg-well pr-1.5 pl-3 transition-colors focus-within:border-amber">
+            <span
+              class="self-start py-2.5 font-mono leading-6 text-amber phone:py-3"
+              aria-hidden="true"
+            >
+              &gt;
+            </span>
             <div class="min-w-0 flex-1 [&_.fieldset]:m-0 [&_.fieldset]:p-0">
               <.input
                 field={@form[:text]}
                 id="prompt-input"
-                type="text"
+                type="textarea"
+                rows="1"
                 phx-hook=".CommandLine"
                 autocomplete="off"
                 aria-label="Prompt or command"
                 placeholder={placeholder(@status)}
                 enterkeyhint="send"
-                class="w-full bg-transparent py-2.5 text-base text-ink placeholder:text-ink-dim/70 focus:outline-none focus-visible:outline-none phone:py-3"
+                class="block max-h-[40vh] w-full resize-none bg-transparent py-2.5 text-base leading-6 text-ink placeholder:text-ink-dim/70 focus:outline-none focus-visible:outline-none phone:py-3"
               />
             </div>
             <button
               :if={@status == :idle}
               id="send-prompt"
               type="submit"
-              class="touch-manipulation bg-amber px-3.5 py-1.5 text-sm font-semibold text-rack transition hover:brightness-110 phone:px-4 phone:py-2"
+              class="mb-1.5 touch-manipulation bg-amber px-3.5 py-1.5 text-sm font-semibold text-rack transition hover:brightness-110 phone:px-4 phone:py-2"
             >
               Send
             </button>
@@ -215,7 +223,7 @@ defmodule VisorWeb.HarnessLive do
               id="stop-agent"
               type="button"
               phx-click="interrupt"
-              class="touch-manipulation border border-alarm px-3.5 py-1.5 text-sm font-semibold text-alarm transition-colors hover:bg-alarm hover:text-rack phone:px-4 phone:py-2"
+              class="mb-1.5 touch-manipulation border border-alarm px-3.5 py-1.5 text-sm font-semibold text-alarm transition-colors hover:bg-alarm hover:text-rack phone:px-4 phone:py-2"
             >
               Stop
             </button>
@@ -233,12 +241,16 @@ defmodule VisorWeb.HarnessLive do
           <.status_readout status={@status} tools_running={@tools_running} />
           <.readings rows={[
             {"Provider", @provider.provider},
-            {"Model", @provider.model},
-            {"Endpoint", endpoint_text(@provider[:endpoint])},
-            {"Max output", max_tokens_text(@provider[:max_tokens])},
             {"API key", key_text(@provider.key)},
-            {"Context", "#{@context_messages} messages"}
+            {"Model", @provider.model, :wide},
+            {"Endpoint", endpoint_text(@provider[:endpoint]), :wide},
+            {"Max output", max_tokens_text(@provider[:max_tokens])}
           ]} />
+          <.context_meter
+            tokens={@context_tokens}
+            window={@provider[:context_window]}
+            messages={@context_messages}
+          />
         </div>
 
         <div class="space-y-2.5 border-t border-rule pt-4">
@@ -370,34 +382,73 @@ defmodule VisorWeb.HarnessLive do
       </script>
 
       <script :type={Phoenix.LiveView.ColocatedHook} name=".CommandLine">
-        // Prompt history on the arrow keys, Escape to stop. The field is
-        // cleared once LiveView has read it, so the next prompt can be typed
-        // straight away.
+        // Enter sends and Shift+Enter starts a new line; the box grows with
+        // the text. Up and Down recall earlier prompts from the first and last
+        // line, and Escape stops a running prompt. The box is cleared once
+        // LiveView has read it, so the next prompt can be typed straight away.
         export default {
           mounted() {
             this.history = []
             this.index = 0
+            this.el.addEventListener("input", () => this.fit())
             this.el.form.addEventListener("submit", () => {
               const text = this.el.value.trim()
               if (text && this.history[this.history.length - 1] !== text) this.history.push(text)
               this.index = this.history.length
-              setTimeout(() => { this.el.value = "" })
+              setTimeout(() => this.recall(this.index))
             })
             this.el.addEventListener("keydown", e => {
-              if (e.key === "ArrowUp" && this.index > 0) {
+              const {value, selectionStart, selectionEnd} = this.el
+              if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
                 e.preventDefault()
-                this.index -= 1
-                this.el.value = this.history[this.index]
-              } else if (e.key === "ArrowDown" && this.index < this.history.length) {
+                this.el.form.requestSubmit()
+              } else if (e.key === "ArrowUp" && this.index > 0 &&
+                         !value.slice(0, selectionStart).includes("\n")) {
                 e.preventDefault()
-                this.index += 1
-                this.el.value = this.history[this.index] ?? ""
+                this.recall(this.index - 1)
+              } else if (e.key === "ArrowDown" && this.index < this.history.length &&
+                         !value.slice(selectionEnd).includes("\n")) {
+                e.preventDefault()
+                this.recall(this.index + 1)
               } else if (e.key === "Escape") {
                 this.pushEvent("interrupt", {})
               }
             })
             // Focus on desktop only; on phones it would open the keyboard.
             if (matchMedia("(pointer: fine)").matches) this.el.focus()
+          },
+          recall(index) {
+            this.index = index
+            this.el.value = this.history[index] ?? ""
+            this.fit()
+          },
+          fit() {
+            this.el.style.height = "auto"
+            this.el.style.height = `${this.el.scrollHeight}px`
+          }
+        }
+      </script>
+
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyCode">
+        // Copy buttons on the code blocks in model replies.
+        export default {
+          mounted() {
+            this.el.addEventListener("click", e => {
+              const button = e.target.closest("[data-copy]")
+              const code = button?.closest("figure").querySelector("pre")
+              if (!code) return
+              const copied = () => {
+                button.textContent = "Copied"
+                setTimeout(() => { button.textContent = "Copy" }, 1500)
+              }
+              // Without a secure origin there is no clipboard; select the code
+              // so it can be copied by hand.
+              if (navigator.clipboard) {
+                navigator.clipboard.writeText(code.innerText).then(copied)
+              } else {
+                getSelection().selectAllChildren(code)
+              }
+            })
           }
         }
       </script>
@@ -508,6 +559,7 @@ defmodule VisorWeb.HarnessLive do
         |> stream(:entries, [], reset: true)
         |> assign(
           context_messages: 0,
+          context_tokens: nil,
           live_turn: nil,
           turn_stats: nil,
           last_request: nil,
@@ -622,7 +674,8 @@ defmodule VisorWeb.HarnessLive do
     |> assign(
       live_turn: nil,
       turn_stats: Map.merge(socket.assigns.turn_stats, info),
-      totals: add_usage(socket.assigns.totals, info[:usage])
+      totals: add_usage(socket.assigns.totals, info[:usage]),
+      context_tokens: context_tokens(info[:usage]) || socket.assigns.context_tokens
     )
     |> stream_insert(:entries, turn)
   end
@@ -677,6 +730,8 @@ defmodule VisorWeb.HarnessLive do
   end
 
   defp agent_event({:note, level, text}, socket), do: note(socket, level, text)
+
+  defp agent_event({:context, messages}, socket), do: assign(socket, :context_messages, messages)
 
   defp agent_event({:settings, settings}, socket) do
     assign(socket,
@@ -746,6 +801,12 @@ defmodule VisorWeb.HarnessLive do
             (get_in(usage, ["completion_tokens_details", "reasoning_tokens"]) || 0)
     }
   end
+
+  defp context_tokens(%{"prompt_tokens" => prompt, "completion_tokens" => completion})
+       when is_integer(prompt) and is_integer(completion),
+       do: prompt + completion
+
+  defp context_tokens(_usage), do: nil
 
   defp turn_rows(stats) do
     usage = stats[:usage] || %{}

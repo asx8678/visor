@@ -20,7 +20,8 @@ defmodule Mix.Tasks.Visor.ImportDeepseek do
     * `DEEPSEEK_API_KEY`, which it never prints
     * `DEEPSEEK_BASE_URL`
     * `DEEPSEEK_MODEL`
-    * `DEEPSEEK_MAX_TOKENS`, when the model's settings give an output limit
+    * `DEEPSEEK_MAX_TOKENS` and `DEEPSEEK_CONTEXT_WINDOW`, when the
+      model's settings give its output limit and context window
 
   Earlier values of these are replaced, and the rest of `.env` is kept.
   It doesn't run the commands pi can get a key from, so a key that comes
@@ -65,22 +66,25 @@ defmodule Mix.Tasks.Visor.ImportDeepseek do
     end
 
     model = choice.model
-    max_tokens = if model && is_integer(model.output) && model.output > 0, do: model.output
+    max_tokens = count(model && model.output)
+    context_window = count(model && model.context)
     path = Path.join(Visor.Tools.workspace(), ".env")
 
     write_env(path, [
       {"DEEPSEEK_API_KEY", choice.key},
       {"DEEPSEEK_BASE_URL", choice.base_url},
       {"DEEPSEEK_MODEL", model && model.id},
-      {"DEEPSEEK_MAX_TOKENS", max_tokens}
+      {"DEEPSEEK_MAX_TOKENS", max_tokens},
+      {"DEEPSEEK_CONTEXT_WINDOW", context_window}
     ])
 
     Mix.shell().info("""
     Copied DeepSeek from #{label(choice)} into #{path}:
-      DEEPSEEK_API_KEY     copied, not shown
-      DEEPSEEK_BASE_URL    #{shown(choice.base_url)}
-      DEEPSEEK_MODEL       #{model_text(model)}
-      DEEPSEEK_MAX_TOKENS  #{max_tokens || "not set, so DeepSeek's default applies"}
+      DEEPSEEK_API_KEY         copied, not shown
+      DEEPSEEK_BASE_URL        #{shown(choice.base_url)}
+      DEEPSEEK_MODEL           #{model_text(model)}
+      DEEPSEEK_MAX_TOKENS      #{max_tokens || "not set, so DeepSeek's default applies"}
+      DEEPSEEK_CONTEXT_WINDOW  #{context_window || "not set"}
     Visor reads .env on every request, so the next message uses these.\
     """)
   end
@@ -189,9 +193,13 @@ defmodule Mix.Tasks.Visor.ImportDeepseek do
       name: settings["name"],
       base_url: text(settings["baseUrl"]),
       api: settings["api"],
-      output: settings["maxTokens"] || get_in(settings, ["limit", "output"])
+      output: settings["maxTokens"] || get_in(settings, ["limit", "output"]),
+      context: settings["contextWindow"] || get_in(settings, ["limit", "context"])
     }
   end
+
+  defp count(n) when is_integer(n) and n > 0, do: n
+  defp count(_n), do: nil
 
   # The built-in DeepSeek providers have no endpoint in the config.
   defp default_url("deepseek"), do: "https://api.deepseek.com"
@@ -381,7 +389,7 @@ defmodule Mix.Tasks.Visor.ImportDeepseek do
     kept =
       case File.read(path) do
         {:ok, contents} ->
-          ~r/^[ \t]*(?:export[ \t]+)?DEEPSEEK_(?:API_KEY|BASE_URL|MODEL|MAX_TOKENS)[ \t]*=.*\n?/m
+          ~r/^[ \t]*(?:export[ \t]+)?DEEPSEEK_(?:API_KEY|BASE_URL|MODEL|MAX_TOKENS|CONTEXT_WINDOW)[ \t]*=.*\n?/m
           |> Regex.replace(contents, "")
           |> String.trim_trailing()
 

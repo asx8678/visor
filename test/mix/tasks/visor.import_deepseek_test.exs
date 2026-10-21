@@ -7,7 +7,8 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
   alias Visor.Model.DeepSeek
 
   @moduletag :tmp_dir
-  @names ~w(DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_MODEL DEEPSEEK_MAX_TOKENS)
+  @names ~w(DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_MODEL DEEPSEEK_MAX_TOKENS
+             DEEPSEEK_CONTEXT_WINDOW)
 
   setup %{tmp_dir: tmp_dir} do
     previous = Application.get_env(:visor, :workspace)
@@ -58,7 +59,10 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
           "npm": "@ai-sdk/openai-compatible",
           "options": {"baseURL": "https://api.deepseek.com/v1/", "apiKey": "sk-test-1234",},
           "models": {
-            "deepseek-v4.1-flash": {"name": "DeepSeek V4.1 Flash", "limit": {"output": 65536}},
+            "deepseek-v4.1-flash": {
+              "name": "DeepSeek V4.1 Flash",
+              "limit": {"context": 1048000, "output": 65536}
+            },
             "deepseek-v4.1-pro": {},
           },
         },
@@ -78,6 +82,7 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
            DEEPSEEK_BASE_URL=https://api.deepseek.com/v1/
            DEEPSEEK_MODEL=deepseek-v4.1-flash
            DEEPSEEK_MAX_TOKENS=65536
+           DEEPSEEK_CONTEXT_WINDOW=1048000
            """
 
     assert (File.stat!(Path.join(dir, ".env")).mode &&& 0o777) == 0o600
@@ -86,10 +91,11 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
 
     assert message == """
            Copied DeepSeek from opencode:ds into #{dir}/.env:
-             DEEPSEEK_API_KEY     copied, not shown
-             DEEPSEEK_BASE_URL    https://api.deepseek.com/v1/
-             DEEPSEEK_MODEL       deepseek-v4.1-flash (DeepSeek V4.1 Flash)
-             DEEPSEEK_MAX_TOKENS  65536
+             DEEPSEEK_API_KEY         copied, not shown
+             DEEPSEEK_BASE_URL        https://api.deepseek.com/v1/
+             DEEPSEEK_MODEL           deepseek-v4.1-flash (DeepSeek V4.1 Flash)
+             DEEPSEEK_MAX_TOKENS      65536
+             DEEPSEEK_CONTEXT_WINDOW  1048000
            Visor reads .env on every request, so the next message uses these.\
            """
 
@@ -99,6 +105,7 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
              model: "deepseek-v4.1-flash",
              endpoint: "https://api.deepseek.com/v1",
              max_tokens: 65536,
+             context_window: 1_048_000,
              key: :dotenv
            } = DeepSeek.info()
 
@@ -123,6 +130,7 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
             %{
               "id" => "deepseek-v4.1-flash",
               "maxTokens" => 65536,
+              "contextWindow" => 1_048_000,
               "baseUrl" => "https://flash.deepseek.test/v1"
             }
           ]
@@ -139,7 +147,8 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
 
     assert env(dir) ==
              "DEEPSEEK_API_KEY=sk-pi\nDEEPSEEK_BASE_URL=https://flash.deepseek.test/v1\n" <>
-               "DEEPSEEK_MODEL=deepseek-v4.1-flash\nDEEPSEEK_MAX_TOKENS=65536\n"
+               "DEEPSEEK_MODEL=deepseek-v4.1-flash\nDEEPSEEK_MAX_TOKENS=65536\n" <>
+               "DEEPSEEK_CONTEXT_WINDOW=1048000\n"
 
     assert_received {:mix_shell, :info, ["Copied DeepSeek from pi:deepseek into " <> _]}
 
@@ -194,8 +203,9 @@ defmodule Mix.Tasks.Visor.ImportDeepseekTest do
 
     assert env(dir) == "DEEPSEEK_API_KEY=sk-saved\nDEEPSEEK_BASE_URL=https://api.deepseek.com\n"
     assert_received {:mix_shell, :info, [message]}
-    assert message =~ "DEEPSEEK_MODEL       not set, so Visor uses its configured model\n"
-    assert message =~ "DEEPSEEK_MAX_TOKENS  not set, so DeepSeek's default applies\n"
+    assert message =~ "DEEPSEEK_MODEL           not set, so Visor uses its configured model\n"
+    assert message =~ "DEEPSEEK_MAX_TOKENS      not set, so DeepSeek's default applies\n"
+    assert message =~ "DEEPSEEK_CONTEXT_WINDOW  not set\n"
 
     write(dir, ".config/opencode/key.txt", "sk-from-file\n")
     System.put_env("VISOR_TEST_GATEWAY", "gateway.test")

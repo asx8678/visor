@@ -29,6 +29,8 @@ defmodule VisorWeb.HarnessLiveTest do
     assert has_element?(view, "#lamp-field")
     assert has_element?(view, "#prompt-form")
     assert has_element?(view, "#model-inspector #agent-status")
+    assert has_element?(view, "#model-inspector #context-meter")
+    assert has_element?(view, "textarea#prompt-input")
     assert has_element?(view, "#console-empty")
     assert has_element?(view, "#panel-tabs #tab-console[aria-pressed=true]")
     assert has_element?(view, "#panel-tabs #tab-processes")

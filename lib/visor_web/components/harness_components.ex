@@ -157,7 +157,7 @@ defmodule VisorWeb.HarnessComponents do
           title={"#{lamp.label} (#{lamp.id})"}
         />
       </div>
-      <ul class="mt-2.5 flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-ink-dim">
+      <ul class="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-1 text-[11px] text-ink-dim">
         <li :for={{state, label} <- lamp_legend()} class="flex items-center gap-1.5">
           <span class={["lamp [--lamp-size:7px]", "lamp-#{state}"]} />{label}
         </li>
@@ -238,7 +238,9 @@ defmodule VisorWeb.HarnessComponents do
       <span class="text-[11px] text-ink-dim">{@event.at}</span>
       <span class={["text-xs font-medium", event_color(@event.kind)]}>{event_word(@event.kind)}</span>
       <span class="min-w-0 truncate text-xs">
-        <span class="text-ink">{@event.label}</span>
+        <span class={if(@event.kind == :exit, do: "text-ink-dim", else: "text-ink")}>
+          {@event.label}
+        </span>
         <span class="text-ink-dim">{@event.detail}</span>
       </span>
     </li>
@@ -275,7 +277,7 @@ defmodule VisorWeb.HarnessComponents do
       <header class="flex items-center gap-2 text-xs text-ink-dim">
         <span class={["lamp", if(@entry.streaming, do: "lamp-model", else: "lamp-exit")]} />
         <span class="font-medium text-ink">Model turn {@entry.turn}</span>
-        <span>{@entry.pid}</span>
+        <span class="font-mono text-[11px]">{@entry.pid}</span>
         <span :if={@entry.streaming} class="live-dot text-sky">streaming</span>
       </header>
 
@@ -295,7 +297,7 @@ defmodule VisorWeb.HarnessComponents do
         </p>
       </details>
 
-      <.rich_text :if={@entry.content != ""} text={@entry.content} />
+      <.markdown :if={@entry.content != ""} text={@entry.content} />
 
       <ul :if={@entry.streaming and @entry.tool_calls != []} class="space-y-1">
         <li :for={call <- @entry.tool_calls} class="truncate font-mono text-xs text-amber">
@@ -330,7 +332,9 @@ defmodule VisorWeb.HarnessComponents do
           <span class="min-w-0 flex-1 truncate font-mono text-ink-dim">{tool_summary(@entry)}</span>
           <span :if={@entry.ms} class="flex-none text-ink-dim">{seconds(@entry.ms)}</span>
           <span :if={@entry.status == :running} class="live-dot flex-none text-amber">running</span>
-          <span class="flex-none text-ink-dim phone:hidden">{@tool_pids[@entry.call_id]}</span>
+          <span class="flex-none font-mono text-[11px] text-ink-dim phone:hidden">
+            {@tool_pids[@entry.call_id]}
+          </span>
           <.icon
             name="hero-chevron-down-micro"
             class="size-3.5 flex-none text-ink-dim transition-transform group-open:rotate-180"
@@ -398,7 +402,8 @@ defmodule VisorWeb.HarnessComponents do
         <% end %>
       </dl>
       <p class="mt-2 text-ink-dim">
-        Anything else goes to the model. Up and down arrows recall earlier prompts. Escape stops a running prompt.
+        Anything else goes to the model. Enter sends and Shift+Enter starts a new line.
+        Up and down arrows recall earlier prompts. Escape stops a running prompt.
       </p>
     </div>
     """
@@ -416,34 +421,179 @@ defmodule VisorWeb.HarnessComponents do
     ]
   end
 
-  # Model text with fenced code blocks set apart; everything else as is.
+  # Model text as Markdown. It is rendered from the tree VisorWeb.Markdown
+  # parses, never as raw HTML. Inline templates stay on one line, since any
+  # whitespace between inline tags would show as a space.
   attr :text, :string, required: true
 
-  defp rich_text(assigns) do
-    assigns = assign(assigns, :parts, split_fences(assigns.text))
+  def markdown(assigns) do
+    assigns = assign(assigns, :blocks, VisorWeb.Markdown.parse(assigns.text))
 
     ~H"""
-    <div class="space-y-2 text-[14.5px] leading-relaxed text-ink">
-      <%= for {kind, text} <- @parts do %>
-        <pre
-          :if={kind == :code}
-          class="overflow-x-auto border border-rule bg-well px-3 py-2 font-mono text-xs leading-relaxed text-ink/90"
-        >{text}</pre>
-        <p :if={kind == :text} class="whitespace-pre-wrap break-words">{text}</p>
-      <% end %>
+    <div class="space-y-2.5 text-[14.5px] leading-relaxed text-ink">
+      <.md_block :for={block <- @blocks} block={block} />
     </div>
     """
   end
 
-  defp split_fences(text) do
-    text
-    |> String.split(~r/^```[^\n]*\n?/m)
-    |> Enum.with_index()
-    |> Enum.flat_map(fn
-      {part, i} when rem(i, 2) == 1 -> [{:code, String.trim_trailing(part)}]
-      {part, _} -> if String.trim(part) == "", do: [], else: [{:text, String.trim(part)}]
-    end)
+  attr :block, :any, required: true
+
+  defp md_block(%{block: {:code, lang, code}} = assigns) do
+    assigns = assign(assigns, lang: lang, code: code)
+
+    ~H"""
+    <figure class="border border-rule bg-well">
+      <figcaption class="flex items-center justify-between border-b border-rule pl-3 text-[11px] text-ink-dim">
+        <span class="font-mono">{if(@lang == "", do: "code", else: @lang)}</span>
+        <button
+          type="button"
+          data-copy
+          class="touch-manipulation px-3 py-1 transition-colors hover:text-ink phone:py-2"
+        >
+          Copy
+        </button>
+      </figcaption>
+      <pre class="overflow-x-auto px-3 py-2 font-mono text-xs leading-relaxed text-ink/90 [font-variant-ligatures:none]"><code>{@code}</code></pre>
+    </figure>
+    """
   end
+
+  defp md_block(%{block: {:heading, level, nodes}} = assigns) do
+    assigns = assign(assigns, level: level, nodes: nodes)
+
+    ~H"""
+    <.dynamic_tag
+      tag_name={"h#{@level + 2}"}
+      class={["font-display font-semibold leading-tight text-ink", heading_size(@level)]}
+    >
+      <.md_inline nodes={@nodes} />
+    </.dynamic_tag>
+    """
+  end
+
+  defp md_block(%{block: {:paragraph, nodes}} = assigns) do
+    assigns = assign(assigns, :nodes, nodes)
+
+    ~H"""
+    <p class="break-words"><.md_inline nodes={@nodes} /></p>
+    """
+  end
+
+  defp md_block(%{block: {:list, items}} = assigns) do
+    assigns = assign(assigns, :items, items)
+
+    ~H"""
+    <ul class="space-y-1">
+      <li :for={{marker, depth, nodes} <- @items} class={["flex gap-2", indent(depth)]}>
+        <span class={[
+          "min-w-4 flex-none tabular-nums",
+          if(marker == "•", do: "text-amber", else: "text-ink-dim")
+        ]}>
+          {marker}
+        </span>
+        <span class="min-w-0 break-words"><.md_inline nodes={nodes} /></span>
+      </li>
+    </ul>
+    """
+  end
+
+  defp md_block(%{block: {:quote, blocks}} = assigns) do
+    assigns = assign(assigns, :blocks, blocks)
+
+    ~H"""
+    <blockquote class="space-y-2 border-l-2 border-rule pl-3 text-ink-dim">
+      <.md_block :for={block <- @blocks} block={block} />
+    </blockquote>
+    """
+  end
+
+  defp md_block(%{block: {:table, header, rows}} = assigns) do
+    assigns = assign(assigns, header: header, rows: rows)
+
+    ~H"""
+    <div class="overflow-x-auto border border-rule">
+      <table class="w-full text-[13px]">
+        <thead :if={@header} class="bg-well text-left text-ink-dim">
+          <tr>
+            <th :for={cell <- @header} class="border-b border-rule px-2.5 py-1.5 font-medium">
+              <.md_inline nodes={cell} />
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={row <- @rows} class="border-b border-rule last:border-0">
+            <td :for={cell <- row} class="px-2.5 py-1.5 align-top"><.md_inline nodes={cell} /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  defp md_block(%{block: :rule} = assigns) do
+    ~H"""
+    <hr class="border-rule" />
+    """
+  end
+
+  attr :nodes, :list, required: true
+
+  defp md_inline(assigns) do
+    ~H"<.md_node :for={node <- @nodes} node={node} />"
+  end
+
+  attr :node, :any, required: true
+
+  # Line breaks inside a paragraph are kept.
+  defp md_node(%{node: text} = assigns) when is_binary(text) do
+    case String.split(text, "\n") do
+      [line] ->
+        assigns = assign(assigns, :line, line)
+        ~H"{@line}"
+
+      lines ->
+        assigns = assign(assigns, :nodes, Enum.intersperse(lines, :break))
+        ~H"<.md_inline nodes={@nodes} />"
+    end
+  end
+
+  defp md_node(%{node: :break} = assigns), do: ~H"<br />"
+
+  defp md_node(%{node: {:code, code}} = assigns) do
+    assigns = assign(assigns, :code, code)
+
+    ~H|<code class="bg-well px-1 py-px font-mono text-[0.86em] text-sky [font-variant-ligatures:none]">{@code}</code>|
+  end
+
+  defp md_node(%{node: {:strong, nodes}} = assigns) do
+    assigns = assign(assigns, :nodes, nodes)
+    ~H|<strong class="font-semibold"><.md_inline nodes={@nodes} /></strong>|
+  end
+
+  defp md_node(%{node: {:em, nodes}} = assigns) do
+    assigns = assign(assigns, :nodes, nodes)
+    ~H|<em><.md_inline nodes={@nodes} /></em>|
+  end
+
+  defp md_node(%{node: {:link, url, nodes}} = assigns) do
+    assigns = assign(assigns, url: url, nodes: nodes)
+
+    ~H|<a
+  href={@url}
+  target="_blank"
+  rel="noopener noreferrer"
+  class="text-sky underline decoration-sky/40 underline-offset-2 hover:decoration-sky"
+><.md_inline nodes={@nodes} /></a>|
+  end
+
+  defp heading_size(1), do: "text-xl"
+  defp heading_size(2), do: "text-lg"
+  defp heading_size(3), do: "text-base"
+
+  defp indent(0), do: nil
+  defp indent(1), do: "pl-5"
+  defp indent(2), do: "pl-10"
+  defp indent(3), do: "pl-15"
 
   defp tool_summary(%{name: "elixir", status: :running, calls: [_ | _] = calls}),
     do: "V." <> List.last(calls).text
@@ -600,18 +750,63 @@ defmodule VisorWeb.HarnessComponents do
     """
   end
 
+  # Rows are {label, value}, or {label, value, :wide} for a value that needs
+  # both columns.
   attr :rows, :list, required: true
 
   def readings(assigns) do
     ~H"""
     <dl class="grid grid-cols-2 gap-x-4 gap-y-2.5">
-      <div :for={{label, value} <- @rows} class="min-w-0">
-        <dt class="text-[11px] text-ink-dim">{label}</dt>
-        <dd class="font-display text-[17px] font-medium leading-tight text-ink">{value}</dd>
+      <div :for={row <- @rows} class={["min-w-0", tuple_size(row) == 3 && "col-span-2"]}>
+        <dt class="text-[11px] text-ink-dim">{elem(row, 0)}</dt>
+        <dd class="font-display text-[17px] font-medium leading-tight break-words text-ink">
+          {elem(row, 1)}
+        </dd>
       </div>
     </dl>
     """
   end
+
+  # How much of the context window the conversation fills: the last
+  # turn's prompt and reply, which the next request sends again.
+  attr :tokens, :integer, default: nil
+  attr :window, :integer, default: nil
+  attr :messages, :integer, required: true
+
+  def context_meter(assigns) do
+    share =
+      if assigns.tokens && assigns.window,
+        do: min(assigns.tokens * 100 / assigns.window, 100.0)
+
+    assigns = assign(assigns, :share, share)
+
+    ~H"""
+    <div id="context-meter">
+      <div class="flex justify-between text-[11px] text-ink-dim">
+        <span>Context</span>
+        <span>{@messages} {if(@messages == 1, do: "message", else: "messages")}</span>
+      </div>
+      <div :if={@share} class="mt-1 h-1.5 bg-well">
+        <div
+          class={["h-full transition-[width] duration-300", context_color(@share)]}
+          style={"width: #{if(@share > 0, do: max(@share, 0.5), else: 0)}%"}
+        />
+      </div>
+      <p class="mt-1 font-display text-[17px] font-medium leading-tight text-ink">
+        {context_text(@tokens, @window)}
+      </p>
+    </div>
+    """
+  end
+
+  defp context_color(share) when share >= 90, do: "bg-alarm"
+  defp context_color(share) when share >= 70, do: "bg-amber"
+  defp context_color(_share), do: "bg-sky"
+
+  defp context_text(nil, nil), do: "No model turn yet"
+  defp context_text(nil, window), do: "#{number(window)} token window"
+  defp context_text(tokens, nil), do: "#{number(tokens)} tokens"
+  defp context_text(tokens, window), do: "#{number(tokens)} of #{number(window)} tokens"
 
   attr :hit, :integer, required: true
   attr :miss, :integer, required: true
@@ -639,9 +834,8 @@ defmodule VisorWeb.HarnessComponents do
 
   def dom_safe(text), do: String.replace(text, ~r/[^A-Za-z0-9_-]/, "-")
 
-  def pid_text(pid) when is_pid(pid) do
-    pid |> :erlang.pid_to_list() |> List.to_string() |> String.slice(1..-2//1)
-  end
+  # With its angle brackets, so it reads as a PID and not a version.
+  def pid_text(pid) when is_pid(pid), do: pid |> :erlang.pid_to_list() |> List.to_string()
 
   def pid_text(_), do: nil
 

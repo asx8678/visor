@@ -38,6 +38,7 @@ defmodule Visor.Model do
               model: String.t(),
               endpoint: String.t() | nil,
               max_tokens: pos_integer() | nil,
+              context_window: pos_integer() | nil,
               key: atom()
             }
   @callback stream(request(), emit :: (snapshot() -> any())) ::

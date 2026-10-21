@@ -16,7 +16,14 @@ defmodule Visor.Model.Demo do
 
   @impl true
   def info,
-    do: %{provider: "Demo", model: "scripted demo", endpoint: nil, max_tokens: nil, key: :none}
+    do: %{
+      provider: "Demo",
+      model: "scripted demo",
+      endpoint: nil,
+      max_tokens: nil,
+      context_window: nil,
+      key: :none
+    }
 
   @impl true
   def stream(request, emit) do

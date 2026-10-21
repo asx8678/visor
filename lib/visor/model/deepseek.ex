@@ -11,6 +11,8 @@ defmodule Visor.Model.DeepSeek do
     * `DEEPSEEK_MODEL`, the model ID, such as `deepseek-flash`
     * `DEEPSEEK_MAX_TOKENS`, the most tokens a response may use, without
       which DeepSeek's default applies
+    * `DEEPSEEK_CONTEXT_WINDOW`, the most tokens a request may hold, which
+      the inspector measures the conversation against
 
   They are looked up on every request, so changing them doesn't need a
   restart. `mix visor.import_deepseek` copies them from pi or opencode.
@@ -36,6 +38,7 @@ defmodule Visor.Model.DeepSeek do
       model: model(),
       endpoint: base_url(),
       max_tokens: max_tokens(),
+      context_window: count("DEEPSEEK_CONTEXT_WINDOW", :context_window),
       key: key_source()
     }
   end
@@ -74,7 +77,7 @@ defmodule Visor.Model.DeepSeek do
            message: StreamParser.message(parser),
            tool_calls: StreamParser.tool_calls(parser),
            finish_reason: parser.finish_reason,
-           usage: parser.usage,
+           usage: cache_fields(parser.usage),
            model: parser.model,
            chunks: parser.chunks,
            ttft_ms: parser.first_token_at && parser.first_token_at - started,
@@ -192,14 +195,37 @@ defmodule Visor.Model.DeepSeek do
 
   defp model, do: setting("DEEPSEEK_MODEL", :model, "deepseek-flash")
 
-  # A positive whole number, or nil to leave the limit to DeepSeek.
-  defp max_tokens do
-    case setting("DEEPSEEK_MAX_TOKENS", :max_tokens, nil) do
+  # Without a limit, DeepSeek's default applies.
+  defp max_tokens, do: count("DEEPSEEK_MAX_TOKENS", :max_tokens)
+
+  # A positive whole number, or nil when unset or unreadable.
+  defp count(name, config_key) do
+    case setting(name, config_key, nil) do
       nil -> nil
-      max when is_integer(max) -> max
-      text -> with {max, ""} when max > 0 <- Integer.parse(text), do: max, else: (_ -> nil)
+      n when is_integer(n) -> n
+      text -> with {n, ""} when n > 0 <- Integer.parse(text), do: n, else: (_ -> nil)
     end
   end
+
+  # Gateways in OpenAI's format count cached prompt tokens under
+  # prompt_tokens_details; the agent and the inspector read DeepSeek's names.
+  defp cache_fields(%{"prompt_cache_hit_tokens" => _} = usage), do: usage
+
+  defp cache_fields(%{"prompt_tokens" => prompt, "prompt_tokens_details" => details} = usage)
+       when is_integer(prompt) and is_map(details) do
+    case details["cached_tokens"] do
+      hit when is_integer(hit) ->
+        Map.merge(usage, %{
+          "prompt_cache_hit_tokens" => hit,
+          "prompt_cache_miss_tokens" => prompt - hit
+        })
+
+      _ ->
+        usage
+    end
+  end
+
+  defp cache_fields(usage), do: usage
 
   defp base_url do
     "DEEPSEEK_BASE_URL"

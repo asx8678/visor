@@ -4,7 +4,8 @@ defmodule Visor.Model.DeepSeekTest do
   alias Visor.Model.DeepSeek
 
   @moduletag :tmp_dir
-  @names ~w(DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_MODEL DEEPSEEK_MAX_TOKENS)
+  @names ~w(DEEPSEEK_API_KEY DEEPSEEK_BASE_URL DEEPSEEK_MODEL DEEPSEEK_MAX_TOKENS
+             DEEPSEEK_CONTEXT_WINDOW)
 
   setup %{tmp_dir: tmp_dir} do
     workspace = Application.get_env(:visor, :workspace)
@@ -43,6 +44,7 @@ defmodule Visor.Model.DeepSeekTest do
     DEEPSEEK_BASE_URL=https://gateway.test/v1/
     DEEPSEEK_MODEL=deepseek-v4.1-flash
     DEEPSEEK_MAX_TOKENS=128000
+    DEEPSEEK_CONTEXT_WINDOW=1048000
     """)
 
     Req.Test.stub(DeepSeek, fn conn ->
@@ -53,7 +55,15 @@ defmodule Visor.Model.DeepSeekTest do
       reply =
         sse([
           %{"choices" => [%{"index" => 0, "delta" => %{"content" => "ready"}}]},
-          %{"choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]}
+          %{
+            "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}],
+            # Usage the way OpenAI-format gateways report it.
+            "usage" => %{
+              "prompt_tokens" => 1209,
+              "completion_tokens" => 2,
+              "prompt_tokens_details" => %{"cached_tokens" => 1024}
+            }
+          }
         ])
 
       conn
@@ -69,8 +79,11 @@ defmodule Visor.Model.DeepSeekTest do
       thinking: true
     }
 
-    assert {:ok, %{message: %{"content" => "ready"}, finish_reason: "stop"}} =
+    assert {:ok, %{message: %{"content" => "ready"}, finish_reason: "stop", usage: usage}} =
              DeepSeek.stream(request, fn _snapshot -> :ok end)
+
+    assert %{"prompt_cache_hit_tokens" => 1024, "prompt_cache_miss_tokens" => 185} = usage
+    assert %{max_tokens: 128_000, context_window: 1_048_000} = DeepSeek.info()
 
     assert_received {:request, "gateway.test", "/v1/chat/completions", ["Bearer sk-test"], body}
 

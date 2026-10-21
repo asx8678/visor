@@ -239,31 +239,36 @@ defmodule Visor.Agent do
 
     state = %{state | last_prompt_tokens: prompt_tokens(result.usage, state.last_prompt_tokens)}
 
-    case {result.finish_reason, result.tool_calls} do
-      {"tool_calls", [_ | _] = calls} ->
-        state |> append(result.message) |> run_tools(calls)
+    state =
+      case {result.finish_reason, result.tool_calls} do
+        {"tool_calls", [_ | _] = calls} ->
+          state |> append(result.message) |> run_tools(calls)
 
-      {"stop", _calls} ->
-        state |> append(result.message) |> set_status(:idle)
+        {"stop", _calls} ->
+          state |> append(result.message) |> set_status(:idle)
 
-      {"length", _calls} ->
-        note(
-          state,
-          :error,
-          "The response hit the max_tokens limit and was cut off. Its tool calls were not run."
-        )
+        {"length", _calls} ->
+          note(
+            state,
+            :error,
+            "The response hit the max_tokens limit and was cut off. Its tool calls were not run."
+          )
 
-        state |> append(Map.delete(result.message, "tool_calls")) |> set_status(:idle)
+          state |> append(Map.delete(result.message, "tool_calls")) |> set_status(:idle)
 
-      {reason, _calls} ->
-        note(
-          state,
-          :error,
-          "The model stopped without finishing (finish_reason: #{reason || "none"})."
-        )
+        {reason, _calls} ->
+          note(
+            state,
+            :error,
+            "The model stopped without finishing (finish_reason: #{reason || "none"})."
+          )
 
-        set_status(state, :idle)
-    end
+          set_status(state, :idle)
+      end
+
+    # The reply, when kept, is now part of the conversation.
+    broadcast(state, {:context, length(state.messages)})
+    state
   end
 
   defp handle_model_result({:error, message}, state) do
