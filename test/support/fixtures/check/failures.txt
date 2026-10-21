@@ -1,0 +1,59 @@
+Compiling 1 file (.ex)
+    warning: variable "y" is unused (if the variable is not meant to be used, prefix it with an underscore)
+    │
+  5 │     y = 1
+    │     ~
+    │
+    └─ lib/checkdemo.ex:5:5: Checkdemo.unused/1
+
+Generated checkdemo app
+Running ExUnit with seed: 0, max_cases: 20
+
+*
+
+  1) test map keys (Checkdemo.OtherTest)
+     test/other_test.exs:4
+     Assertion with == failed
+     code:  assert %{a: 1, b: 2} == %{a: 1, b: 3}
+     left:  %{a: 1, b: 2}
+     right: %{a: 1, b: 3}
+     stacktrace:
+       test/other_test.exs:5: (test)
+
+.
+
+  2) test adds wrongly (CheckdemoTest)
+     test/checkdemo_test.exs:9
+     Assertion with == failed
+     code:  assert Checkdemo.add(1, 2) == 4
+     left:  3
+     right: 4
+     stacktrace:
+       test/checkdemo_test.exs:10: (test)
+
+
+
+  3) test raises (CheckdemoTest)
+     test/checkdemo_test.exs:13
+     ** (RuntimeError) boom
+     code: Checkdemo.boom()
+     stacktrace:
+       (checkdemo 0.1.0) lib/checkdemo.ex:9: Checkdemo.boom/0
+       test/checkdemo_test.exs:14: (test)
+
+
+
+  4) test matches text (CheckdemoTest)
+     test/checkdemo_test.exs:17
+     Assertion with =~ failed
+     code:  assert "Cancelled." =~ "not found"
+     left:  "Cancelled."
+     right: "not found"
+     stacktrace:
+       test/checkdemo_test.exs:18: (test)
+
+
+Finished in 0.00 seconds (0.00s async, 0.00s sync)
+
+Result: 1/5 passed, 1 skipped
+Failed: 4 tests

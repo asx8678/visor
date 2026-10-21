@@ -1,0 +1,7 @@
+Compiling 1 file (.ex)
+Running ExUnit with seed: 0, max_cases: 20
+
+...
+Finished in 0.00 seconds (0.00s async, 0.00s sync)
+
+Result: 3 passed (1 doctest, 2 tests)

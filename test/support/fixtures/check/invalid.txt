@@ -1,0 +1,49 @@
+    warning: variable "y" is unused (if the variable is not meant to be used, prefix it with an underscore)
+    │
+  5 │     y = 1
+    │     ~
+    │
+    └─ lib/checkdemo.ex:5:5: Checkdemo.unused/1
+
+Running ExUnit with seed: 0, max_cases: 20
+
+    warning: incompatible types given to ExUnit.Callbacks.__merge__/4:
+
+        ExUnit.Callbacks.__merge__(
+          Checkdemo.SetupTest,
+          :setup_all,
+          context,
+          __ex_unit_setup_all_0(context)
+        )
+
+    given types:
+
+        Checkdemo.SetupTest, :setup_all, dynamic(), -none()-
+
+    the 4th argument is empty (often represented as none()), most likely because it is the result of an expression that always fails, such as a `raise` or a previous invalid call. This causes any function called with this value to fail
+
+    where "context" was given the type:
+
+        # type: dynamic()
+        # from: test/setup_test.exs:1
+        context
+
+    type warning found at:
+    │
+  1 │ defmodule Checkdemo.SetupTest do
+    │ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    │
+    └─ test/setup_test.exs:1: Checkdemo.SetupTest.__ex_unit__/2
+
+?
+
+  0) Checkdemo.SetupTest: failure on setup_all callback, all tests have been invalidated
+     ** (RuntimeError) no database
+     stacktrace:
+       test/setup_test.exs:5: Checkdemo.SetupTest.__ex_unit_setup_all_0/1
+       test/setup_test.exs:1: Checkdemo.SetupTest.__ex_unit__/2
+
+
+Finished in 0.00 seconds (0.00s async, 0.00s sync)
+
+Result: 0 tests, 1 invalid
