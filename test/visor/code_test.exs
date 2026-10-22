@@ -107,6 +107,18 @@ defmodule Visor.CodeTest do
     assert message =~ "The script made 2,000 V calls, the most one script may make."
   end
 
+  test "says how to write a file too long for one script" do
+    code = ~s|V.write("big.html", "#{String.duplicate("x", 20_000)}")|
+    assert {:error, message} = Code.run(code, %{})
+
+    assert message ==
+             "not run: the script is 20,023 characters, over the limit of 20,000. Write a " <>
+               "long file in parts: the first with V.write, each next one with " <>
+               "V.write(path, V.read(path) <> part)."
+
+    assert {:ok, _} = Code.run(String.slice(code, 0, 19_980) <> ~s|")|, %{})
+  end
+
   test "keeps scripts away from secrets and the rest of the system" do
     assert {:error, message} = Code.run(~S|V.read(".env")|, %{})
     assert message =~ "holds secrets"

@@ -13,8 +13,11 @@ defmodule Visor.Agent do
   alias Visor.{Harness, Model, Tools, Usage}
   alias Visor.Agent.Event
 
-  # Model calls allowed for one prompt before the loop gives up.
+  # Model calls allowed for one prompt. The last runs without tools, so the
+  # model reports where it got to instead of stopping mid-task.
   @max_steps 24
+  # From this many calls left, each tool result says how many remain.
+  @warn_steps 4
   @efforts ~w(low high max)
 
   @system """
@@ -186,10 +189,13 @@ defmodule Visor.Agent do
     turn = state.turn + 1
     id = state.id
 
+    # The last call keeps the tools in the request, so the provider's cache
+    # still covers it, but may not call them.
     request = %{
       system: @system,
       messages: state.messages,
       tools: Tools.definitions(),
+      tool_choice: if(last_step?(state.steps + 1), do: "none", else: "auto"),
       effort: state.effort,
       thinking: state.thinking
     }
@@ -251,8 +257,15 @@ defmodule Visor.Agent do
 
     state =
       case {result.finish_reason, result.tool_calls} do
+        {"tool_calls", [_ | _]} when state.steps >= @max_steps ->
+          note(state, :error, "Stopped after #{@max_steps} model calls for one prompt.")
+          state |> append(Map.delete(result.message, "tool_calls")) |> finish(:step_limit)
+
         {"tool_calls", [_ | _] = calls} ->
           state |> append(result.message) |> run_tools(calls)
+
+        {"stop", _calls} when state.steps >= @max_steps ->
+          state |> append(result.message) |> finish(:step_limit)
 
         {"stop", _calls} ->
           state |> append(result.message) |> finish(:answered)
@@ -347,20 +360,51 @@ defmodule Visor.Agent do
       Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
         state
 
-      state.steps >= @max_steps ->
-        state = append_tool_results(state)
-        note(state, :error, "Stopped after #{@max_steps} model calls for one prompt.")
-        finish(state, :step_limit)
-
       true ->
-        state |> append_tool_results() |> start_turn()
+        if last_step?(state.steps + 1) do
+          note(
+            state,
+            :info,
+            "The next model call is the last of #{@max_steps} for this prompt, so it runs " <>
+              "without tools and reports where the work got to."
+          )
+        end
+
+        state |> append_tool_results(steps_left(state)) |> start_turn()
     end
   end
 
-  defp append_tool_results(state) do
+  defp last_step?(step), do: step >= @max_steps
+
+  # What the model is told about its remaining calls, after the last tool
+  # result. Only new messages carry it, so the cached prefix stays the same.
+  defp steps_left(%{steps: steps}) do
+    case @max_steps - steps do
+      1 ->
+        "[Visor: this is the last model call for this prompt, and it can't run tools. " <>
+          "Reply to the user: what is done, what isn't, what you suspect is wrong and " <>
+          "what you'd do next. They can say \"continue\" for #{@max_steps} more calls.]"
+
+      left when left <= @warn_steps ->
+        "[Visor: #{left} model calls left for this prompt, this one included; the last " <>
+          "can't run tools. Finish what you're on, or wrap up and leave the last call to " <>
+          "report.]"
+
+      _plenty ->
+        nil
+    end
+  end
+
+  defp append_tool_results(state, footer \\ nil) do
+    tools = state.tools |> Map.values() |> Enum.sort_by(& &1.index)
+    last = length(tools) - 1
+
     messages =
-      for tool <- state.tools |> Map.values() |> Enum.sort_by(& &1.index) do
-        %{"role" => "tool", "tool_call_id" => tool.call.id, "content" => tool.result}
+      for {tool, index} <- Enum.with_index(tools) do
+        content =
+          if footer && index == last, do: tool.result <> "\n\n" <> footer, else: tool.result
+
+        %{"role" => "tool", "tool_call_id" => tool.call.id, "content" => content}
       end
 
     %{state | messages: state.messages ++ messages, tools: %{}}

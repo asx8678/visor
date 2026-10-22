@@ -20,6 +20,9 @@ defmodule Visor.Code do
   alias Visor.Feedback
   alias Visor.Agent.Event
 
+  # V.__begin__/0 finds the script's context and names its processes.
+  @begin "V.__begin__(); "
+
   @opts [
     allowlist: Visor.Code.Allowlist,
     timeout: Visor.Limits.script_timeout_ms(),
@@ -28,7 +31,8 @@ defmodule Visor.Code do
     max_reductions: 2_000_000_000,
     # In words, about 100 MB.
     max_heap_size: 12_500_000,
-    max_length: 20_000,
+    # @begin doesn't count against the script.
+    max_length: Visor.Limits.script_chars() + byte_size(@begin),
     pretty: true,
     # Maps print in key order, so the same value always reads the same.
     inspect_sort_maps: true
@@ -41,9 +45,8 @@ defmodule Visor.Code do
   feedback collector.
   """
   def run(code, context) do
-    # V.__begin__/0 finds this context and names the script's processes.
     Process.put(__MODULE__, Map.put(context, :runner, self()))
-    result = Dune.eval_string("V.__begin__(); " <> code, @opts)
+    result = Dune.eval_string(@begin <> code, @opts)
     log_script(context, result)
     Feedback.Script.render(result, calls(), &Feedback.keep(context[:session], &1))
   end

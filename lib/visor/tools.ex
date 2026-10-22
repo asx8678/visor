@@ -51,7 +51,10 @@ defmodule Visor.Tools do
           extname are available. import, alias, try/rescue, processes, File and System are not. \
           A failing V call raises and stops the script; its error comes back to you, so check \
           with V.exists? before reading a file that may be missing. A script may make up to \
-          #{Format.number(Limits.v_calls())} V calls: grep a folder once rather than each file.\
+          #{Format.number(Limits.v_calls())} V calls: grep a folder once rather than each file. \
+          A script may be up to #{Format.number(Limits.script_chars())} characters; write a \
+          longer file in parts, the first with V.write and each next one with \
+          V.write(path, V.read(path) <> part).\
           """,
           parameters: %{
             type: "object",

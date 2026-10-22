@@ -56,7 +56,7 @@ defmodule VisorWeb do
       # HTML escaping functionality
       import Phoenix.HTML
       # How numbers, counts and times read
-      import Visor.Format, only: [count: 2, number: 1, seconds: 1]
+      import Visor.Format, only: [count: 2, number: 1, seconds: 1, short: 1]
       # Core UI components
       import VisorWeb.CoreComponents
 

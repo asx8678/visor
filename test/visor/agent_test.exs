@@ -45,6 +45,28 @@ defmodule Visor.AgentTest do
     assert {:error, :idle} = Agent.interrupt(id)
   end
 
+  test "spends the last model call on a report, with the tools off", %{id: id} do
+    assert :ok = Agent.prompt(id, "keep going")
+
+    for step <- 1..23 do
+      assert_receive {:agent, {:turn_start, %{step: ^step, max_steps: 24}}}
+      assert_receive {:agent, {:turn_end, %{finish_reason: "tool_calls"}}}
+    end
+
+    assert_receive {:agent, {:note, :info, "The next model call is the last of 24" <> _}}
+    assert_receive {:agent, {:turn_start, %{step: 24}}}
+
+    assert_receive {:agent, {:turn_end, %{finish_reason: "stop", final: %{content: report}}}}
+
+    assert report =~
+             "[Visor: this is the last model call for this prompt, and it can't run tools."
+
+    assert_receive {:agent, {:prompt_end, %{reason: :step_limit, steps: 24}}}
+    refute_received {:agent, {:turn_start, %{step: 25}}}
+    # The prompt, 23 tool calls and their results, and the report.
+    assert %{status: :idle, messages: 48} = Agent.settings(id)
+  end
+
   test "rejects a prompt while one is running", %{id: id} do
     assert :ok = Agent.prompt(id, "show BEAM stats")
     assert {:error, :busy} = Agent.prompt(id, "again")

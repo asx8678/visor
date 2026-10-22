@@ -12,9 +12,10 @@ defmodule VisorWeb.HarnessLive do
 
   alias Visor.{Agent, Harness, Model, Observer, SessionLog, Usage}
   alias Visor.Agent.Totals
+  alias VisorWeb.ModelCall
 
   @log_limit 150
-  @empty_snapshot %{tree: [], lamps: [], stats: %{}, apps: [], history: []}
+  @empty_snapshot %{tree: [], stats: %{}, apps: [], history: []}
 
   @examples [
     "List the files in this project",
@@ -41,10 +42,18 @@ defmodule VisorWeb.HarnessLive do
         provider: Model.current().info(),
         status: :idle,
         settings: %{effort: "high", thinking: true},
-        # The running prompt's work entry and its streaming turn.
+        # The running prompt's work entry and its streaming turn, and the
+        # last prompt's work for the timeline once it is done.
         work: nil,
+        last_work: nil,
         live_turn: nil,
         turn_stats: nil,
+        # The session's finished model calls, newest first.
+        turn_history: [],
+        # The running prompt's model call, as %{n, max}, and the time the
+        # elapsed clock reads, moved on with each runtime snapshot.
+        step: nil,
+        now: System.monotonic_time(:millisecond),
         totals: %Totals{},
         context_messages: 0,
         context_tokens: nil,
@@ -65,7 +74,6 @@ defmodule VisorWeb.HarnessLive do
       {:ok,
        assign(socket,
          session_id: id,
-         log_path: log_path(id),
          settings: Map.take(settings, [:effort, :thinking]),
          provider: settings.provider
        )}
@@ -85,14 +93,20 @@ defmodule VisorWeb.HarnessLive do
         class="visor-processes flex min-h-0 flex-col border-r border-rule bg-panel"
         aria-label="Processes"
       >
-        <div class="space-y-3 border-b border-rule px-4 py-3">
+        <div class="space-y-2.5 border-b border-rule px-4 py-3">
           <h2 class="font-display text-lg font-medium text-ink">Processes</h2>
           <.app_strip apps={@snapshot.apps} />
-          <.lamp_field lamps={@snapshot.lamps} />
+          <.prompt_timeline work={@work || @last_work} now={@now} />
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-          <.supervision_tree tree={@snapshot.tree} />
+          <.supervision_tree
+            tree={@snapshot.tree}
+            activity={
+              tree_activity(@session_id, @status, @tools_running, @work, @live_turn, @now)
+              |> Map.merge(tab_marker(@session_id, @snapshot.tree))
+            }
+          />
         </div>
 
         <div class="flex h-[34%] min-h-40 flex-col border-t border-rule">
@@ -214,71 +228,88 @@ defmodule VisorWeb.HarnessLive do
 
       <aside
         id="model-inspector"
-        class="visor-model min-h-0 space-y-6 overflow-y-auto border-l border-rule bg-panel px-4 py-4"
+        class="visor-model min-h-0 overflow-y-auto border-l border-rule bg-panel"
         aria-label="Model"
       >
-        <div class="space-y-3">
-          <h2 class="font-display text-lg font-medium text-ink">Model</h2>
-          <.status_readout status={@status} tools_running={@tools_running} />
-          <.readings rows={[
-            {"Provider", @provider.provider},
-            {"API key", key_text(@provider.key)},
-            {"Model", @provider.model, :wide},
-            {"Endpoint", endpoint_text(@provider[:endpoint]), :wide},
-            {"Max output", max_tokens_text(@provider[:max_tokens])}
-          ]} />
-          <.context_meter
-            tokens={@context_tokens}
-            window={@provider[:context_window]}
-            messages={@context_messages}
-          />
-        </div>
-
-        <div class="space-y-2.5 border-t border-rule pt-4">
-          <.segmented
-            id="thinking-mode"
-            label="Thinking"
-            options={["on", "off"]}
-            selected={if(@settings.thinking, do: "on", else: "off")}
-            event="configure"
-            key="thinking"
-          />
-          <div class={[not @settings.thinking && "opacity-50"]}>
+        <div class="space-y-2.5 px-4 py-3">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="font-display text-lg font-medium text-ink">Model</h2>
+            <.status_readout status={@status} tools_running={@tools_running} live_turn={@live_turn} />
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+            <.segmented
+              id="thinking-mode"
+              label="Thinking"
+              options={["on", "off"]}
+              selected={if(@settings.thinking, do: "on", else: "off")}
+              event="configure"
+              key="thinking"
+            />
             <.segmented
               id="reasoning-effort"
-              label="Reasoning effort"
+              label="Effort"
               options={Agent.efforts()}
               selected={@settings.effort}
               event="configure"
               key="effort"
+              class={not @settings.thinking && "opacity-50"}
             />
           </div>
+          <.step_meter :if={@work && @step} step={@step} ms={max(@now - @work.started, 0)} />
         </div>
 
-        <div id="turn-readings" class="space-y-3 border-t border-rule pt-4">
-          <h3 class="text-[13px] text-ink-dim">
-            {if(@turn_stats, do: "Model turn #{@turn_stats.turn}", else: "No model turn yet")}
-          </h3>
-          <.readings :if={@turn_stats} rows={turn_rows(@turn_stats)} />
-        </div>
+        <.inspector_section
+          title={"Context · #{count(@context_messages, "message")}"}
+          aside={context_text(@context_tokens, @provider[:context_window])}
+        >
+          <.context_meter tokens={@context_tokens} window={@provider[:context_window]} />
+        </.inspector_section>
 
-        <div id="session-readings" class="space-y-3 border-t border-rule pt-4">
-          <h3 class="text-[13px] text-ink-dim">This session</h3>
-          <.readings rows={
-            [
-              {"Model turns", number(@totals.turns)},
-              {"Reasoning tokens", number(@totals.reasoning_tokens)},
-              {"Tokens in", number(@totals.prompt_tokens)},
-              {"Tokens out", number(@totals.completion_tokens)}
-            ] ++ if(@log_path, do: [{"Log", @log_path, :wide}], else: [])
-          } />
+        <.inspector_section
+          :if={@turn_stats}
+          id="turn-readings"
+          title={"Model call #{@turn_stats.turn}"}
+          aside={ModelCall.finish_text(@turn_stats[:finish_reason])}
+        >
+          <.readings cols={2} rows={turn_rows(@turn_stats)} />
+        </.inspector_section>
+
+        <.inspector_section title="Model calls" aside="time · in · out">
+          <.turn_history turns={Enum.take(@turn_history, 40)} live={@live_turn} now={@now} />
+        </.inspector_section>
+
+        <.inspector_section
+          id="session-readings"
+          title="This session"
+          aside={count(@totals.turns, "model call")}
+        >
+          <.readings cols={2} rows={session_rows(@totals)} />
           <.cache_bar hit={@totals.cached_tokens} miss={@totals.uncached_tokens} />
-        </div>
+          <.readings :if={@log_path} id="session-log" rows={[{"Log", @log_path}]} />
+        </.inspector_section>
 
-        <div id="last-request" class="space-y-2 border-t border-rule pt-4">
-          <h3 class="text-[13px] text-ink-dim">
-            {if(@last_request, do: "Request for turn #{@last_request.turn}", else: "Last request")}
-          </h3>
+        <.fold
+          id="provider"
+          title="Provider"
+          aside={"#{@provider.provider} · key #{key_text(@provider.key)}"}
+        >
+          <.readings rows={[
+            {"Model", @provider.model},
+            {"Endpoint", endpoint_text(@provider[:endpoint])},
+            {"Max output", max_tokens_text(@provider[:max_tokens])},
+            {"Context window", max_tokens_text(@provider[:context_window])}
+          ]} />
+        </.fold>
+
+        <.fold
+          id="last-request"
+          title={
+            if(@last_request,
+              do: "Request for model call #{@last_request.turn}",
+              else: "Last request"
+            )
+          }
+        >
           <pre
             :if={@last_request}
             class="max-h-96 overflow-auto bg-well p-2.5 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink/80"
@@ -286,12 +317,12 @@ defmodule VisorWeb.HarnessLive do
           <p :if={!@last_request} class="text-xs text-ink-dim">
             The request body appears here when the agent calls the model.
           </p>
-        </div>
+        </.fold>
       </aside>
 
       <.panel_tabs
         status={@status}
-        process_count={length(@snapshot.tree)}
+        process_count={Enum.count(@snapshot.tree, &(!&1[:ghost]))}
         key={@provider.key}
       />
 
@@ -520,13 +551,15 @@ defmodule VisorWeb.HarnessLive do
       :ok ->
         socket
         |> stream(:entries, [], reset: true)
+        # The session's model calls and totals stay: they are numbered
+        # and counted for the whole session.
         |> assign(
           context_messages: 0,
           context_tokens: nil,
           work: nil,
+          last_work: nil,
           live_turn: nil,
-          turn_stats: nil,
-          last_request: nil
+          step: nil
         )
 
       {:error, :busy} ->
@@ -557,15 +590,26 @@ defmodule VisorWeb.HarnessLive do
 
   @impl true
   def handle_info({:observer, :snapshot, snapshot}, socket) do
-    {:noreply, assign(socket, :snapshot, snapshot)}
+    {:noreply, assign(socket, snapshot: snapshot, now: System.monotonic_time(:millisecond))}
   end
 
+  # What a script or sandbox starts for itself stays out of the log.
   def handle_info({:observer, :events, events}, socket) do
-    {:noreply, stream(socket, :events, events, limit: -@log_limit)}
+    case Enum.reject(events, &Map.get(&1, :minor, false)) do
+      [] -> {:noreply, socket}
+      events -> {:noreply, stream(socket, :events, events, limit: -@log_limit)}
+    end
   end
 
   def handle_info({:agent, event}, socket),
-    do: {:noreply, socket |> tally(event) |> then(&agent_event(event, &1))}
+    do: {:noreply, socket |> tally(event) |> show_log() |> then(&agent_event(event, &1))}
+
+  # The session log's file is created with the agent's first event, so its
+  # path shows from then on.
+  defp show_log(%{assigns: %{log_path: nil, session_id: id}} = socket) when is_binary(id),
+    do: assign(socket, :log_path, log_path(id))
+
+  defp show_log(socket), do: socket
 
   # The session's totals, and the running prompt's for its work line.
   defp tally(socket, event) do
@@ -591,7 +635,7 @@ defmodule VisorWeb.HarnessLive do
 
     socket
     |> add_entry(%{type: :user, text: text})
-    |> assign(work: work)
+    |> assign(work: work, last_work: nil, step: nil)
     |> stream_insert(:entries, work)
   end
 
@@ -600,6 +644,8 @@ defmodule VisorWeb.HarnessLive do
       id: "turn-#{info.turn}",
       type: :turn,
       turn: info.turn,
+      started: System.monotonic_time(:millisecond),
+      chunks: 0,
       pid: pid_text(info.pid),
       reasoning: "",
       content: "",
@@ -612,7 +658,7 @@ defmodule VisorWeb.HarnessLive do
     socket
     |> assign(
       live_turn: turn,
-      turn_stats: %{turn: info.turn, chunks: 0},
+      step: %{n: info.step, max: info.max_steps},
       provider: info.provider,
       context_messages: info.messages
     )
@@ -625,10 +671,13 @@ defmodule VisorWeb.HarnessLive do
 
   defp agent_event({:stream, n, snapshot}, %{assigns: %{live_turn: %{turn: n}}} = socket) do
     turn =
-      Map.merge(socket.assigns.live_turn, Map.take(snapshot, [:reasoning, :content, :tool_calls]))
+      Map.merge(
+        socket.assigns.live_turn,
+        Map.take(snapshot, [:reasoning, :content, :tool_calls, :chunks])
+      )
 
     socket
-    |> assign(live_turn: turn, turn_stats: %{socket.assigns.turn_stats | chunks: snapshot.chunks})
+    |> assign(live_turn: turn)
     |> put_step(turn)
   end
 
@@ -659,7 +708,8 @@ defmodule VisorWeb.HarnessLive do
       socket
       |> assign(
         live_turn: nil,
-        turn_stats: Map.merge(socket.assigns.turn_stats, info),
+        turn_stats: Map.merge(%{chunks: socket.assigns.live_turn.chunks}, info),
+        turn_history: [history_row(info, usage) | Enum.take(socket.assigns.turn_history, 199)],
         context_tokens: Usage.context(usage) || socket.assigns.context_tokens
       )
       |> put_step(turn)
@@ -672,7 +722,7 @@ defmodule VisorWeb.HarnessLive do
   defp agent_event({:tool_start, call}, socket) do
     socket
     |> assign(tools_running: socket.assigns.tools_running + 1)
-    |> put_step(Map.put(tool_entry(call), :pid, pid_text(call.pid)))
+    |> put_step(%{tool_entry(call) | pid: pid_text(call.pid), started: now()})
   end
 
   defp agent_event({:tool_end, call}, socket) do
@@ -680,8 +730,17 @@ defmodule VisorWeb.HarnessLive do
 
     entry =
       case find_step(socket, entry.id) do
-        %{} = run -> %{entry | calls: run.calls, call_count: run.call_count, pid: run.pid}
-        nil -> entry
+        %{} = run ->
+          %{
+            entry
+            | calls: run.calls,
+              call_count: run.call_count,
+              pid: run.pid,
+              started: Map.get(run, :started)
+          }
+
+        nil ->
+          entry
       end
 
     socket
@@ -693,8 +752,13 @@ defmodule VisorWeb.HarnessLive do
   # value, such as a file's contents, are for the session log.
   defp agent_event({:code_call, call_id, call}, socket) do
     case find_step(socket, "tool-" <> dom_safe(call_id)) do
-      %{} = entry -> put_step(socket, put_code_call(entry, Map.drop(call, [:args, :returned])))
-      nil -> socket
+      %{} = entry ->
+        call = Map.drop(call, [:args, :returned])
+        call = if call.status == :running, do: Map.put(call, :started, now()), else: call
+        put_step(socket, put_code_call(entry, call))
+
+      nil ->
+        socket
     end
   end
 
@@ -706,9 +770,8 @@ defmodule VisorWeb.HarnessLive do
         _failed -> :failed
       end
 
-    socket
-    |> update_work(&%{&1 | status: status, ms: System.monotonic_time(:millisecond) - &1.started})
-    |> assign(work: nil)
+    socket = update_work(socket, &%{&1 | status: status, ms: now() - &1.started})
+    assign(socket, work: nil, last_work: socket.assigns.work)
   end
 
   defp agent_event({:status, status}, socket) do
@@ -766,6 +829,7 @@ defmodule VisorWeb.HarnessLive do
       result: Map.get(call, :result),
       ms: Map.get(call, :ms),
       pid: nil,
+      started: nil,
       code: if(call.name == "elixir", do: script(call.arguments)),
       calls: [],
       call_count: 0
@@ -791,6 +855,75 @@ defmodule VisorWeb.HarnessLive do
     %{entry | calls: calls, call_count: max(entry.call_count, call.n)}
   end
 
+  # What the session's processes are doing, for their rows in the process
+  # tree: keyed by pid text, or by label for the session and its agent.
+  defp tree_activity(nil, _status, _tools, _work, _turn, _now), do: %{}
+
+  defp tree_activity(id, status, tools_running, work, live_turn, now) do
+    steps = if work, do: work.steps, else: []
+
+    tools =
+      for %{type: :tool, status: :running, pid: pid} = tool <- steps, pid, into: %{} do
+        {pid, %{text: tool_doing(tool, now), tone: :tool}}
+      end
+
+    model =
+      if live_turn && live_turn.pid,
+        do: %{live_turn.pid => %{text: model_doing(live_turn, now), tone: :model}},
+        else: %{}
+
+    agent =
+      case status do
+        :streaming -> "waiting on the model"
+        :tools -> "waiting on " <> count(max(tools_running, 1), "tool call")
+        _idle -> nil
+      end
+
+    if(agent, do: %{"agent #{id}" => %{text: agent, tone: :plain}}, else: %{})
+    |> Map.merge(model)
+    |> Map.merge(tools)
+  end
+
+  # With more than one session open, which one is this tab's.
+  defp tab_marker(nil, _tree), do: %{}
+
+  defp tab_marker(id, tree) do
+    sessions = Enum.count(tree, &(String.starts_with?(&1.label, "session ") and !&1[:ghost]))
+
+    if sessions > 1,
+      do: %{"session #{id}" => %{text: "this tab", tone: :plain, inline: true}},
+      else: %{}
+  end
+
+  defp model_doing(turn, now) do
+    # The first chunks may carry no text yet, only the reply's role.
+    text =
+      case ModelCall.phase(turn) do
+        :waiting -> ModelCall.phase_text(:waiting)
+        phase -> "#{ModelCall.phase_text(phase)} · #{count(turn.chunks, "chunk")}"
+      end
+
+    text <> since(turn.started, now)
+  end
+
+  defp tool_doing(tool, now) do
+    case List.last(tool.calls) do
+      %{status: :running, started: started} = call ->
+        "V.#{call.text} · #{seconds(max(now - started, 0))} · call #{call.n}"
+
+      %{} ->
+        "script running · #{count(tool.call_count, "V call")}" <> since(tool.started, now)
+
+      nil ->
+        "script starting" <> since(tool.started, now)
+    end
+  end
+
+  defp since(nil, _now), do: ""
+  defp since(started, now), do: " · #{seconds(max(now - started, 0))}"
+
+  defp now, do: System.monotonic_time(:millisecond)
+
   defp note(socket, level, text), do: add_entry(socket, %{type: :note, level: level, text: text})
 
   defp add_entry(socket, entry) do
@@ -807,17 +940,47 @@ defmodule VisorWeb.HarnessLive do
     [
       {"First token", seconds(stats[:ttft_ms])},
       {"Duration", seconds(stats[:ms])},
+      {"In", short(usage.prompt)},
+      {"Cached", short(usage.cached)},
+      {"Out", short(usage.completion)},
+      {"Reasoning", short(usage.reasoning)},
       {"Chunks", number(stats[:chunks])},
-      {"Finish", stats[:finish_reason] || "streaming"},
-      {"Tokens in", number(usage.prompt)},
-      {"Tokens out", number(usage.completion)},
-      {"Cached", number(usage.cached)},
-      {"Reasoning", number(usage.reasoning)}
+      {"Speed", speed(usage.completion, stats[:ms], stats[:ttft_ms])}
     ]
   end
 
-  defp key_text(:env), do: "from environment"
-  defp key_text(:dotenv), do: "from .env"
+  defp history_row(info, usage) do
+    usage = usage || %Usage{}
+
+    %{
+      turn: info.turn,
+      ms: info[:ms],
+      ttft_ms: info[:ttft_ms],
+      prompt: usage.prompt,
+      cached: usage.cached,
+      completion: usage.completion,
+      finish: info.finish_reason
+    }
+  end
+
+  defp session_rows(totals) do
+    [
+      {"In", short(totals.prompt_tokens)},
+      {"Out", short(totals.completion_tokens)},
+      {"Reasoning", short(totals.reasoning_tokens)},
+      {"Uncached", short(totals.uncached_tokens)},
+      failures("Tool calls", totals.tool_calls, totals.tool_errors),
+      failures("V calls", totals.v_calls, totals.v_errors),
+      {"Model time", seconds(totals.model_ms)},
+      {"Tool time", seconds(totals.tool_ms)}
+    ]
+  end
+
+  defp failures(label, n, 0), do: {label, number(n)}
+  defp failures(label, n, failed), do: {label, "#{number(n)}, #{number(failed)} failed", :alarm}
+
+  defp key_text(:env), do: "env"
+  defp key_text(:dotenv), do: ".env"
   defp key_text(:none), do: "not set"
 
   defp endpoint_text(nil), do: "none"
@@ -825,6 +988,22 @@ defmodule VisorWeb.HarnessLive do
 
   defp max_tokens_text(nil), do: "API default"
   defp max_tokens_text(max), do: "#{number(max)} tokens"
+
+  defp context_text(nil, nil), do: nil
+  defp context_text(nil, window), do: "#{short(window)} window"
+  defp context_text(tokens, nil), do: "#{short(tokens)} tokens"
+
+  defp context_text(tokens, window),
+    do: "#{short(tokens)} of #{short(window)} · #{percent(tokens, window)}"
+
+  defp percent(part, whole), do: :erlang.float_to_binary(part * 100 / whole, decimals: 1) <> "%"
+
+  # Output tokens a second, from the first token to the last.
+  defp speed(tokens, ms, ttft)
+       when is_integer(tokens) and is_integer(ms) and is_integer(ttft) and ms > ttft,
+       do: "#{round(tokens * 1000 / (ms - ttft))}/s"
+
+  defp speed(_tokens, _ms, _ttft), do: "–"
 
   defp placeholder(:idle), do: "Ask the agent, or type /help"
   defp placeholder(_status), do: "Working. Press Escape or Stop to interrupt."

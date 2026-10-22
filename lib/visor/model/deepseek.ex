@@ -104,6 +104,7 @@ defmodule Visor.Model.DeepSeek do
       stream: true,
       messages: [%{role: "system", content: request.system} | request.messages],
       tools: request.tools,
+      tool_choice: Map.get(request, :tool_choice, "auto"),
       thinking: %{type: if(request.thinking, do: "enabled", else: "disabled")}
     }
 
@@ -119,8 +120,10 @@ defmodule Visor.Model.DeepSeek do
 
     resp = Req.Response.put_private(resp, :parser, parser)
     now = now()
+    # No default of 0: monotonic time may be negative.
+    last = Req.Response.get_private(resp, :emitted_at)
 
-    if now - Req.Response.get_private(resp, :emitted_at, 0) >= @emit_every_ms do
+    if last == nil or now - last >= @emit_every_ms do
       emit.(StreamParser.snapshot(parser))
       Req.Response.put_private(resp, :emitted_at, now)
     else

@@ -19,6 +19,9 @@ defmodule Visor.Limits do
   @doc "The most paths one `V.glob` returns."
   def glob_paths, do: 2_000
 
+  @doc "The longest script the `elixir` tool runs, in characters."
+  def script_chars, do: 20_000
+
   @doc "The most `V` calls one script may make."
   def v_calls, do: 2_000
 

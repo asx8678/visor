@@ -3,7 +3,7 @@ defmodule VisorWeb.HarnessLiveTest do
 
   import Phoenix.LiveViewTest
 
-  alias Visor.Agent
+  alias Visor.{Agent, Observer}
 
   # A prompt runs real tools, and the first elixir script also warms up
   # Dune, which can take longer than assert_receive's default 100 ms.
@@ -26,7 +26,7 @@ defmodule VisorWeb.HarnessLiveTest do
   test "shows the process view, console and model inspector", %{view: view} do
     assert has_element?(view, "#runtime-header")
     assert has_element?(view, "#supervision-tree")
-    assert has_element?(view, "#lamp-field")
+    assert has_element?(view, "#prompt-timeline")
     assert has_element?(view, "#prompt-form")
     assert has_element?(view, "#model-inspector #agent-status")
     assert has_element?(view, "#model-inspector #context-meter")
@@ -45,10 +45,78 @@ defmodule VisorWeb.HarnessLiveTest do
     # The work folds into one line, and the answer stands below it.
     work = "#entries [id^='entries-work-']"
     assert has_element?(view, work, ~r/Worked [\d.]+ m?s/)
-    assert has_element?(view, work, "2 turns · 1 V call")
+    assert has_element?(view, work, "2 model calls · 1 V call")
     assert has_element?(view, "#{work} [id^='tool-'] summary", ~s|V.read("mix.exs")|)
     assert has_element?(view, "#entries-answer-2", "Here is what came back")
     assert has_element?(view, "#last-request pre")
+    assert has_element?(view, "#turn-readings", "Model call 2")
+    assert has_element?(view, "#turn-history li", "#2")
+    assert has_element?(view, "#turn-history li", "#1")
+
+    # The timeline keeps the finished prompt: two model calls and a tool call.
+    assert has_element?(view, "#prompt-timeline", "Last prompt")
+    assert has_element?(view, "#timeline-model [data-state=done]")
+    assert has_element?(view, "#timeline-tools [data-state=done]")
+  end
+
+  test "marks this tab's session once another tab has one", %{conn: conn, view: view, id: id} do
+    Observer.subscribe()
+    await_snapshot(fn tree -> Enum.any?(tree, &(&1.label == "session #{id}")) end)
+    refute has_element?(view, "#supervision-tree", "this tab")
+
+    {:ok, _other, _html} = live(conn, ~p"/")
+
+    await_snapshot(fn tree ->
+      Enum.count(tree, &String.starts_with?(&1.label, "session ")) > 1
+    end)
+
+    assert has_element?(view, "#supervision-tree li", ~r/session #{id}\s+this tab/)
+  end
+
+  test "keeps exited processes in the tree a while, and scripts' own out of the log",
+       %{view: view} do
+    Observer.subscribe()
+    view |> form("#prompt-form", prompt: %{text: "read mix.exs"}) |> render_submit()
+    assert_receive {:agent, {:status, :idle}}, @flow_timeout
+
+    await_snapshot(fn tree -> Enum.any?(tree, &(&1[:ghost] && &1.label == "tool elixir")) end)
+    assert has_element?(view, "#supervision-tree li.tree-gone", "exited after")
+    assert has_element?(view, "#lifecycle li", "tool elixir")
+    refute has_element?(view, "#lifecycle li", "sandbox")
+
+    # The phone tab counts the processes running, not the exited rows.
+    html = view |> render() |> LazyHTML.from_fragment()
+    rows = html |> LazyHTML.query("#supervision-tree > li") |> Enum.count()
+    gone = html |> LazyHTML.query("#supervision-tree > li.tree-gone") |> Enum.count()
+    count = html |> LazyHTML.query("#tab-processes span.text-xs") |> LazyHTML.text()
+    assert String.to_integer(count) == rows - gone
+  end
+
+  @tag :tmp_dir
+  test "shows the session log's path once the file is written", %{conn: conn, tmp_dir: dir} do
+    Application.put_env(:visor, :session_log_dir, dir)
+    on_exit(fn -> Application.put_env(:visor, :session_log_dir, false) end)
+
+    {:ok, view, _html} = live(conn, ~p"/")
+    refute has_element?(view, "#session-log")
+
+    view |> element("#thinking-mode-off") |> render_click()
+    assert has_element?(view, "#session-log", "#{Path.basename(dir)}/")
+
+    [_, id] = Regex.run(~r/session (\w+)/, view |> element("#session-id") |> render())
+    [{log, _path}] = Registry.lookup(Visor.Harness.Registry, {id, :log})
+    _ = :sys.get_state(log)
+    assert [_file] = Path.wildcard(Path.join(dir, "*.jsonl"))
+  end
+
+  test "keeps the session's model calls through /clear", %{view: view} do
+    view |> form("#prompt-form", prompt: %{text: "read mix.exs"}) |> render_submit()
+    assert_receive {:agent, {:status, :idle}}, @flow_timeout
+
+    view |> form("#prompt-form", prompt: %{text: "/clear"}) |> render_submit()
+    assert has_element?(view, "#console-empty")
+    assert has_element?(view, "#turn-history li", "#2")
+    assert has_element?(view, "#session-readings h3", "2 model calls")
   end
 
   test "shows the calls an elixir script makes under its tool card", %{view: view} do
@@ -69,6 +137,14 @@ defmodule VisorWeb.HarnessLiveTest do
 
     assert has_element?(view, "#{card} ol li", ~s|V.glob("lib/**/*.ex")|)
     assert has_element?(view, "#{card} ol li", ~s|V.grep(|)
+  end
+
+  defp await_snapshot(found?) do
+    receive do
+      {:observer, :snapshot, %{tree: tree}} -> found?.(tree) || await_snapshot(found?)
+    after
+      2_000 -> flunk("no runtime snapshot showed it")
+    end
   end
 
   test "handles slash commands", %{view: view} do

@@ -46,6 +46,17 @@ defmodule Visor.Feedback.Script do
 
   defp headline(%Dune.Success{}, calls), do: "ok: #{Format.count(length(calls), "call")}"
 
+  # Dune checks the length before it runs anything, counting the prefix
+  # Visor.Code adds; the overage is the script's own.
+  defp headline(%Dune.Failure{type: :parsing, message: "max code length exceeded: " <> sizes}, _) do
+    [length, max] = sizes |> String.split(" > ") |> Enum.map(&String.to_integer/1)
+    limit = Limits.script_chars()
+
+    "not run: the script is #{Format.number(limit + length - max)} characters, " <>
+      "over the limit of #{Format.number(limit)}. Write a long file in parts: the first " <>
+      "with V.write, each next one with V.write(path, V.read(path) <> part)."
+  end
+
   defp headline(failure, calls) do
     last = List.last(calls)
     stop = stopped(failure)

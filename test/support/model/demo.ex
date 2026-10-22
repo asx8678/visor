@@ -28,7 +28,7 @@ defmodule Visor.Model.Demo do
   @impl true
   def stream(request, emit) do
     started = now()
-    {reasoning, content, calls} = script(request.messages)
+    {reasoning, content, calls} = reply(request.messages, Map.get(request, :tool_choice, "auto"))
 
     state = %{reasoning: "", content: "", tool_calls: [], chunks: 0}
     pause(8)
@@ -78,11 +78,20 @@ defmodule Visor.Model.Demo do
      }}
   end
 
-  defp script(messages) do
-    case List.last(messages) do
-      %{"role" => "tool"} -> summarize(messages)
-      %{"role" => "user", "content" => text} -> respond(text)
+  defp reply(messages, tool_choice) do
+    case {List.last(messages), tool_choice} do
+      {%{"role" => "tool"}, "none"} -> summarize(messages)
+      {%{"role" => "tool"}, _auto} -> keep_going(messages)
+      {%{"role" => "user", "content" => text}, _} -> respond(text)
     end
+  end
+
+  # "keep going" asks for a task that never finishes: list the files after
+  # every result, for as long as the tools are on.
+  defp keep_going([%{"content" => first} | _] = messages) do
+    if first =~ "keep going",
+      do: script("V.ls()", "Not done yet. I'll list the files again."),
+      else: summarize(messages)
   end
 
   defp respond(text) do
@@ -138,7 +147,7 @@ defmodule Visor.Model.Demo do
           "This is a question about the runtime. BEAM stats will answer it."
         )
 
-      String.contains?(lower, ["list", "files", "folder", "directory", "ls"]) ->
+      String.contains?(lower, ["keep going", "list", "files", "folder", "directory", "ls"]) ->
         script("V.ls()", "Listing the project root first gives me the lay of the land.")
 
       true ->

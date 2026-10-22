@@ -17,6 +17,7 @@ defmodule Visor.Model do
           system: String.t(),
           messages: [map()],
           tools: [map()],
+          tool_choice: String.t(),
           effort: String.t(),
           thinking: boolean()
         }

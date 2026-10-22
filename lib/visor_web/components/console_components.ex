@@ -6,6 +6,8 @@ defmodule VisorWeb.ConsoleComponents do
   """
   use VisorWeb, :html
 
+  alias VisorWeb.ModelCall
+
   ## Console entries
 
   attr :id, :string, required: true
@@ -131,10 +133,10 @@ defmodule VisorWeb.ConsoleComponents do
         <.markdown text={@step.content} />
       </div>
       <p
-        :if={@step.finish_reason not in [nil, "stop", "tool_calls"]}
-        class={finish_color(@step.finish_reason)}
+        :if={!@step.streaming and @step.finish_reason not in ["stop", "tool_calls"]}
+        class={if(ModelCall.failed?(@step.finish_reason), do: "text-alarm", else: "text-ink")}
       >
-        {finish_text(@step.finish_reason)}
+        {ModelCall.finish_text(@step.finish_reason)}
       </p>
     </div>
     """
@@ -407,16 +409,20 @@ defmodule VisorWeb.ConsoleComponents do
   # While running, what it is doing now; after, what it took.
   defp work_facts(%{status: :running, steps: steps}) do
     case List.last(steps) do
-      %{type: :tool} = tool -> tool_summary(tool)
-      %{type: :turn, streaming: true, content: ""} -> "thinking"
-      %{type: :turn, streaming: true} -> "writing"
-      _ -> ""
+      %{type: :tool} = tool ->
+        tool_summary(tool)
+
+      %{type: :turn, streaming: true} = turn ->
+        turn |> ModelCall.phase() |> ModelCall.phase_text()
+
+      _ ->
+        ""
     end
   end
 
   defp work_facts(%{totals: totals}) do
     [
-      count(totals.turns, "turn"),
+      count(totals.turns, "model call"),
       totals.v_calls > 0 && count(totals.v_calls, "V call"),
       totals.prompt_tokens > 0 &&
         "#{number(totals.prompt_tokens)} in / #{number(totals.completion_tokens)} out"
@@ -428,18 +434,6 @@ defmodule VisorWeb.ConsoleComponents do
   defp tool_lamp(:running), do: "lamp-busy"
   defp tool_lamp(:ok), do: "lamp-idle"
   defp tool_lamp(:error), do: "lamp-crash"
-
-  defp finish_text("stop"), do: "finished"
-  defp finish_text("tool_calls"), do: "called tools"
-  defp finish_text("length"), do: "cut off at max tokens"
-  defp finish_text("interrupted"), do: "stopped"
-  defp finish_text("crashed"), do: "crashed"
-  defp finish_text("error"), do: "failed"
-  defp finish_text(other), do: other || "ended"
-
-  defp finish_color(reason) when reason in ["stop", "tool_calls"], do: "text-ink-dim"
-  defp finish_color("interrupted"), do: "text-ink"
-  defp finish_color(_reason), do: "text-alarm"
 
   defp word_count(text), do: text |> String.split() |> length()
 end

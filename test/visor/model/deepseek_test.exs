@@ -105,6 +105,42 @@ defmodule Visor.Model.DeepSeekTest do
     assert DeepSeek.info().max_tokens == nil
   end
 
+  test "sends the reply on as it streams in, before the response ends", %{tmp_dir: dir} do
+    File.write!(Path.join(dir, ".env"), "DEEPSEEK_API_KEY=sk-test\n")
+
+    Req.Test.stub(DeepSeek, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.send_resp(
+        200,
+        sse([
+          %{
+            "choices" => [
+              %{"index" => 0, "delta" => %{"content" => "hi"}, "finish_reason" => "stop"}
+            ]
+          }
+        ])
+      )
+    end)
+
+    test = self()
+    request = %{system: "Be brief.", messages: [], tools: [], effort: "high", thinking: false}
+    assert {:ok, _result} = DeepSeek.stream(request, &send(test, {:emitted, &1}))
+
+    # Monotonic time may be negative, which once held every snapshot back
+    # until the stream was over.
+    assert emitted_kinds() == [:request, :snapshot, :response, :snapshot]
+  end
+
+  defp emitted_kinds do
+    receive do
+      {:emitted, {kind, _wire}} -> [kind | emitted_kinds()]
+      {:emitted, %{chunks: _}} -> [:snapshot | emitted_kinds()]
+    after
+      0 -> []
+    end
+  end
+
   test "emits the request as sent and the response, for the session log", %{tmp_dir: dir} do
     File.write!(Path.join(dir, ".env"), "DEEPSEEK_API_KEY=sk-test\n")
 

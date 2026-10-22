@@ -12,6 +12,20 @@ defmodule Visor.Format do
 
   def number(n), do: to_string(n)
 
+  @doc ~S|A large number in short: 1_048_000 reads "1.05M", 73_744 "73.7k", 527 "527".|
+  def short(nil), do: "–"
+  def short(n) when n >= 999_950, do: decimals(n / 1_000_000, 2) <> "M"
+  def short(n) when n >= 1_000, do: decimals(n / 1_000, 1) <> "k"
+  def short(n), do: number(n)
+
+  # Rounded, without trailing zeros: 1.20 reads "1.2", 1.00 "1".
+  defp decimals(x, places) do
+    x
+    |> :erlang.float_to_binary(decimals: places)
+    |> String.trim_trailing("0")
+    |> String.trim_trailing(".")
+  end
+
   @doc ~S|A count with its noun: "1 turn", "1,200 turns".|
   def count(1, noun), do: "1 #{noun}"
   def count(n, noun), do: "#{number(n)} #{noun}s"
