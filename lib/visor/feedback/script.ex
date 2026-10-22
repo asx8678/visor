@@ -14,7 +14,7 @@ defmodule Visor.Feedback.Script do
   behind a ref such as `r3`, which `V.output/2` reads back.
   """
 
-  alias Visor.{Limits, Tools}
+  alias Visor.{Format, Limits, Tools}
 
   @max_command_chars 100
   # Bounds on inspecting a value, which is cut at Limits.value_bytes() anyway;
@@ -44,7 +44,7 @@ defmodule Visor.Feedback.Script do
     {if(match?(%Dune.Success{}, result), do: :ok, else: :error), Tools.clip(text)}
   end
 
-  defp headline(%Dune.Success{}, calls), do: "ok: #{count(calls)}"
+  defp headline(%Dune.Success{}, calls), do: "ok: #{Format.count(length(calls), "call")}"
 
   defp headline(failure, calls) do
     last = List.last(calls)
@@ -58,10 +58,11 @@ defmodule Visor.Feedback.Script do
         "#{stop} while call #{last.n} was running: V.#{last.text}"
 
       stop ->
-        "#{stop} after #{count(calls)}"
+        "#{stop} after #{Format.count(length(calls), "call")}"
 
       true ->
-        "failed after #{count(calls)}:\n" <> indent(without_stacktrace(failure.message))
+        "failed after #{Format.count(length(calls), "call")}:\n" <>
+          indent(without_stacktrace(failure.message))
     end
   end
 
@@ -175,9 +176,6 @@ defmodule Visor.Feedback.Script do
       Tools.truncate(text, max_bytes) <> "\n[cut at #{div(max_bytes, 1000)} KB#{kept}]"
     end
   end
-
-  defp count([_]), do: "1 call"
-  defp count(calls), do: "#{length(calls)} calls"
 
   defp indent(text), do: text |> String.split("\n") |> Enum.map_join("\n", &("  " <> &1))
 

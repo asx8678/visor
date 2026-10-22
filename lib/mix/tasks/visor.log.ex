@@ -27,6 +27,8 @@ defmodule Mix.Tasks.Visor.Log do
   """
   use Mix.Task
 
+  import Visor.Format, only: [count: 2, number: 1]
+
   @switches [full: :boolean, dir: :string, limit: :integer, request: :integer, level: :string]
   @levels ~w(emergency alert critical error warning notice info debug)
 
@@ -186,27 +188,33 @@ defmodule Mix.Tasks.Visor.Log do
       id = file |> Path.basename(".jsonl") |> String.split("-") |> List.last()
       started = events |> List.first(%{}) |> Map.get("at", "?") |> String.slice(0, 19)
       prompts = Enum.count(events, &(&1["event"] == "user"))
-      turns = Enum.count(events, &(&1["event"] == "turn_start"))
-      tools = Enum.count(events, &(&1["event"] == "tool_start"))
-
-      usage =
-        for(%{"event" => "turn_end", "usage" => usage} <- events, do: Visor.Usage.from(usage))
-        |> Enum.reduce(Visor.Usage.zero(), &Visor.Usage.add(&2, &1))
-
+      used = used(events)
       took = events |> List.last(%{}) |> Map.get("elapsed_ms")
 
       Mix.shell().info(
-        "#{started}  #{id}  #{count(prompts, "prompt")}, #{count(turns, "turn")}, " <>
-          "#{count(tools, "tool call")}, #{number(usage.prompt)} tokens in, " <>
-          "#{number(usage.completion)} out, #{seconds(took)}  #{ending(events)}"
+        "#{started}  #{id}  #{count(prompts, "prompt")}, #{count(used["turns"], "turn")}, " <>
+          "#{count(used["tool_calls"], "tool call")}, #{number(used["prompt_tokens"])} tokens in, " <>
+          "#{number(used["completion_tokens"])} out, #{seconds(took)}  #{ending(events)}"
       )
     end
 
     Mix.shell().info("\nRead one with: mix visor.log ID, or ID --request N for a request as sent")
   end
 
-  defp count(1, noun), do: "1 #{noun}"
-  defp count(n, noun), do: "#{n} #{noun}s"
+  # What a session used, as the log counted it: its summary line, or
+  # without one (it is running, or the server stopped) the prompts that
+  # ended.
+  defp used(events) do
+    lines =
+      case Enum.filter(events, &(&1["event"] == "summary")) do
+        [] -> Enum.filter(events, &(&1["event"] == "prompt_end"))
+        summaries -> [List.last(summaries)]
+      end
+
+    for field <- ~w(turns tool_calls prompt_tokens completion_tokens), into: %{} do
+      {field, Enum.sum(for line <- lines, is_integer(line[field]), do: line[field])}
+    end
+  end
 
   # How a session ended, from its last lines.
   defp ending(events) do
@@ -507,12 +515,4 @@ defmodule Mix.Tasks.Visor.Log do
   defp seconds(nil), do: "?"
   defp seconds(ms) when ms < 10_000, do: :erlang.float_to_binary(ms / 1000, decimals: 1) <> "s"
   defp seconds(ms), do: "#{round(ms / 1000)}s"
-
-  defp number(nil), do: "?"
-
-  defp number(n) when is_integer(n) do
-    n |> Integer.to_string() |> String.replace(~r/\B(?=(\d{3})+$)/, ",")
-  end
-
-  defp number(n), do: to_string(n)
 end

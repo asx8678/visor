@@ -10,7 +10,7 @@ defmodule Visor.Tools do
   not sandboxed. Limits are in `Visor.Limits`.
   """
 
-  alias Visor.{Limits, Workspace}
+  alias Visor.{Format, Limits, Workspace}
 
   @skip_dirs ~w(.git _build deps node_modules .elixir_ls)
   @skip_paths ~w(priv/static/assets)
@@ -51,7 +51,7 @@ defmodule Visor.Tools do
           extname are available. import, alias, try/rescue, processes, File and System are not. \
           A failing V call raises and stops the script; its error comes back to you, so check \
           with V.exists? before reading a file that may be missing. A script may make up to \
-          #{thousands(Limits.v_calls())} V calls: grep a folder once rather than each file.\
+          #{Format.number(Limits.v_calls())} V calls: grep a folder once rather than each file.\
           """,
           parameters: %{
             type: "object",
@@ -255,44 +255,6 @@ defmodule Visor.Tools do
     shell_output(port, %{os_pid: os_pid, deadline: deadline, limit: limit}, [], 0)
   end
 
-  @doc "Live statistics about the BEAM runtime."
-  def stats do
-    {uptime_ms, _} = :erlang.statistics(:wall_clock)
-
-    busiest =
-      Process.list()
-      |> Enum.flat_map(fn pid ->
-        case Process.info(pid, [:reductions, :memory, :message_queue_len]) do
-          nil -> []
-          info -> [{pid, info}]
-        end
-      end)
-      |> Enum.sort_by(fn {_pid, info} -> -info[:reductions] end)
-      |> Enum.take(8)
-      |> Enum.map(fn {pid, info} ->
-        %{
-          name: Visor.Observer.describe(pid),
-          pid: inspect(pid),
-          reductions: info[:reductions],
-          memory_kb: div(info[:memory], 1024),
-          queue: info[:message_queue_len]
-        }
-      end)
-
-    %{
-      processes: :erlang.system_info(:process_count),
-      process_limit: :erlang.system_info(:process_limit),
-      memory_mb: mb(:erlang.memory(:total)),
-      process_memory_mb: mb(:erlang.memory(:processes)),
-      schedulers: :erlang.system_info(:schedulers_online),
-      run_queue: :erlang.statistics(:total_run_queue_lengths),
-      uptime_s: div(uptime_ms, 1000),
-      otp: List.to_string(:erlang.system_info(:otp_release)),
-      elixir: System.version(),
-      busiest: busiest
-    }
-  end
-
   @doc "Cuts text for a tool result to `Visor.Limits.result_bytes/0`."
   def clip(text) do
     limit = Limits.result_bytes()
@@ -426,9 +388,4 @@ defmodule Visor.Tools do
       _ -> []
     end
   end
-
-  defp mb(bytes), do: Float.round(bytes / 1_048_576, 1)
-
-  defp thousands(n),
-    do: n |> Integer.to_string() |> String.replace(~r/\B(?=(\d{3})+$)/, ",")
 end

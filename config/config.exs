@@ -12,7 +12,7 @@ config :visor, VisorWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [html: VisorWeb.ErrorHTML, json: VisorWeb.ErrorJSON],
+    formats: [html: VisorWeb.ErrorHTML],
     layout: false
   ],
   pubsub_server: Visor.PubSub,

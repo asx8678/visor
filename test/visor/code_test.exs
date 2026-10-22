@@ -99,12 +99,12 @@ defmodule Visor.CodeTest do
   end
 
   test "stops a script at 2,000 V calls" do
-    assert {:ok, "ok: 2000 calls\n=> :done"} =
+    assert {:ok, "ok: 2,000 calls\n=> :done"} =
              Code.run(~S|for _ <- 1..2000, do: V.exists?("lib"); :done|, %{})
 
     assert {:error, message} = Code.run(~S|for _ <- 1..2001, do: V.exists?("lib"); :done|, %{})
-    assert message =~ "failed after 2000 calls:"
-    assert message =~ "The script made 2000 V calls, the most one script may make."
+    assert message =~ "failed after 2,000 calls:"
+    assert message =~ "The script made 2,000 V calls, the most one script may make."
   end
 
   test "keeps scripts away from secrets and the rest of the system" do

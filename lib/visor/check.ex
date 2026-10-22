@@ -20,7 +20,7 @@ defmodule Visor.Check do
       full output: r4
   """
 
-  alias Visor.Tools
+  alias Visor.{Format, Tools}
 
   # Under the elixir tool's 120 s limit, so a slow suite comes back as a
   # stopped check instead of a stopped script.
@@ -454,19 +454,19 @@ defmodule Visor.Check do
         nil
 
       mine == [] ->
-        "#{count(others, "warning")}, none in files this session changed"
+        "#{Format.count(length(others), "warning")}, none in files this session changed"
 
       true ->
         ["warnings in files this session changed:" | Enum.map(shown, &diagnostic_line/1)] ++
           if(hidden != [], do: ["  and #{length(hidden)} more"], else: []) ++
-          if(others != [], do: ["#{count(others, "more warning")} in other files"], else: [])
+          if(others != [],
+            do: ["#{Format.count(length(others), "more warning")} in other files"],
+            else: []
+          )
     end
   end
 
   defp diagnostic_line(d), do: clip("  #{d.file}:#{d.line}: #{d.message}")
-
-  defp count([_], noun), do: "1 #{noun}"
-  defp count(items, noun), do: "#{length(items)} #{noun}s"
 
   defp clip(line) do
     if String.length(line) > @line_chars,

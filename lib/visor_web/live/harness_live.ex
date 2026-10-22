@@ -8,9 +8,10 @@ defmodule VisorWeb.HarnessLive do
   """
   use VisorWeb, :live_view
 
-  import VisorWeb.HarnessComponents
+  import VisorWeb.{ConsoleComponents, InspectorComponents, ProcessComponents}
 
   alias Visor.{Agent, Harness, Model, Observer, SessionLog, Usage}
+  alias Visor.Agent.Totals
 
   @log_limit 150
   @empty_snapshot %{tree: [], lamps: [], stats: %{}, apps: [], history: []}
@@ -19,7 +20,7 @@ defmodule VisorWeb.HarnessLive do
     "List the files in this project",
     "Read mix.exs",
     "Search for Supervisor",
-    "$ ls lib/visor",
+    "Run the tests",
     "Count functions in each file",
     "Show BEAM stats"
   ]
@@ -44,7 +45,7 @@ defmodule VisorWeb.HarnessLive do
         work: nil,
         live_turn: nil,
         turn_stats: nil,
-        totals: %{turns: 0, usage: Usage.zero()},
+        totals: %Totals{},
         context_messages: 0,
         context_tokens: nil,
         last_request: nil,
@@ -266,12 +267,12 @@ defmodule VisorWeb.HarnessLive do
           <.readings rows={
             [
               {"Model turns", number(@totals.turns)},
-              {"Reasoning tokens", number(@totals.usage.reasoning)},
-              {"Tokens in", number(@totals.usage.prompt)},
-              {"Tokens out", number(@totals.usage.completion)}
+              {"Reasoning tokens", number(@totals.reasoning_tokens)},
+              {"Tokens in", number(@totals.prompt_tokens)},
+              {"Tokens out", number(@totals.completion_tokens)}
             ] ++ if(@log_path, do: [{"Log", @log_path, :wide}], else: [])
           } />
-          <.cache_bar hit={@totals.usage.cached} miss={@totals.usage.uncached} />
+          <.cache_bar hit={@totals.cached_tokens} miss={@totals.uncached_tokens} />
         </div>
 
         <div id="last-request" class="space-y-2 border-t border-rule pt-4">
@@ -295,146 +296,155 @@ defmodule VisorWeb.HarnessLive do
       />
 
       <div id="client-layout" phx-hook=".ClientLayout" hidden></div>
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".ClientLayout">
-        // Picks the layout from the device. Touch screens whose short side is
-        // under 600px are phones either way up; narrow windows get the phone
-        // layout too. Applied at once, then reported so the server agrees.
-        // After a reconnect the server is back to its user-agent guess, so
-        // the layout is reported again.
-        const pick = () => {
-          const touch = matchMedia("(pointer: coarse)").matches
-          if (innerWidth < 768 || (touch && Math.min(innerWidth, innerHeight) < 600)) return "phone"
-          return innerWidth < 1180 ? "tablet" : "desktop"
-        }
 
-        export default {
-          mounted() {
-            const shell = document.getElementById("visor-shell")
-            this.sent = shell.dataset.layout
-            this.apply = () => {
-              const layout = pick()
-              shell.dataset.layout = layout
-              if (layout !== this.sent) {
-                this.sent = layout
-                this.pushEvent("client_layout", {layout})
-              }
-            }
-            this.onResize = () => {
-              cancelAnimationFrame(this.frame)
-              this.frame = requestAnimationFrame(this.apply)
-            }
-            window.addEventListener("resize", this.onResize)
-            this.apply()
-          },
-          reconnected() {
-            this.sent = null
-            this.apply()
-          },
-          destroyed() {
-            window.removeEventListener("resize", this.onResize)
-          }
-        }
-      </script>
-
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".AutoScroll">
-        // Keeps a log pinned to the bottom unless the reader has scrolled up.
-        export default {
-          mounted() {
-            this.pinned = true
-            this.el.addEventListener("scroll", () => {
-              this.pinned = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 48
-            })
-            this.observer = new MutationObserver(() => {
-              if (this.pinned) this.el.scrollTop = this.el.scrollHeight
-            })
-            this.observer.observe(this.el, {childList: true, subtree: true, characterData: true})
-            // On phones the panel is hidden while another tab is open;
-            // catch up when it is shown again.
-            this.resized = new ResizeObserver(() => {
-              if (this.pinned) this.el.scrollTop = this.el.scrollHeight
-            })
-            this.resized.observe(this.el)
-            this.el.scrollTop = this.el.scrollHeight
-          },
-          destroyed() {
-            this.observer.disconnect()
-            this.resized.disconnect()
-          }
-        }
-      </script>
-
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".CommandLine">
-        // Enter sends and Shift+Enter starts a new line; the box grows with
-        // the text. Up and Down recall earlier prompts from the first and last
-        // line, and Escape stops a running prompt. The box is cleared once
-        // LiveView has read it, so the next prompt can be typed straight away.
-        export default {
-          mounted() {
-            this.history = []
-            this.index = 0
-            this.el.addEventListener("input", () => this.fit())
-            this.el.form.addEventListener("submit", () => {
-              const text = this.el.value.trim()
-              if (text && this.history[this.history.length - 1] !== text) this.history.push(text)
-              this.index = this.history.length
-              setTimeout(() => this.recall(this.index))
-            })
-            this.el.addEventListener("keydown", e => {
-              const {value, selectionStart, selectionEnd} = this.el
-              if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-                e.preventDefault()
-                this.el.form.requestSubmit()
-              } else if (e.key === "ArrowUp" && this.index > 0 &&
-                         !value.slice(0, selectionStart).includes("\n")) {
-                e.preventDefault()
-                this.recall(this.index - 1)
-              } else if (e.key === "ArrowDown" && this.index < this.history.length &&
-                         !value.slice(selectionEnd).includes("\n")) {
-                e.preventDefault()
-                this.recall(this.index + 1)
-              } else if (e.key === "Escape") {
-                this.pushEvent("interrupt", {})
-              }
-            })
-            // Focus on desktop only; on phones it would open the keyboard.
-            if (matchMedia("(pointer: fine)").matches) this.el.focus()
-          },
-          recall(index) {
-            this.index = index
-            this.el.value = this.history[index] ?? ""
-            this.fit()
-          },
-          fit() {
-            this.el.style.height = "auto"
-            this.el.style.height = `${this.el.scrollHeight}px`
-          }
-        }
-      </script>
-
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyCode">
-        // Copy buttons on the code blocks in model replies.
-        export default {
-          mounted() {
-            this.el.addEventListener("click", e => {
-              const button = e.target.closest("[data-copy]")
-              const code = button?.closest("figure").querySelector("pre")
-              if (!code) return
-              const copied = () => {
-                button.textContent = "Copied"
-                setTimeout(() => { button.textContent = "Copy" }, 1500)
-              }
-              // Without a secure origin there is no clipboard; select the code
-              // so it can be copied by hand.
-              if (navigator.clipboard) {
-                navigator.clipboard.writeText(code.innerText).then(copied)
-              } else {
-                getSelection().selectAllChildren(code)
-              }
-            })
-          }
-        }
-      </script>
+      <.hooks />
     </Layouts.app>
+    """
+  end
+
+  # The page's JS hooks, kept out of render. Colocated hooks are named
+  # for the module that defines them, so they stay in this one.
+  defp hooks(assigns) do
+    ~H"""
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ClientLayout">
+      // Picks the layout from the device. Touch screens whose short side is
+      // under 600px are phones either way up; narrow windows get the phone
+      // layout too. Applied at once, then reported so the server agrees.
+      // After a reconnect the server is back to its user-agent guess, so
+      // the layout is reported again.
+      const pick = () => {
+        const touch = matchMedia("(pointer: coarse)").matches
+        if (innerWidth < 768 || (touch && Math.min(innerWidth, innerHeight) < 600)) return "phone"
+        return innerWidth < 1180 ? "tablet" : "desktop"
+      }
+
+      export default {
+        mounted() {
+          const shell = document.getElementById("visor-shell")
+          this.sent = shell.dataset.layout
+          this.apply = () => {
+            const layout = pick()
+            shell.dataset.layout = layout
+            if (layout !== this.sent) {
+              this.sent = layout
+              this.pushEvent("client_layout", {layout})
+            }
+          }
+          this.onResize = () => {
+            cancelAnimationFrame(this.frame)
+            this.frame = requestAnimationFrame(this.apply)
+          }
+          window.addEventListener("resize", this.onResize)
+          this.apply()
+        },
+        reconnected() {
+          this.sent = null
+          this.apply()
+        },
+        destroyed() {
+          window.removeEventListener("resize", this.onResize)
+        }
+      }
+    </script>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".AutoScroll">
+      // Keeps a log pinned to the bottom unless the reader has scrolled up.
+      export default {
+        mounted() {
+          this.pinned = true
+          this.el.addEventListener("scroll", () => {
+            this.pinned = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 48
+          })
+          this.observer = new MutationObserver(() => {
+            if (this.pinned) this.el.scrollTop = this.el.scrollHeight
+          })
+          this.observer.observe(this.el, {childList: true, subtree: true, characterData: true})
+          // On phones the panel is hidden while another tab is open;
+          // catch up when it is shown again.
+          this.resized = new ResizeObserver(() => {
+            if (this.pinned) this.el.scrollTop = this.el.scrollHeight
+          })
+          this.resized.observe(this.el)
+          this.el.scrollTop = this.el.scrollHeight
+        },
+        destroyed() {
+          this.observer.disconnect()
+          this.resized.disconnect()
+        }
+      }
+    </script>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CommandLine">
+      // Enter sends and Shift+Enter starts a new line; the box grows with
+      // the text. Up and Down recall earlier prompts from the first and last
+      // line, and Escape stops a running prompt. The box is cleared once
+      // LiveView has read it, so the next prompt can be typed straight away.
+      export default {
+        mounted() {
+          this.history = []
+          this.index = 0
+          this.el.addEventListener("input", () => this.fit())
+          this.el.form.addEventListener("submit", () => {
+            const text = this.el.value.trim()
+            if (text && this.history[this.history.length - 1] !== text) this.history.push(text)
+            this.index = this.history.length
+            setTimeout(() => this.recall(this.index))
+          })
+          this.el.addEventListener("keydown", e => {
+            const {value, selectionStart, selectionEnd} = this.el
+            if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+              e.preventDefault()
+              this.el.form.requestSubmit()
+            } else if (e.key === "ArrowUp" && this.index > 0 &&
+                       !value.slice(0, selectionStart).includes("\n")) {
+              e.preventDefault()
+              this.recall(this.index - 1)
+            } else if (e.key === "ArrowDown" && this.index < this.history.length &&
+                       !value.slice(selectionEnd).includes("\n")) {
+              e.preventDefault()
+              this.recall(this.index + 1)
+            } else if (e.key === "Escape") {
+              this.pushEvent("interrupt", {})
+            }
+          })
+          // Focus on desktop only; on phones it would open the keyboard.
+          if (matchMedia("(pointer: fine)").matches) this.el.focus()
+        },
+        recall(index) {
+          this.index = index
+          this.el.value = this.history[index] ?? ""
+          this.fit()
+        },
+        fit() {
+          this.el.style.height = "auto"
+          this.el.style.height = `${this.el.scrollHeight}px`
+        }
+      }
+    </script>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyCode">
+      // Copy buttons on the code blocks in model replies.
+      export default {
+        mounted() {
+          this.el.addEventListener("click", e => {
+            const button = e.target.closest("[data-copy]")
+            const code = button?.closest("figure").querySelector("pre")
+            if (!code) return
+            const copied = () => {
+              button.textContent = "Copied"
+              setTimeout(() => { button.textContent = "Copy" }, 1500)
+            }
+            // Without a secure origin there is no clipboard; select the code
+            // so it can be copied by hand.
+            if (navigator.clipboard) {
+              navigator.clipboard.writeText(code.innerText).then(copied)
+            } else {
+              getSelection().selectAllChildren(code)
+            }
+          })
+        }
+      }
+    </script>
     """
   end
 
@@ -554,7 +564,17 @@ defmodule VisorWeb.HarnessLive do
     {:noreply, stream(socket, :events, events, limit: -@log_limit)}
   end
 
-  def handle_info({:agent, event}, socket), do: {:noreply, agent_event(event, socket)}
+  def handle_info({:agent, event}, socket),
+    do: {:noreply, socket |> tally(event) |> then(&agent_event(event, &1))}
+
+  # The session's totals, and the running prompt's for its work line.
+  defp tally(socket, event) do
+    work =
+      socket.assigns.work &&
+        %{socket.assigns.work | totals: Totals.add(socket.assigns.work.totals, event)}
+
+    assign(socket, totals: Totals.add(socket.assigns.totals, event), work: work)
+  end
 
   # A prompt shows as the user's text, one work entry that folds up every
   # model turn and tool call it took, and the answer.
@@ -566,8 +586,7 @@ defmodule VisorWeb.HarnessLive do
       status: :running,
       started: System.monotonic_time(:millisecond),
       ms: nil,
-      turns: 0,
-      usage: Usage.zero()
+      totals: %Totals{}
     }
 
     socket
@@ -641,10 +660,8 @@ defmodule VisorWeb.HarnessLive do
       |> assign(
         live_turn: nil,
         turn_stats: Map.merge(socket.assigns.turn_stats, info),
-        totals: add_usage(socket.assigns.totals, usage),
         context_tokens: Usage.context(usage) || socket.assigns.context_tokens
       )
-      |> update_work(&%{&1 | turns: &1.turns + 1, usage: Usage.add(&1.usage, usage)})
       |> put_step(turn)
 
     if answer, do: stream_insert(socket, :entries, answer), else: socket
@@ -783,9 +800,6 @@ defmodule VisorWeb.HarnessLive do
       Map.put(entry, :id, "e-#{System.unique_integer([:positive])}")
     )
   end
-
-  defp add_usage(totals, usage),
-    do: %{turns: totals.turns + 1, usage: Usage.add(totals.usage, usage)}
 
   defp turn_rows(stats) do
     usage = Usage.from(stats[:usage]) || %Usage{}

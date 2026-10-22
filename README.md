@@ -1,18 +1,36 @@
 # Visor
 
-To start your Phoenix server:
+An agent harness: a Phoenix LiveView console for a coding agent that runs
+under OTP supervision, with the live supervision tree beside it.
 
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
+The agent talks to DeepSeek and has one tool, `elixir`: each step is a short
+script, run in a Dune sandbox, that works on the project through `V`
+(`V.read`, `V.edit`, `V.grep`, `V.sh`, `V.check` and the rest, in `lib/v.ex`).
+Every path goes through `Visor.Workspace`, which keeps it inside the project
+and refuses `.env` files.
 
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
+## Running it
 
-Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
+1. Put the key in a `.env` file in the project folder (it is gitignored):
 
-## Learn more
+       DEEPSEEK_API_KEY=...
 
-* Official website: https://www.phoenixframework.org/
-* Guides: https://phoenix.hexdocs.pm/overview.html
-* Docs: https://phoenix.hexdocs.pm
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+   `DEEPSEEK_BASE_URL` and `DEEPSEEK_MODEL` there override the defaults in
+   `config/config.exs`.
+
+2. `mix setup`, then `mix phx.server` (or `iex -S mix phx.server`).
+3. Open [localhost:4000](http://localhost:4000).
+
+## When something goes wrong
+
+Each console session writes a log under `log/sessions/`.
+
+    mix visor.log                 # the sessions, newest last
+    mix visor.log latest          # one session's timeline
+    mix visor.log ID --request N  # model call N's request, as sent
+    mix visor.log server          # the server log since the last start
+
+## Working on it
+
+`AGENTS.md` explains how the parts fit together and the rules to keep.
+Run `mix precommit` before committing.

@@ -34,24 +34,6 @@ defmodule Visor.Usage do
 
   def from(_none), do: nil
 
-  @doc "Usage with every field 0, to add to."
-  def zero, do: %__MODULE__{prompt: 0, cached: 0, uncached: 0, completion: 0, reasoning: 0}
-
-  @doc "The sum of two usages, counting a missing field as 0."
-  def add(sum, nil), do: sum
-
-  def add(%__MODULE__{} = a, %__MODULE__{} = b) do
-    plus = fn x, y -> (x || 0) + (y || 0) end
-
-    %__MODULE__{
-      prompt: plus.(a.prompt, b.prompt),
-      cached: plus.(a.cached, b.cached),
-      uncached: plus.(a.uncached, b.uncached),
-      completion: plus.(a.completion, b.completion),
-      reasoning: plus.(a.reasoning, b.reasoning)
-    }
-  end
-
   @doc "The tokens the conversation holds after this call, or nil when unknown."
   def context(%__MODULE__{prompt: prompt, completion: completion})
       when is_integer(prompt) and is_integer(completion),

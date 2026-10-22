@@ -1,15 +1,15 @@
-defmodule VisorWeb.HarnessComponentsTest do
+defmodule VisorWeb.ConsoleComponentsTest do
   use ExUnit.Case, async: true
 
   import Phoenix.Component
   import Phoenix.LiveViewTest
 
-  alias VisorWeb.HarnessComponents
+  alias VisorWeb.ConsoleComponents
 
   defp markdown(text) do
     assigns = %{text: text}
 
-    ~H"<HarnessComponents.markdown text={@text} />"
+    ~H"<ConsoleComponents.markdown text={@text} />"
     |> rendered_to_string()
     |> LazyHTML.from_fragment()
   end

@@ -11,7 +11,7 @@ defmodule Visor.Agent.Event do
     * `{:user, text}`: a prompt the user sent
     * `{:turn_start, %{turn, step, max_steps, provider, effort, thinking,
       messages, pid}}`: a model call started, in task `pid`
-    * `{:request, turn, json}`: the request, shortened for the console
+    * `{:request, turn, preview}`: the request, shortened for the console
     * `{:wire_request, turn, %{url, body}}` and `{:wire_response, turn,
       %{status, headers} | %{error}}`: the request as sent and what came
       back, for the session log
@@ -36,12 +36,60 @@ defmodule Visor.Agent.Event do
       output and value, before they were cut for the model
   """
 
-  @type t :: tuple()
+  @type call_id :: String.t()
+  @type turn :: pos_integer()
+
+  @typedoc "Why a prompt ended."
+  @type reason ::
+          :answered
+          | :max_tokens
+          | :interrupted
+          | :model_crashed
+          | :model_error
+          | :step_limit
+          | :unfinished
+
+  @typedoc "A tool call, as `tool_start` and `tool_end` carry it."
+  @type tool_call :: %{
+          required(:id) => call_id(),
+          required(:name) => String.t(),
+          required(:arguments) => String.t(),
+          required(:status) => :running | :ok | :error,
+          optional(:pid) => pid(),
+          optional(:result) => String.t(),
+          optional(:ms) => non_neg_integer() | nil
+        }
+
+  @type t ::
+          {:user, String.t()}
+          | {:turn_start, map()}
+          | {:request, turn(), map()}
+          | {:wire_request, turn(), %{url: String.t(), body: term()}}
+          | {:wire_response, turn(), map()}
+          | {:stream, turn(), Visor.Model.snapshot()}
+          | {:turn_end,
+             %{
+               required(:turn) => turn(),
+               required(:finish_reason) => String.t() | nil,
+               optional(atom()) => term()
+             }}
+          | {:tool_start, tool_call()}
+          | {:tool_end, tool_call()}
+          | {:prompt_end, %{reason: reason(), steps: non_neg_integer()}}
+          | {:status, :idle | :streaming | :tools}
+          | {:note, :info | :error, String.t()}
+          | {:settings, map()}
+          | {:context, non_neg_integer()}
+          | {:code_call, call_id(),
+             %{required(:status) => :running | :ok | :error, optional(atom()) => term()}}
+          | {:script_end, call_id(), map()}
 
   @doc "Subscribes the caller to session `id`'s events."
+  @spec subscribe(term()) :: :ok | {:error, term()}
   def subscribe(id), do: Phoenix.PubSub.subscribe(Visor.PubSub, topic(id))
 
   @doc "Publishes an event of session `id`."
+  @spec broadcast(term(), t()) :: :ok | {:error, term()}
   def broadcast(id, event), do: Phoenix.PubSub.broadcast(Visor.PubSub, topic(id), {:agent, event})
 
   defp topic(id), do: "agent:#{id}"

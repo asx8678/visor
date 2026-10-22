@@ -11,7 +11,7 @@ defmodule V do
   for the model when the script ends (see `Visor.Feedback.Script`).
   """
 
-  alias Visor.{Check, Code, Feedback, Limits, Tools, Workspace}
+  alias Visor.{Check, Code, Feedback, Format, Limits, Observer, Tools, Workspace}
 
   defmodule Error do
     defexception [:message]
@@ -124,7 +124,7 @@ defmodule V do
   end
 
   @doc "Live statistics about the BEAM runtime."
-  def beam_stats, do: track(:beam_stats, [], fn -> {:ok, Tools.stats()} end)
+  def beam_stats, do: track(:beam_stats, [], fn -> {:ok, Observer.beam_stats()} end)
 
   # Changes a file with `write` and records the change. Mix notices a
   # changed file by its size, or by its mtime, which counts whole seconds:
@@ -190,7 +190,7 @@ defmodule V do
 
     if n > max_calls do
       raise Error,
-            "The script made #{max_calls} V calls, the most one script may make. " <>
+            "The script made #{Format.number(max_calls)} V calls, the most one script may make. " <>
               "Use fewer, larger calls, such as one V.grep over a folder instead of one per file."
     end
 

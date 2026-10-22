@@ -12,7 +12,9 @@ live supervision tree beside it. There is no database.
 - The agent's events are documented in `Visor.Agent.Event`. The console,
   `Visor.SessionLog` and `mix visor.log` all read them; change the event
   shapes there and keep the session log's JSON keys stable, since
-  `mix visor.log` reads old log files.
+  `mix visor.log` reads old log files. `Visor.Agent.Totals` counts the
+  events once for both; its fields are the keys of the log's `prompt_end`
+  and `summary` lines.
 - The model is always DeepSeek (`Visor.Model.DeepSeek`). Tests use the
   scripted `Visor.Model.Demo` in `test/support`; never add a demo fallback.
 - The agent has one tool, `elixir` (code mode): one script per step, run in a
@@ -34,8 +36,6 @@ live supervision tree beside it. There is no database.
   `:timer.send_interval` for periodic work, not a `Process.send_after`
   chain, and read new state fields with `Map.get` in long-lived processes.
 
-This is a web application written using the Phoenix web framework.
-
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
@@ -45,9 +45,6 @@ This is a web application written using the Phoenix web framework.
 
 - **Always** begin your LiveView templates with `<Layouts.app flash={@flash} ...>` which wraps all inner content
 - The `MyAppWeb.Layouts` module is aliased in the `my_app_web.ex` file, so you can use it without needing to alias it again
-- Anytime you run into errors with no `current_scope` assign:
-  - You failed to follow the Authenticated Routes guidelines, or you failed to pass `current_scope` to `<Layouts.app>`
-  - **Always** fix the `current_scope` error by moving your routes to the proper `live_session` and ensure you pass `current_scope` as needed
 - Phoenix v1.8 moved the `<.flash_group>` component to the `Layouts` module. You are **forbidden** from calling `<.flash_group>` outside of the `layouts.ex` module
 - Out of the box, `core_components.ex` imports an `<.icon name="hero-x-mark" class="w-5 h-5"/>` component for hero icons. **Always** use the `<.icon>` component for icons, **never** use `Heroicons` modules or similar
 - **Always** use the imported `<.input>` component for form inputs from `core_components.ex` when available. `<.input>` is imported and using it will save steps and prevent errors
@@ -56,7 +53,7 @@ custom classes must fully style the input
 
 ### JS and CSS guidelines
 
-- **Use Tailwind CSS classes and custom CSS rules** to create polished, responsive, and visually stunning interfaces.
+- Use Tailwind CSS classes and custom CSS rules
 - Tailwindcss v4 **no longer needs a tailwind.config.js** and uses a new import syntax in `app.css`:
 
       @import "tailwindcss" source(none);
@@ -72,12 +69,11 @@ custom classes must fully style the input
   - You must import the vendor deps into app.js and app.css to use them
   - **Never write inline <script>custom js</script> tags within templates**
 
-### UI/UX & design guidelines
+### UI guidelines
 
-- **Produce world-class UI designs** with a focus on usability, aesthetics, and modern design principles
-- Implement **subtle micro-interactions** (e.g., button hover effects, and smooth transitions)
-- Ensure **clean typography, spacing, and layout balance** for a refined, premium look
-- Focus on **delightful details** like hover effects, loading states, and smooth page transitions
+- The console is a quiet, dense tool: neutral untinted dark grey, no glows or
+  gradients, and colour only for state (running, ok, error)
+- Put the most important content first and fold the detail behind it
 
 
 <!-- usage-rules-start -->
@@ -138,24 +134,6 @@ custom classes must fully style the input
 
    - Instead of sleeping to synchronize before the next call, **always** use `_ = :sys.get_state/1` to ensure the process has handled prior messages
 <!-- phoenix:elixir-end -->
-
-<!-- phoenix:phoenix-start -->
-## Phoenix guidelines
-
-- Remember Phoenix router `scope` blocks include an optional alias which is prefixed for all routes within the scope. **Always** be mindful of this when creating routes within a scope to avoid duplicate module prefixes.
-
-- You **never** need to create your own `alias` for route definitions! The `scope` provides the alias, ie:
-
-      scope "/admin", AppWeb.Admin do
-        pipe_through :browser
-
-        live "/users", UserLive, :index
-      end
-
-  the UserLive route would point to the `AppWeb.Admin.UserLive` module
-
-- `Phoenix.View` no longer is needed or included with Phoenix, don't use it
-<!-- phoenix:phoenix-end -->
 
 <!-- phoenix:html-start -->
 ## Phoenix HTML guidelines
@@ -427,22 +405,9 @@ You can also specify a name to nest the params:
 
 #### Avoiding form errors
 
-**Always** use a form assigned via `to_form/2` in the LiveView, and the `<.input>` component in the template. In the template **always access forms this**:
-
-    <%!-- ALWAYS do this (valid) --%>
-    <.form for={@form} id="my-form">
-      <.input field={@form[:field]} type="text" />
-    </.form>
-
-And **never** do this:
-
-    <%!-- NEVER do this (invalid) --%>
-    <.form for={@changeset} id="my-form">
-      <.input field={@changeset[:field]} type="text" />
-    </.form>
-
-- You are FORBIDDEN from accessing the changeset in the template as it will cause errors
-- **Never** use `<.form let={f} ...>` in the template, instead **always use `<.form for={@form} ...>`**, then drive all form references from the form assign as in `@form[:field]`. The UI should **always** be driven by a `to_form/2` assigned in the LiveView module that is derived from a changeset
+**Always** use a form assigned via `to_form/2` in the LiveView, and drive the
+template from it (`<.form for={@form} id="my-form">`, `@form[:field]`).
+**Never** use `<.form let={f} ...>`.
 <!-- phoenix:liveview-end -->
 
 <!-- usage-rules-end -->

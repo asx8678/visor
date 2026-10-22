@@ -45,29 +45,13 @@ defmodule Visor.SessionLog do
 
   require Logger
 
-  alias Visor.{Agent, Harness, Model, Usage}
+  alias Visor.{Agent, Harness, Model}
+  alias Visor.Agent.Totals
 
   @supervisor Visor.SessionLogs
   @stream_every_ms 5_000
   @tick_ms 10_000
   @stall_after_ms 30_000
-
-  # What a prompt, and the whole session, used.
-  @totals %{
-    turns: 0,
-    tool_calls: 0,
-    tool_errors: 0,
-    v_calls: 0,
-    v_errors: 0,
-    errors: 0,
-    prompt_tokens: 0,
-    cached_tokens: 0,
-    completion_tokens: 0,
-    reasoning_tokens: 0,
-    model_ms: 0,
-    tool_ms: 0,
-    request_bytes: 0
-  }
 
   @doc "The directory session logs go to, or `nil` when logging is off."
   def dir do
@@ -141,7 +125,7 @@ defmodule Visor.SessionLog do
         # totals and how its prompts ended.
         prompt: nil,
         prompts: 0,
-        totals: @totals,
+        totals: %Totals{},
         endings: %{},
         # The last request's messages and tools, so the next request writes
         # only what is new.
@@ -297,48 +281,15 @@ defmodule Visor.SessionLog do
   # Counts what the running prompt and the session use.
   defp tally(state, {:user, _text}) do
     n = state.prompts + 1
-    %{state | prompts: n, prompt: %{n: n, started: now(), totals: @totals}}
+    %{state | prompts: n, prompt: %{n: n, started: now(), totals: %Totals{}}}
   end
 
-  defp tally(state, event), do: add(state, counts(event))
+  defp tally(state, event), do: count(state, &Totals.add(&1, event))
 
-  defp add(state, counts) when counts == %{}, do: state
-
-  defp add(state, counts) do
-    sum = &Map.merge(&1, counts, fn _key, a, b -> a + b end)
-    prompt = state.prompt && %{state.prompt | totals: sum.(state.prompt.totals)}
-    %{state | totals: sum.(state.totals), prompt: prompt}
+  defp count(state, fun) do
+    prompt = state.prompt && %{state.prompt | totals: fun.(state.prompt.totals)}
+    %{state | totals: fun.(state.totals), prompt: prompt}
   end
-
-  defp counts({:turn_start, _info}), do: %{turns: 1}
-
-  defp counts({:turn_end, info}) do
-    usage = Usage.from(Map.get(info, :usage)) || %Usage{}
-
-    %{
-      prompt_tokens: whole(usage.prompt),
-      cached_tokens: whole(usage.cached),
-      completion_tokens: whole(usage.completion),
-      reasoning_tokens: whole(usage.reasoning),
-      model_ms: whole(Map.get(info, :ms))
-    }
-  end
-
-  defp counts({:tool_start, _call}), do: %{tool_calls: 1}
-
-  defp counts({:tool_end, call}),
-    do: %{tool_errors: error(call.status), tool_ms: whole(Map.get(call, :ms))}
-
-  defp counts({:code_call, _call_id, %{status: :running}}), do: %{}
-  defp counts({:code_call, _call_id, call}), do: %{v_calls: 1, v_errors: error(call.status)}
-  defp counts({:note, :error, _text}), do: %{errors: 1}
-  defp counts(_event), do: %{}
-
-  defp error(:error), do: 1
-  defp error(_status), do: 0
-
-  defp whole(n) when is_integer(n), do: n
-  defp whole(_other), do: 0
 
   # Writes the running prompt's totals and how it ended.
   defp end_prompt(%{prompt: nil} = state, _reason, _steps), do: state
@@ -346,7 +297,7 @@ defmodule Visor.SessionLog do
   defp end_prompt(state, reason, steps) do
     %{n: n, started: started, totals: totals} = state.prompt
     fields = %{prompt: n, reason: reason, steps: steps, ms: now() - started}
-    write(state, "prompt_end", Map.merge(totals, fields))
+    write(state, "prompt_end", Map.merge(Totals.to_map(totals), fields))
     %{state | prompt: nil, endings: Map.update(state.endings, to_string(reason), 1, &(&1 + 1))}
   end
 
@@ -355,7 +306,7 @@ defmodule Visor.SessionLog do
   defp summarize(state, reason) do
     state = end_prompt(state, reason, nil)
     fields = %{prompts: state.prompts, endings: state.endings, ms: now() - state.started}
-    write(state, "summary", Map.merge(state.totals, fields))
+    write(state, "summary", Map.merge(Totals.to_map(state.totals), fields))
     state
   end
 
@@ -461,7 +412,7 @@ defmodule Visor.SessionLog do
 
     tools_turn = if same_tools?, do: last.tools_turn, else: turn
     last_request = %{messages: messages, tools: tools, tools_turn: tools_turn}
-    add(%{state | last_request: last_request}, %{request_bytes: bytes})
+    count(%{state | last_request: last_request}, &Totals.bump(&1, request_bytes: bytes))
   end
 
   defp record({:wire_response, turn, info}, state),

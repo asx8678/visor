@@ -14,6 +14,8 @@ defmodule Visor.Observer do
   """
   use GenServer
 
+  alias Visor.Format
+
   @topic "observer"
   @root Visor.Harness
   @sample_ms 500
@@ -31,6 +33,20 @@ defmodule Visor.Observer do
 
   @doc "The latest snapshot, or nil before the first sample."
   def snapshot, do: GenServer.call(__MODULE__, :snapshot)
+
+  @doc """
+  The runtime's statistics as the console shows them (from the last
+  sample), with the release versions and the busiest processes.
+  """
+  def beam_stats do
+    Map.merge(snapshot().stats, %{
+      process_limit: :erlang.system_info(:process_limit),
+      process_memory: :erlang.memory(:processes),
+      otp: List.to_string(:erlang.system_info(:otp_release)),
+      elixir: System.version(),
+      busiest: busiest(8)
+    })
+  end
 
   @doc "Gives a process a name for lifecycle events."
   def label(pid, label), do: GenServer.cast(__MODULE__, {:label, pid, label})
@@ -262,6 +278,28 @@ defmodule Visor.Observer do
     }
   end
 
+  # The processes that have run the most, by reductions since they started.
+  defp busiest(n) do
+    Process.list()
+    |> Enum.flat_map(fn pid ->
+      case Process.info(pid, [:reductions, :memory, :message_queue_len]) do
+        nil -> []
+        info -> [{pid, info}]
+      end
+    end)
+    |> Enum.sort_by(fn {_pid, info} -> -info[:reductions] end)
+    |> Enum.take(n)
+    |> Enum.map(fn {pid, info} ->
+      %{
+        name: describe(pid),
+        pid: inspect(pid),
+        reductions: info[:reductions],
+        memory: info[:memory],
+        queue: info[:message_queue_len]
+      }
+    end)
+  end
+
   defp apps do
     case Process.whereis(Visor.Supervisor) do
       nil ->
@@ -326,7 +364,7 @@ defmodule Visor.Observer do
   defp lifecycle_event({:exit, pid, reason, at, wall}, state) do
     label = Map.get(state.labels, pid, "process")
     kind = if clean_exit?(reason), do: :exit, else: :crash
-    lifetime = if born = state.born[pid], do: " after #{format_ms(at - born)}"
+    lifetime = if born = state.born[pid], do: " after #{Format.seconds(at - born)}"
 
     event = %{
       id: state.seq,
@@ -356,9 +394,6 @@ defmodule Visor.Observer do
   defp reason_text(reason) do
     reason |> Exception.format_exit() |> String.split("\n") |> hd() |> String.slice(0, 120)
   end
-
-  defp format_ms(ms) when ms < 1000, do: "#{ms} ms"
-  defp format_ms(ms), do: "#{Float.round(ms / 1000, 1)} s"
 
   defp initial_call(pid) do
     case :proc_lib.initial_call(pid) do

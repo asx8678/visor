@@ -19,11 +19,9 @@ defmodule Visor.UsageTest do
     assert Usage.from(nil) == nil
   end
 
-  test "adds usages and measures the context" do
+  test "measures the context" do
     a = Usage.from(%{"prompt_tokens" => 100, "completion_tokens" => 20})
-    sum = Usage.zero() |> Usage.add(a) |> Usage.add(nil) |> Usage.add(a)
 
-    assert %Usage{prompt: 200, completion: 40, cached: 0} = sum
     assert Usage.context(a) == 120
     assert Usage.context(Usage.from(%{"prompt_tokens" => 1})) == nil
   end
