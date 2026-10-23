@@ -67,6 +67,12 @@ defmodule Visor.SessionLogTest do
     assert_receive {:agent, {:turn_end, %{turn: 2, finish_reason: "stop"}}}
     assert_receive {:agent, {:status, :idle}}
 
+    # The agent sends the conversation's size after it goes idle. Once it
+    # answers a call it has sent that, and once the log answers one the log
+    # has written it, so the owner's exit comes after it.
+    _ = Agent.settings(id)
+    sync(log)
+
     send(owner, :stop)
     assert_receive {:DOWN, ^ref, :process, ^log, :normal}
 
