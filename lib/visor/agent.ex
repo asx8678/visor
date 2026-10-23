@@ -54,7 +54,8 @@ defmodule Visor.Agent do
     effort: "high",
     thinking: true,
     # The running batch of tool calls by task ref, each as %{call, index,
-    # task, started, result}; the results go back in call order.
+    # task, started, result}; the results go back in call order. A call
+    # waiting its turn has no task yet and sits under a ref of its own.
     tools: %{},
     # Prompt tokens the last request sent, to notice when the next one
     # misses the provider's cache.
@@ -110,11 +111,19 @@ defmodule Visor.Agent do
 
   def handle_call(:interrupt, _from, %{status: :tools} = state) do
     tools =
-      Map.new(state.tools, fn
+      state.tools
+      |> Enum.sort_by(fn {_ref, tool} -> tool.index end)
+      |> Map.new(fn
         {ref, %{result: nil} = tool} ->
-          # A shutdown rather than a kill, so linked helpers such as Dune's
-          # sandbox exit quietly instead of logging a crash.
-          Task.shutdown(tool.task)
+          if tool.task do
+            # A shutdown rather than a kill, so linked helpers such as
+            # Dune's sandbox exit quietly instead of logging a crash.
+            Task.shutdown(tool.task)
+          else
+            # A call that never started still starts and ends, so every
+            # tool_end has its tool_start.
+            broadcast(state, {:tool_start, Map.merge(tool.call, %{status: :running, pid: nil})})
+          end
 
           broadcast(
             state,
@@ -326,11 +335,27 @@ defmodule Visor.Agent do
     end
   end
 
+  # A batch's calls run one at a time, in order: two scripts editing the
+  # same file at once would each write over the other's change.
   defp run_tools(state, calls) do
     tools =
       calls
       |> Enum.with_index()
       |> Map.new(fn {call, index} ->
+        {make_ref(), %{call: call, index: index, task: nil, started: nil, result: nil}}
+      end)
+
+    set_status(start_next_tool(%{state | tools: tools}), :tools)
+  end
+
+  defp start_next_tool(state) do
+    waiting = for {ref, %{task: nil} = tool} <- state.tools, do: {ref, tool}
+
+    case Enum.min_by(waiting, fn {_ref, tool} -> tool.index end, fn -> nil end) do
+      nil ->
+        state
+
+      {ref, %{call: call} = tool} ->
         context = %{session: state.id, call_id: call.id}
 
         task =
@@ -339,10 +364,9 @@ defmodule Visor.Agent do
           end)
 
         broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
-        {task.ref, %{call: call, index: index, task: task, started: now(), result: nil}}
-      end)
-
-    set_status(%{state | tools: tools}, :tools)
+        tool = %{tool | task: task, started: now()}
+        %{state | tools: state.tools |> Map.delete(ref) |> Map.put(task.ref, tool)}
+    end
   end
 
   defp finish_tool(state, ref, {status, output}) do
@@ -358,7 +382,7 @@ defmodule Visor.Agent do
 
     cond do
       Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
-        state
+        start_next_tool(state)
 
       true ->
         if last_step?(state.steps + 1) do

@@ -22,7 +22,9 @@ defmodule Visor.Agent.Event do
       (its `reasoning`, `content` and `tool_calls`)
     * `{:tool_start, %{id, name, arguments, status: :running, pid}}` and
       `{:tool_end, %{id, name, arguments, status, result, ms}}`: a tool
-      call and the result the model saw
+      call and the result the model saw. A batch's calls run one at a
+      time; one cancelled before its turn starts with a nil `pid` and
+      ends straight away
     * `{:prompt_end, %{reason, steps}}`: the prompt ended and why
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
@@ -55,7 +57,7 @@ defmodule Visor.Agent.Event do
           required(:name) => String.t(),
           required(:arguments) => String.t(),
           required(:status) => :running | :ok | :error,
-          optional(:pid) => pid(),
+          optional(:pid) => pid() | nil,
           optional(:result) => String.t(),
           optional(:ms) => non_neg_integer() | nil
         }

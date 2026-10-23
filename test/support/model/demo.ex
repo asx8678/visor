@@ -98,6 +98,14 @@ defmodule Visor.Model.Demo do
     lower = String.downcase(text)
 
     cond do
+      # One script per ">>" line, all in one reply: a batch of tool calls.
+      text =~ ~r/^\s*>>/ ->
+        calls =
+          for code <- String.split(text, ~r/^\s*>>/m, trim: true),
+              do: tool_call("elixir", %{code: String.trim(code)})
+
+        {"The user wrote several scripts. I'll run each as its own call.", "", calls}
+
       match = Regex.run(~r/^\s*>\s*(.+)$/s, text) ->
         call(
           "elixir",
@@ -163,9 +171,14 @@ defmodule Visor.Model.Demo do
 
   defp script(code, reasoning), do: call("elixir", %{code: code}, reasoning)
 
-  defp call(name, args, reasoning) do
-    id = "demo_#{System.unique_integer([:positive])}"
-    {reasoning, "", [%{id: id, name: name, arguments: Jason.encode!(args)}]}
+  defp call(name, args, reasoning), do: {reasoning, "", [tool_call(name, args)]}
+
+  defp tool_call(name, args) do
+    %{
+      id: "demo_#{System.unique_integer([:positive])}",
+      name: name,
+      arguments: Jason.encode!(args)
+    }
   end
 
   defp summarize(messages) do

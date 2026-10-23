@@ -268,7 +268,7 @@ defmodule Visor.SessionLog do
     %{state | running: running, stream_logged: Map.delete(state.stream_logged, turn)}
   end
 
-  defp track({:tool_start, %{pid: pid, name: name, id: id}}, state),
+  defp track({:tool_start, %{pid: pid, name: name, id: id}}, state) when is_pid(pid),
     do: %{state | running: Map.put(state.running, pid, "tool #{name} #{id}")}
 
   defp track({:tool_end, %{name: name, id: id}}, state) do

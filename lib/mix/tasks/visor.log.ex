@@ -388,7 +388,7 @@ defmodule Mix.Tasks.Visor.Log do
     do: ["turn #{e["turn"]}  #{e["finish_reason"]}"]
 
   defp describe(%{"event" => "tool_start"} = e, _opts),
-    do: ["tool    #{e["name"]} #{e["id"]} started #{e["pid"]}"]
+    do: ["tool    #{e["name"]} #{e["id"]} started #{e["pid"] || "(cancelled before its turn)"}"]
 
   defp describe(%{"event" => "tool_end"} = e, opts) do
     ms = if e["ms"], do: " in #{seconds(e["ms"])}", else: ""

@@ -45,6 +45,57 @@ defmodule Visor.AgentTest do
     assert {:error, :idle} = Agent.interrupt(id)
   end
 
+  @tag :tmp_dir
+  test "runs a batch's calls one at a time, in order", %{id: id, tmp_dir: tmp_dir} do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, tmp_dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+    File.write!(Path.join(tmp_dir, "notes.txt"), Enum.map_join(1..4, &"line#{&1}\n"))
+
+    edits = for n <- 1..4, do: ~s|>> V.edit("notes.txt", "line#{n}\\n", "LINE#{n}\\n")|
+    assert :ok = Agent.prompt(id, Enum.join(edits, "\n"))
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    # Each call ends before the next starts, so no edit writes over another.
+    assert [:start, :done, :start, :done, :start, :done, :start, :done] =
+             Enum.map(tool_events(), &elem(&1, 0))
+
+    assert File.read!(Path.join(tmp_dir, "notes.txt")) == Enum.map_join(1..4, &"LINE#{&1}\n")
+  end
+
+  test "cancels a batch, answering the calls that hadn't started", %{id: id} do
+    assert :ok = Agent.prompt(id, ~s|>> V.sh("sleep 5")\n>> V.ls()\n>> V.ls()|)
+    assert_receive {:agent, {:tool_start, %{pid: pid}}}, 1_000
+    assert is_pid(pid)
+
+    assert :ok = Agent.interrupt(id)
+    assert_receive {:agent, {:prompt_end, %{reason: :interrupted}}}
+
+    # The running call is stopped; the two waiting start without a
+    # process and end at once, and all three are answered.
+    assert [
+             {:done, "Cancelled."},
+             {:start, nil},
+             {:done, "Cancelled."},
+             {:start, nil},
+             {:done, "Cancelled."}
+           ] = tool_events()
+
+    # user, assistant with three tool calls, their three results
+    assert %{status: :idle, messages: 5} = Agent.settings(id)
+  end
+
+  # The tool events received so far, in order: {:start, pid} and
+  # {:done, result}.
+  defp tool_events do
+    receive do
+      {:agent, {:tool_start, call}} -> [{:start, call.pid} | tool_events()]
+      {:agent, {:tool_end, call}} -> [{:done, call.result} | tool_events()]
+    after
+      0 -> []
+    end
+  end
+
   test "spends the last model call on a report, with the tools off", %{id: id} do
     assert :ok = Agent.prompt(id, "keep going")
 
