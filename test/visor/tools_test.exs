@@ -51,7 +51,10 @@ defmodule Visor.ToolsTest do
     assert {0, "unset\n"} = Tools.shell("echo ${DEEPSEEK_API_KEY:-unset}")
   end
 
-  test "stops what a command started when it times out or its caller dies" do
+  test "stops what a command started when it returns, times out or its caller dies" do
+    assert {0, _} = Tools.shell("sleep 30 >/dev/null 2>&1 & echo $! > left")
+    assert {0, _} = Tools.shell(gone("left"), timeout: 5_000)
+
     assert {:timeout, _} = Tools.shell("sleep 30 & echo $! > timed; wait", timeout: 300)
     assert {0, _} = Tools.shell(gone("timed"), timeout: 5_000)
 

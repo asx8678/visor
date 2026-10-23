@@ -232,10 +232,21 @@ defmodule Visor.Tools do
     end
   end
 
+  # Runs before each command. A background `cat` holds the port's stdin,
+  # which closes when the command ends, its caller dies or the VM exits,
+  # and then kills the command's process group. The command itself reads
+  # from /dev/null.
+  @watchdog """
+  exec 3<&0
+  (cat <&3 >/dev/null 2>&1; kill -KILL 0) >/dev/null 2>&1 &
+  exec 3<&- </dev/null
+  """
+
   @doc """
   Runs a shell command in the project folder. Returns `{status, output}`,
   where status is the exit code, or `:timeout` if it was killed at its
-  timeout (`Visor.Limits.shell_timeout_ms/0` by default).
+  timeout (`Visor.Limits.shell_timeout_ms/0` by default). Whatever the
+  command started is stopped with it, background jobs included.
 
   Options: `:timeout` in milliseconds, `:max_bytes` of output to keep
   (`Visor.Limits.result_bytes/0` by default), and `:env`, extra
@@ -250,7 +261,7 @@ defmodule Visor.Tools do
         :binary,
         :exit_status,
         :stderr_to_stdout,
-        args: ["-c", "exec </dev/null\n" <> command],
+        args: ["-c", @watchdog <> command],
         cd: Workspace.root(),
         env: [
           # Unset, so the key can't be read back with `env`.
@@ -261,34 +272,21 @@ defmodule Visor.Tools do
         ]
       ])
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    watcher = kill_when_down(self(), os_pid)
+    # nil when a quick command has already exited, and closed its port;
+    # its output and exit status are waiting in the mailbox.
+    os_pid = with {:os_pid, os_pid} <- Port.info(port, :os_pid), do: os_pid
     limit = Keyword.get(opts, :max_bytes, Limits.result_bytes())
     deadline = System.monotonic_time(:millisecond) + timeout
-    result = shell_output(port, %{os_pid: os_pid, deadline: deadline, limit: limit}, [], 0)
-    send(watcher, :done)
-    result
+    shell_output(port, %{os_pid: os_pid, deadline: deadline, limit: limit}, [], 0)
   end
 
   # The port's process leads a process group of its own (erl_child_setup
   # starts each in a new session), so killing the group also stops what
   # the command started, such as the mix test under a `mix test` shell.
+  defp kill_group(nil), do: :ok
+
   defp kill_group(os_pid) do
     System.cmd("kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
-  end
-
-  # Kills the command's group if `owner` dies before it finishes: a script
-  # stopped at its time limit, or a tool the user cancelled. Closing the
-  # port alone leaves the command running.
-  defp kill_when_down(owner, os_pid) do
-    spawn(fn ->
-      ref = Process.monitor(owner)
-
-      receive do
-        :done -> :ok
-        {:DOWN, ^ref, :process, _pid, _reason} -> kill_group(os_pid)
-      end
-    end)
   end
 
   @doc "Cuts text for a tool result to `Visor.Limits.result_bytes/0`."
