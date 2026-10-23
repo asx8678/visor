@@ -32,7 +32,41 @@ defmodule Visor.ToolsTest do
 
     assert {:ok, [%{file: "lib/app.ex", line: 2, text: "use Supervisor"}]} =
              Tools.search("Supervisor", ".")
+
+    # Named, under its own name or a link's.
+    File.ln_s!(".env", Path.join(tmp_dir, "notes.txt"))
+
+    for path <- [".env", "notes.txt"] do
+      assert {:error, "#{path} holds secrets and can't be read."} ==
+               Tools.search("Supervisor", path)
+    end
   end
+
+  test "keeps the API key out of shell commands' environment" do
+    previous = System.get_env("DEEPSEEK_API_KEY")
+    System.put_env("DEEPSEEK_API_KEY", "secret")
+    on_exit(fn -> if previous, do: System.put_env("DEEPSEEK_API_KEY", previous) end)
+    on_exit(fn -> unless previous, do: System.delete_env("DEEPSEEK_API_KEY") end)
+
+    assert {0, "unset\n"} = Tools.shell("echo ${DEEPSEEK_API_KEY:-unset}")
+  end
+
+  test "stops what a command started when it times out or its caller dies" do
+    assert {:timeout, _} = Tools.shell("sleep 30 & echo $! > timed; wait", timeout: 300)
+    assert {0, _} = Tools.shell(gone("timed"), timeout: 5_000)
+
+    caller = spawn(fn -> Tools.shell("sleep 30 & echo $! > orphan; wait") end)
+    ref = Process.monitor(caller)
+    assert {0, _} = Tools.shell("while [ ! -s orphan ]; do sleep 0.05; done", timeout: 5_000)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^caller, :killed}
+    assert {0, _} = Tools.shell(gone("orphan"), timeout: 5_000)
+  end
+
+  # A command that waits until the process whose pid is in `file` has
+  # exited (a zombie counts as exited).
+  defp gone(file),
+    do: "while ps -o stat= -p $(cat #{file}) | grep -qv Z; do sleep 0.05; done"
 
   test "searches with file and line numbers" do
     assert {:ok, [%{file: "lib/app.ex", line: 2}]} = Tools.search("Supervisor", ".")

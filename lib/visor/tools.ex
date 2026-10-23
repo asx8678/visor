@@ -7,7 +7,8 @@ defmodule Visor.Tools do
 
   Every path goes through `Visor.Workspace`, which keeps it in the project
   and away from secrets. Shell commands run in the project folder but are
-  not sandboxed. Limits are in `Visor.Limits`.
+  not sandboxed: they don't get `DEEPSEEK_API_KEY` in their environment,
+  but nothing stops one reading `.env`. Limits are in `Visor.Limits`.
   """
 
   alias Visor.{Format, Limits, Workspace}
@@ -188,6 +189,8 @@ defmodule Visor.Tools do
   @doc "Lines matching a regular expression, as maps with `:file`, `:line` and `:text`."
   def search(pattern, path, max_matches \\ Limits.grep_matches()) do
     with {:ok, full} <- Workspace.resolve(path),
+         # A folder's secrets are skipped as it is walked; this is for one named.
+         :ok <- Workspace.readable(full, path),
          {:ok, regex} <- compile(pattern) do
       root = Workspace.root()
 
@@ -249,13 +252,43 @@ defmodule Visor.Tools do
         :stderr_to_stdout,
         args: ["-c", "exec </dev/null\n" <> command],
         cd: Workspace.root(),
-        env: [{~c"PAGER", ~c"cat"}, {~c"GIT_PAGER", ~c"cat"}, {~c"TERM", ~c"dumb"} | extra_env]
+        env: [
+          # Unset, so the key can't be read back with `env`.
+          {~c"DEEPSEEK_API_KEY", false},
+          {~c"PAGER", ~c"cat"},
+          {~c"GIT_PAGER", ~c"cat"},
+          {~c"TERM", ~c"dumb"} | extra_env
+        ]
       ])
 
     {:os_pid, os_pid} = Port.info(port, :os_pid)
+    watcher = kill_when_down(self(), os_pid)
     limit = Keyword.get(opts, :max_bytes, Limits.result_bytes())
     deadline = System.monotonic_time(:millisecond) + timeout
-    shell_output(port, %{os_pid: os_pid, deadline: deadline, limit: limit}, [], 0)
+    result = shell_output(port, %{os_pid: os_pid, deadline: deadline, limit: limit}, [], 0)
+    send(watcher, :done)
+    result
+  end
+
+  # The port's process leads a process group of its own (erl_child_setup
+  # starts each in a new session), so killing the group also stops what
+  # the command started, such as the mix test under a `mix test` shell.
+  defp kill_group(os_pid) do
+    System.cmd("kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
+  end
+
+  # Kills the command's group if `owner` dies before it finishes: a script
+  # stopped at its time limit, or a tool the user cancelled. Closing the
+  # port alone leaves the command running.
+  defp kill_when_down(owner, os_pid) do
+    spawn(fn ->
+      ref = Process.monitor(owner)
+
+      receive do
+        :done -> :ok
+        {:DOWN, ^ref, :process, _pid, _reason} -> kill_group(os_pid)
+      end
+    end)
   end
 
   @doc "Cuts text for a tool result to `Visor.Limits.result_bytes/0`."
@@ -280,7 +313,7 @@ defmodule Visor.Tools do
         {status, shell_text(acc, size, run.limit)}
     after
       max(run.deadline - System.monotonic_time(:millisecond), 0) ->
-        System.cmd("kill", ["-KILL", Integer.to_string(run.os_pid)], stderr_to_stdout: true)
+        kill_group(run.os_pid)
         {:timeout, shell_text(acc, size, run.limit)}
     end
   end
