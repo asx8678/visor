@@ -63,6 +63,30 @@ defmodule Visor.AgentTest do
     assert File.read!(Path.join(tmp_dir, "notes.txt")) == Enum.map_join(1..4, &"LINE#{&1}\n")
   end
 
+  # Two console tabs on one project.
+  @tag :tmp_dir
+  test "keeps every edit when two sessions change one file at once", %{id: id, tmp_dir: tmp_dir} do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, tmp_dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+    File.write!(Path.join(tmp_dir, "notes.txt"), Enum.map_join(1..12, &"line#{&1}\n"))
+
+    other = "t#{System.unique_integer([:positive])}"
+    start_supervised!({Visor.Harness.Session, id: other, owner: self()}, id: :other)
+    Agent.subscribe(other)
+
+    edits = fn range ->
+      Enum.map_join(range, "\n", &~s|>> V.edit("notes.txt", "line#{&1}\\n", "LINE#{&1}\\n")|)
+    end
+
+    assert :ok = Agent.prompt(id, edits.(1..6))
+    assert :ok = Agent.prompt(other, edits.(7..12))
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    assert File.read!(Path.join(tmp_dir, "notes.txt")) == Enum.map_join(1..12, &"LINE#{&1}\n")
+  end
+
   test "cancels a batch, answering the calls that hadn't started", %{id: id} do
     assert :ok = Agent.prompt(id, ~s|>> V.sh("sleep 5")\n>> V.ls()\n>> V.ls()|)
     assert_receive {:agent, {:tool_start, %{pid: pid}}}, 1_000

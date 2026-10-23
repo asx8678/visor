@@ -23,6 +23,9 @@ live supervision tree beside it. There is no database.
 - Every path a tool touches goes through `Visor.Workspace`, which confines
   it to the project, follows symlinks itself and refuses `.env` files.
   Tool limits live in `Visor.Limits`.
+- Several pages may work on one project. `Visor.Lock` makes a file's
+  writes and edits, and the project's checks, run one at a time across
+  sessions.
 
 ## Rules
 

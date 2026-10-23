@@ -15,6 +15,7 @@ defmodule Visor.Application do
       {Phoenix.PubSub, name: Visor.PubSub},
       # Session logs outlive their sessions' last moments, so they stop last.
       {DynamicSupervisor, name: Visor.SessionLogs, strategy: :one_for_one},
+      Visor.Lock,
       Visor.Harness,
       Visor.Observer,
       # Start to serve requests, typically the last entry

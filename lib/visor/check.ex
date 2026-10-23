@@ -20,7 +20,7 @@ defmodule Visor.Check do
       full output: r4
   """
 
-  alias Visor.{Format, Tools}
+  alias Visor.{Format, Lock, Tools, Workspace}
 
   # Under the elixir tool's 120 s limit, so a slow suite comes back as a
   # stopped check instead of a stopped script.
@@ -61,23 +61,33 @@ defmodule Visor.Check do
   @doc """
   Runs `mix test` in the project, or only the tests at `path`. Returns
   `{:ok, check, output}` or `{:error, message}`.
+
+  Checks of one project run one at a time, across sessions (see
+  `Visor.Lock`). The time a check waits for another comes out of its
+  time limit, so it still ends before the script's.
   """
   def run(path \\ nil) do
     with :ok <- mix_project(),
          {:ok, args} <- path_args(path) do
+      asked = System.monotonic_time(:millisecond)
+
       {exit, output} =
-        Tools.shell(Enum.join(["mix test --seed 0" | args], " "),
-          timeout: @timeout_ms,
-          max_bytes: @max_output_bytes,
-          env: [{"MIX_ENV", "test"}]
-        )
+        Lock.hold({:check, Path.expand(Workspace.root())}, fn ->
+          waited = System.monotonic_time(:millisecond) - asked
+
+          Tools.shell(Enum.join(["mix test --seed 0" | args], " "),
+            timeout: max(@timeout_ms - waited, 0),
+            max_bytes: @max_output_bytes,
+            env: [{"MIX_ENV", "test"}]
+          )
+        end)
 
       {:ok, parse(output, exit), output}
     end
   end
 
   defp mix_project do
-    if File.regular?(Path.join(Visor.Workspace.root(), "mix.exs")),
+    if File.regular?(Path.join(Workspace.root(), "mix.exs")),
       do: :ok,
       else: {:error, "V.check needs a Mix project, and the project folder has no mix.exs."}
   end

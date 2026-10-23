@@ -11,7 +11,7 @@ defmodule V do
   for the model when the script ends (see `Visor.Feedback.Script`).
   """
 
-  alias Visor.{Check, Code, Feedback, Format, Limits, Observer, Tools, Workspace}
+  alias Visor.{Check, Code, Feedback, Format, Limits, Lock, Observer, Tools, Workspace}
 
   defmodule Error do
     defexception [:message]
@@ -130,23 +130,28 @@ defmodule V do
   # changed file by its size, or by its mtime, which counts whole seconds:
   # a write that leaves both as Mix last saw them (the same size, in the
   # same second) would look unchanged, so it gets an mtime a second
-  # earlier. Mix only asks whether the mtime differs.
+  # earlier. Mix only asks whether the mtime differs. All of it runs under
+  # the file's lock, so another session's change waits its turn (see
+  # `Visor.Lock`).
   defp change(path, write) do
     root = Workspace.root()
     full = Path.expand(path, root)
-    before = stat(full)
 
-    with :ok <- write.() do
-      path = Path.relative_to(full, root)
-      seen = Feedback.changed(session(), path, before)
+    Lock.hold({:file, full}, fn ->
+      before = stat(full)
 
-      case stat(full) do
-        ^seen -> File.touch(full, elem(seen, 0) - 1)
-        _ -> :ok
+      with :ok <- write.() do
+        path = Path.relative_to(full, root)
+        seen = Feedback.changed(session(), path, before)
+
+        case stat(full) do
+          ^seen -> File.touch(full, elem(seen, 0) - 1)
+          _ -> :ok
+        end
+
+        {:ok, :ok, %{changed: path}}
       end
-
-      {:ok, :ok, %{changed: path}}
-    end
+    end)
   end
 
   defp stat(full) do

@@ -176,6 +176,32 @@ defmodule Visor.CheckTest do
       assert message =~ "V.check takes a test path"
     end
 
+    test "waits for another check of the same project to end", %{
+      tmp_dir: tmp_dir,
+      context: context
+    } do
+      File.write!(Path.join(tmp_dir, "mix.exs"), "")
+      key = {:check, Path.expand(tmp_dir)}
+      test = self()
+
+      other =
+        spawn(fn ->
+          Visor.Lock.hold(key, fn ->
+            send(test, :checking)
+            receive do: (:done -> :ok)
+          end)
+        end)
+
+      assert_receive :checking
+      check = Task.async(fn -> Code.run(~S|V.check()|, context) end)
+      wait_until_queued(key)
+      assert Task.yield(check, 0) == nil
+
+      send(other, :done)
+      assert {:ok, result} = Task.await(check, 60_000)
+      assert result =~ "check failed"
+    end
+
     # Runs mix test in a small project of its own, never in Visor.
     @tag timeout: 180_000
     test "checks a change, then says what the fix fixed", %{tmp_dir: tmp_dir, context: context} do
@@ -229,6 +255,26 @@ defmodule Visor.CheckTest do
              fixed: "adds" (DemoTest)
              => :ok\
              """
+    end
+  end
+
+  # Returns once a process is waiting for `key`, or fails after 5 s.
+  defp wait_until_queued(key, deadline \\ System.monotonic_time(:millisecond) + 5_000) do
+    waiting =
+      case :sys.get_state(Visor.Lock) do
+        %{^key => {_holder, _ref, waiting}} -> :queue.len(waiting)
+        _ -> 0
+      end
+
+    cond do
+      waiting > 0 ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("nothing waited for #{inspect(key)}")
+
+      true ->
+        wait_until_queued(key, deadline)
     end
   end
 
