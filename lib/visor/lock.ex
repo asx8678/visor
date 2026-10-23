@@ -44,10 +44,14 @@ defmodule Visor.Lock do
   def init(locks), do: {:ok, locks}
 
   @impl true
-  def handle_call({:acquire, key}, {pid, _tag} = from, locks) do
+  def handle_call({:acquire, key} = request, {pid, _tag} = from, locks) do
     case locks do
+      # A holder whose exit went unseen, as when its :DOWN reached this
+      # server while Mix recompiled it, frees its key first.
       %{^key => {holder, ref, waiting}} ->
-        {:noreply, Map.put(locks, key, {holder, ref, :queue.in(from, waiting)})}
+        if Process.alive?(holder),
+          do: {:noreply, Map.put(locks, key, {holder, ref, :queue.in(from, waiting)})},
+          else: handle_call(request, from, release(locks, key, holder))
 
       _free ->
         {:reply, :ok, Map.put(locks, key, {pid, Process.monitor(pid), :queue.new()})}

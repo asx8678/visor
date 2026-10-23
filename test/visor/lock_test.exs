@@ -71,6 +71,17 @@ defmodule Visor.LockTest do
     refute_received {:got, :gone}
   end
 
+  test "frees a key whose holder exited unseen" do
+    key = {:file, make_ref()}
+    dead = spawn(fn -> :ok end)
+    ref = Process.monitor(dead)
+    assert_receive {:DOWN, ^ref, :process, ^dead, _reason}
+
+    # As if the holder's :DOWN was dropped while the server recompiled.
+    :sys.replace_state(Lock, &Map.put(&1, key, {dead, make_ref(), :queue.new()}))
+    assert Lock.hold(key, fn -> :mine end) == :mine
+  end
+
   test "frees a key when the function raises" do
     key = {:file, make_ref()}
     assert_raise RuntimeError, fn -> Lock.hold(key, fn -> raise "boom" end) end
