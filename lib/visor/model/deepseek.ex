@@ -43,6 +43,8 @@ defmodule Visor.Model.DeepSeek do
       max_tokens: max_tokens(),
       context_window: count("DEEPSEEK_CONTEXT_WINDOW", :context_window),
       compact_tokens: count("DEEPSEEK_COMPACT_TOKENS", :compact_tokens),
+      # The model /prewalk switches to once a prompt starts changing files.
+      executor_model: setting("DEEPSEEK_EXECUTOR_MODEL", :executor_model, nil),
       key: key_source()
     }
   end
@@ -134,7 +136,7 @@ defmodule Visor.Model.DeepSeek do
 
   defp body(request) do
     body = %{
-      model: model(),
+      model: Map.get(request, :model) || model(),
       stream: true,
       messages: [%{role: "system", content: request.system} | request.messages],
       tools: request.tools,

@@ -602,6 +602,24 @@ defmodule VisorWeb.HarnessLive do
     end
   end
 
+  defp run_command(socket, "prewalk", [value | _]) when value in ~w(on off) do
+    socket = configure(socket, prewalk: value == "on")
+
+    note(
+      socket,
+      :info,
+      if(value == "on",
+        do:
+          "Prewalk is on: once a prompt makes its first change, the rest runs at low effort " <>
+            "without thinking.",
+        else: "Prewalk is off."
+      )
+    )
+  end
+
+  defp run_command(socket, "prewalk", _args),
+    do: note(socket, :error, "/prewalk takes on or off.")
+
   defp run_command(socket, "scripts", _args) do
     case Visor.Scripts.list() do
       [] ->

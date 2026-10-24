@@ -111,7 +111,12 @@ defmodule Visor.Agent do
     # Effort and thinking the model set for itself (V.think/2), as
     # %{effort, thinking, turns}, until the prompt ends, `turns` model
     # calls have used it, or the user changes either.
-    think: nil
+    think: nil,
+    # /prewalk: once a prompt's script first changes a file, its later
+    # model calls run at low effort without thinking (and on the
+    # executor model, when one is set). Armed at each user prompt.
+    prewalk: false,
+    prewalk_armed: false
   ]
 
   def start_link(opts) do
@@ -493,7 +498,14 @@ defmodule Visor.Agent do
 
     state
     |> push_user(text)
-    |> Map.merge(%{steps: 0, overflowed: false, repeat: nil, wakes: 0, wakes_held: false})
+    |> Map.merge(%{
+      steps: 0,
+      overflowed: false,
+      repeat: nil,
+      wakes: 0,
+      wakes_held: false,
+      prewalk_armed: Map.get(state, :prewalk, false)
+    })
     |> start_turn()
   end
 
@@ -550,6 +562,8 @@ defmodule Visor.Agent do
     turn = state.turn + 1
     id = state.id
     messages = surface(state)
+    # A prewalk's override also names the executor model, when one is set.
+    model = (Map.get(state, :think) || %{})[:model]
     {effort, thinking, state} = settings_for_turn(state)
 
     # The last call keeps the tools in the request, so the provider's cache
@@ -562,6 +576,8 @@ defmodule Visor.Agent do
       effort: effort,
       thinking: thinking
     }
+
+    request = if model, do: Map.put(request, :model, model), else: request
 
     # The request and response as sent and received go to the session
     # log; the console shows the snapshots.
@@ -747,6 +763,27 @@ defmodule Visor.Agent do
     case compact_messages(state, reason) do
       {:ok, state, _info} -> Map.delete(state, :requested)
       :keep -> Map.delete(state, :requested)
+    end
+  end
+
+  # The plan is made and the first change is in: the rest of the prompt
+  # executes, cheaper.
+  defp prewalk(state) do
+    if Map.get(state, :prewalk_armed, false) do
+      executor = Model.current().info()[:executor_model]
+      on = if executor, do: " on #{executor}", else: ""
+
+      note(
+        state,
+        :info,
+        "Prewalk: the first change is made, so the rest of this prompt runs at low effort " <>
+          "without thinking#{on}."
+      )
+
+      think = %{effort: "low", thinking: false, turns: nil, model: executor}
+      state |> Map.merge(%{prewalk_armed: false, think: think}) |> save()
+    else
+      state
     end
   end
 
@@ -982,6 +1019,8 @@ defmodule Visor.Agent do
     # Saved as it comes in, so an agent that crashes later in the batch
     # still answers this call with its result.
     state = save(Map.put(state, :facts, facts))
+    changed? = Enum.any?(facts[tool.call.id].calls, &Map.has_key?(&1, :changed))
+    state = if changed?, do: prewalk(state), else: state
 
     cond do
       Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
@@ -1199,6 +1238,10 @@ defmodule Visor.Agent do
       {:thinking, thinking}, {:ok, state} when is_boolean(thinking) ->
         {:cont, {:ok, %{state | thinking: thinking}}}
 
+      {:prewalk, on}, {:ok, state} when is_boolean(on) ->
+        {:cont,
+         {:ok, Map.merge(state, %{prewalk: on, prewalk_armed: on and state.status != :idle})}}
+
       {:jobs_wake, wake}, {:ok, state} when is_boolean(wake) ->
         {:cont, {:ok, schedule_wake(Map.put(state, :jobs_wake, wake))}}
     end)
@@ -1209,6 +1252,7 @@ defmodule Visor.Agent do
       effort: state.effort,
       thinking: state.thinking,
       jobs_wake: Map.get(state, :jobs_wake, true),
+      prewalk: Map.get(state, :prewalk, false),
       think: Map.get(state, :think),
       status: state.status,
       messages: length(surface(state)),

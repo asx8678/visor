@@ -255,6 +255,7 @@ defmodule VisorWeb.ConsoleComponents do
       {"/stop", "Stop the running model call or tools"},
       {"/clear", "Forget the conversation and clear the console"},
       {"/compact", "Sum up the conversation so far, keeping its recent part as it was"},
+      {"/prewalk on|off", "Plan at full effort, then make the changes at low effort"},
       {"/scripts", "List the saved scripts"},
       {"/run NAME", "Run a saved script now, without the model"},
       {"/jobs", "List the background jobs"},
