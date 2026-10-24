@@ -22,8 +22,11 @@ defmodule Visor.Agent do
   alias Visor.Harness.Session
 
   # Model calls allowed for one prompt. The last runs without tools, so the
-  # model reports where it got to instead of stopping mid-task.
-  @max_steps 24
+  # model reports where it got to instead of stopping mid-task. The
+  # spending limits and the repeat guard bound what a prompt costs; this
+  # bounds its length (a live build of a 3D page needed 39 calls over two
+  # prompts, cut at 24).
+  @max_steps 40
   # From this many calls left, each tool result says how many remain.
   @warn_steps 4
   @efforts ~w(low high max)

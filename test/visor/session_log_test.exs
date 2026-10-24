@@ -86,7 +86,7 @@ defmodule Visor.SessionLogTest do
         do: assert(name in names, "no #{name} line")
 
     assert %{"text" => "list the files", "prompt" => 1} = find(events, "user")
-    assert %{"step" => 1, "max_steps" => 24} = find(events, "turn_start")
+    assert %{"step" => 1, "max_steps" => 40} = find(events, "turn_start")
 
     assert %{"prompt" => 1, "reason" => "answered", "steps" => 2, "turns" => 2, "tool_calls" => 1} =
              find(events, "prompt_end")
