@@ -177,6 +177,16 @@ defmodule Visor.JobsTest do
   end
 
   describe "sub-agents" do
+    # Returns once the child's script runs. Subscribed first, then asked:
+    # a tool_start before the subscription shows in its status instead.
+    defp await_tool(child) do
+      Agent.subscribe(child)
+
+      unless Agent.settings(child).status == :tools do
+        assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
+      end
+    end
+
     defp session_pid(child) do
       [{pid, _store}] = Registry.lookup(Visor.Harness.Registry, {child, :store})
       pid
@@ -225,9 +235,8 @@ defmodule Visor.JobsTest do
       assert_receive {:agent, {:job_start, %{id: "j2", child: first}}}, 5_000
       assert_receive {:agent, {:job_start, %{id: "j3", child: second}}}, 5_000
       # Stopped once their commands run: one stopped as it starts never runs.
-      for child <- [first, second], do: Agent.subscribe(child)
-      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
-      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
+      await_tool(first)
+      await_tool(second)
 
       assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
       assert_receive {:agent, {:job_end, %{id: "j2", status: :killed}}}, 5_000
@@ -237,18 +246,16 @@ defmodule Visor.JobsTest do
     test "ends when it is stopped, or when its parent's session ends", %{id: id} do
       run(id, ~S|V.agent("$ sleep 5")|)
       assert_receive {:agent, {:job_start, %{id: "j1", child: first}}}, 5_000
-      Agent.subscribe(first)
       ref = Process.monitor(session_pid(first))
       # Stopped after its first model call: that call still counts.
-      assert_receive {:agent, {:tool_start, _call}}, 5_000
+      await_tool(first)
       assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 5_000
       assert_receive {:agent, {:job_end, %{id: "j1", totals: %{turns: 1}}}}, 5_000
 
       run(id, ~S|V.agent("$ sleep 5")|)
       assert_receive {:agent, {:job_start, %{id: "j2", child: second}}}, 5_000
-      Agent.subscribe(second)
-      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
+      await_tool(second)
       ref = Process.monitor(session_pid(second))
       stop_supervised!(:session)
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 5_000

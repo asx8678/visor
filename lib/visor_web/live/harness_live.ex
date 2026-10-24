@@ -118,7 +118,7 @@ defmodule VisorWeb.HarnessLive do
 
   # A reattached page shows the conversation's prompts and answers again;
   # the steps between them were the old page's.
-  defp show_conversation(socket, id) do
+  defp show_conversation(socket, id, back_note \\ true) do
     messages =
       with store when store != nil <- Visor.Harness.Session.store(id),
            [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation) do
@@ -145,12 +145,16 @@ defmodule VisorWeb.HarnessLive do
           socket
       end)
 
-    note(
-      socket,
-      :info,
-      "Back in session #{id}, with its #{count(length(messages), "message")}. The steps " <>
-        "before now aren't shown again."
-    )
+    if back_note do
+      note(
+        socket,
+        :info,
+        "Back in session #{id}, with its #{count(length(messages), "message")}. The steps " <>
+          "before now aren't shown again."
+      )
+    else
+      socket
+    end
   end
 
   @impl true
@@ -717,6 +721,16 @@ defmodule VisorWeb.HarnessLive do
   defp run_command(socket, "prewalk", _args),
     do: note(socket, :error, "/prewalk takes on or off.")
 
+  defp run_command(socket, "resume", [from | _]) do
+    case Agent.resume(socket.assigns.session_id, from) do
+      {:ok, _count} -> socket
+      {:error, message} -> note(socket, :error, message)
+    end
+  end
+
+  defp run_command(socket, "resume", []),
+    do: note(socket, :error, "/resume needs a session's id. mix visor.log lists them.")
+
   defp run_command(socket, "scripts", _args) do
     case Visor.Scripts.list() do
       [] ->
@@ -860,6 +874,18 @@ defmodule VisorWeb.HarnessLive do
     do: note(socket, :info, "Supervisor: the goal is met. #{text} The supervisor is off.")
 
   defp agent_event({:review, _info}, socket), do: socket
+
+  # Read after the agent swapped the conversation in.
+  defp agent_event({:resumed, %{from: from}}, socket) do
+    socket
+    |> stream(:entries, [], reset: true)
+    |> show_conversation(socket.assigns.session_id, false)
+    |> note(
+      :info,
+      "Resumed session #{from}'s conversation from its log. Its jobs, notices and the " <>
+        "model's own settings didn't come with it."
+    )
+  end
 
   defp agent_event({:script_run, %{name: name, status: status, text: text}}, socket) do
     level = if status == :ok, do: :info, else: :error

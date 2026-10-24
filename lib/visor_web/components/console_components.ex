@@ -258,6 +258,7 @@ defmodule VisorWeb.ConsoleComponents do
       {"/prewalk on|off", "Plan at full effort, then make the changes at low effort"},
       {"/advisor [focus] | off", "A quiet reviewer whose advice reaches the agent"},
       {"/supervise GOAL | off", "A reviewer that keeps the agent going until the goal is met"},
+      {"/resume ID", "Carry on with another session's conversation, from its log"},
       {"/scripts", "List the saved scripts"},
       {"/run NAME", "Run a saved script now, without the model"},
       {"/jobs", "List the background jobs"},

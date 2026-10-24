@@ -473,6 +473,9 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "wake"} = e, _opts), do: ["wake    #{e["text"]}"]
 
+  defp describe(%{"event" => "resumed"} = e, _opts),
+    do: ["resume  the conversation of session #{e["from"]} (#{count(e["messages"], "message")})"]
+
   defp describe(%{"event" => "reattached"} = e, _opts),
     do: ["PAGE    a page came back to the session (#{count(e["messages"], "message")})"]
 

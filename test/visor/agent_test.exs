@@ -464,6 +464,53 @@ defmodule Visor.AgentTest do
     refute File.exists?(Path.join(tmp_dir, "a.txt"))
   end
 
+  @tag :tmp_dir
+  test "resumes another session's conversation from its log", %{id: id, tmp_dir: dir} do
+    previous = Application.get_env(:visor, :session_log_dir)
+    Application.put_env(:visor, :session_log_dir, dir)
+    on_exit(fn -> Application.put_env(:visor, :session_log_dir, previous) end)
+
+    call = %{
+      "id" => "c1",
+      "type" => "function",
+      "function" => %{"name" => "elixir", "arguments" => "{}"}
+    }
+
+    system = %{"role" => "system", "content" => "Be brief."}
+    first = [system, %{"role" => "user", "content" => "list the files"}]
+    # The second request sent only what the first didn't have.
+    added = [
+      %{"role" => "assistant", "content" => "", "tool_calls" => [call]},
+      %{"role" => "tool", "tool_call_id" => "c1", "content" => "ok: 1 call"}
+    ]
+
+    lines = [
+      %{event: "start", session: "old111"},
+      %{event: "request", turn: 1, messages_from: 0, messages: first, params: %{}, tools: []},
+      %{event: "tool_end", id: "c1", status: "ok"},
+      %{event: "code_call", call_id: "c1", n: 1, name: "ls", text: "ls()", status: "ok"},
+      %{event: "request", turn: 2, messages_from: 2, messages: added, params: %{}, tools: "same"},
+      %{event: "turn_end", turn: 2, finish_reason: "stop", content: "Here they are."},
+      %{event: "carry", items: ["keep the old API"]}
+    ]
+
+    File.write!(
+      Path.join(dir, "2026-10-20T100000-old111.jsonl"),
+      Enum.map_join(lines, "\n", &Jason.encode!/1) <> "\n"
+    )
+
+    assert {:ok, 4} = Agent.resume(id, "old111")
+    assert_receive {:agent, {:resumed, %{from: "old111", messages: 4}}}
+    state = :sys.get_state(agent(id))
+    assert List.last(state.messages) == %{"role" => "assistant", "content" => "Here they are."}
+    assert state.carry == ["keep the old API"]
+    assert %{"c1" => %{status: :ok, calls: [%{name: :ls}]}} = state.facts
+
+    # The demo model refuses a conversation out of order, as DeepSeek does.
+    ask(id, "list the files")
+    assert {:error, "There is no session log for nope."} = Agent.resume(id, "nope")
+  end
+
   test "tells a script how full the context is", %{id: id} do
     ask(id, @big)
     assert :ok = Agent.prompt(id, ~S|> c = V.context(); {c.band, c.tokens > 0, c.threshold}|)

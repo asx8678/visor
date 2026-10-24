@@ -162,6 +162,14 @@ defmodule Visor.Agent do
     :exit, _reason -> {:error, :gone}
   end
 
+  @doc """
+  Replaces session `id`'s conversation with the one session `from`'s log
+  left (`/resume`): the messages of its last request as sent, and its
+  answer when the call ended with one, what its scripts did and what it
+  carried. Returns `{:ok, message_count}` or `{:error, message}`.
+  """
+  def resume(id, from), do: GenServer.call(via(id), {:resume, from})
+
   @doc "Interrupts the running model call or tools."
   def interrupt(id), do: GenServer.call(via(id), :interrupt)
 
@@ -356,6 +364,42 @@ defmodule Visor.Agent do
   end
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
+
+  def handle_call({:resume, from}, _from, %{status: :idle} = state) do
+    with dir when is_binary(dir) <- Visor.SessionLog.dir() || {:error, "Session logging is off."},
+         file when is_binary(file) <-
+           Visor.SessionLog.Reader.find(dir, from) ||
+             {:error, "There is no session log for #{from}."},
+         events = Visor.SessionLog.Reader.read(file),
+         {:ok, body} <- Visor.SessionLog.Reader.request(events, :last) do
+      messages = Enum.reject(body["messages"], &(&1["role"] == "system")) ++ last_answer(events)
+      {messages, _repaired} = Repair.messages(messages, %{}, @missing)
+
+      state =
+        state
+        |> Map.merge(%{
+          compaction: nil,
+          facts: logged_facts(events),
+          carry: logged_carry(events),
+          pending_jobs: [],
+          pending_texts: [],
+          think: nil,
+          compact_request: nil,
+          last_prompt_tokens: nil,
+          last_estimate: nil
+        })
+        |> put_messages(messages)
+
+      broadcast(state, {:context, length(messages)})
+      broadcast(state, {:resumed, %{from: from, messages: length(messages)}})
+      {:reply, {:ok, length(messages)}, state}
+    else
+      {:error, message} -> {:reply, {:error, message}, state}
+    end
+  end
+
+  def handle_call({:resume, _from}, _caller, state),
+    do: {:reply, {:error, "Stop the running prompt before resuming another session."}, state}
 
   def handle_call({:adopt, owner}, _from, state) do
     cond do
@@ -1141,6 +1185,67 @@ defmodule Visor.Agent do
   defp last_step?(state, step), do: step >= max_steps(state)
 
   defp max_steps(state), do: Map.get(state, :max_steps, @max_steps)
+
+  # The reply to a log's last request, when it was an answer.
+  defp last_answer(events) do
+    after_request =
+      events
+      |> Enum.reverse()
+      |> Enum.take_while(&(&1["event"] != "request"))
+      |> Enum.reverse()
+
+    case Enum.find(after_request, &(&1["event"] == "turn_end")) do
+      %{"finish_reason" => "stop", "content" => content}
+      when is_binary(content) and content != "" ->
+        [%{"role" => "assistant", "content" => content}]
+
+      _other ->
+        []
+    end
+  end
+
+  # What a log's scripts did, as the facts compaction sums up, by tool
+  # call id: each call's status, and its V calls as they ended.
+  defp logged_facts(events) do
+    statuses =
+      for %{"event" => "tool_end", "id" => id, "status" => s} <- events, into: %{}, do: {id, s}
+
+    calls =
+      events
+      |> Enum.filter(&(&1["event"] == "code_call" and &1["status"] in ["ok", "error"]))
+      |> Enum.group_by(& &1["call_id"], &logged_call/1)
+
+    Map.new(statuses, fn {id, status} ->
+      {id, %{status: if(status == "ok", do: :ok, else: :error), calls: Map.get(calls, id, [])}}
+    end)
+  end
+
+  defp logged_call(line) do
+    name =
+      try do
+        line["name"] && String.to_existing_atom(line["name"])
+      rescue
+        ArgumentError -> nil
+      end
+
+    %{
+      name: name,
+      text: line["text"],
+      status: if(line["status"] == "ok", do: :ok, else: :error),
+      changed: line["changed"],
+      ran: line["ran"],
+      exit: line["exit"],
+      error: line["error"]
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp logged_carry(events) do
+    case for(%{"event" => "carry", "items" => items} <- events, do: items) |> List.last() do
+      nil -> []
+      items -> items
+    end
+  end
 
   # A sub-agent's system prompt says what it is for (V.agent/2).
   defp system_prompt(nil), do: @system

@@ -301,6 +301,9 @@ defmodule VisorWeb.HarnessLiveTest do
 
     view |> form("#prompt-form", prompt: %{text: "/nope"}) |> render_submit()
     assert has_element?(view, "#entries", "There is no /nope command")
+
+    view |> form("#prompt-form", prompt: %{text: "/resume"}) |> render_submit()
+    assert has_element?(view, "#entries", "/resume needs a session's id.")
   end
 
   test "takes the layout the page detects", %{view: view} do

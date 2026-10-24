@@ -16,6 +16,8 @@ defmodule Visor.SessionLog do
       ran, for the model after the running tool calls; `wake`: a prompt
       of the agent's own, the notices of background jobs that ended;
     * `script_run`: a saved script run from the console's `/run`;
+    * `resumed`: the conversation was replaced by another session's, from
+      its log (`/resume`);
     * `reattached`: a page came back to the session within its grace
       period (`Visor.Limits.session_grace_ms/0`), with the messages it has;
     * `review`: the advisor's or supervisor's review: what it did
@@ -421,6 +423,8 @@ defmodule Visor.SessionLog do
   defp record({:compaction, info}, state), do: logged(state, "compaction", info)
 
   defp record({:steer, text}, state), do: logged(state, "steer", %{text: text})
+
+  defp record({:resumed, info}, state), do: logged(state, "resumed", info)
 
   # A page came back to the session: the log follows its new owner.
   defp record({:reattached, %{owner: owner} = info}, state) do

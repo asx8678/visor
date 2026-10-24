@@ -53,6 +53,8 @@ defmodule Visor.Agent.Event do
       (`:restart`) or before a request (`:request`); or, with `reason:
       :arguments`, a tool call's arguments were put right before they
       were read (`call_id`, and `fixes`, what was wrong)
+    * `{:resumed, %{from, messages}}`: the conversation was replaced by
+      the one session `from`'s log left (`/resume`)
     * `{:reattached, %{owner, messages}}`: a page took the session over
       within its grace period after its own page went away
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
@@ -145,6 +147,7 @@ defmodule Visor.Agent.Event do
                optional(atom()) => term()
              }}
           | {:reattached, %{owner: pid(), messages: non_neg_integer()}}
+          | {:resumed, %{from: String.t(), messages: non_neg_integer()}}
           | {:status, :idle | :streaming | :tools}
           | {:note, :info | :error, String.t()}
           | {:settings, map()}
