@@ -260,47 +260,53 @@ defmodule Visor.Jobs do
     do: wait_job(state, job_id, timeout_ms, from)
 
   defp start(state, _from, kind, label, timeout_ms, run) do
-    if length(running(state.id)) >= Limits.jobs_at_once() do
-      {:reply,
-       {:error,
-        "#{Limits.jobs_at_once()} jobs are running already, the most a session may run. " <>
-          "Wait for one to end, or stop one with V.stop(id)."}, state}
+    held = Visor.Alarms.held()
+
+    if held || length(running(state.id)) >= Limits.jobs_at_once() do
+      message =
+        held ||
+          "#{Limits.jobs_at_once()} jobs are running already, the most a session may run. " <>
+            "Wait for one to end, or stop one with V.stop(id)."
+
+      {:reply, {:error, message}, state}
     else
-      job_id = "j#{state.next}"
-      log = log_path(state.id, job_id)
-
-      job = %{
-        id: job_id,
-        kind: kind,
-        label: label,
-        status: :running,
-        exit: nil,
-        started: now(),
-        ms: nil,
-        timeout_ms: timeout_ms,
-        log: log,
-        tail: "",
-        os_pid: nil,
-        pid: nil,
-        acknowledged: false
-      }
-
-      session = state.id
-
-      {:ok, pid} =
-        Task.Supervisor.start_child(state.tasks, fn -> run.(session, job) end,
-          restart: :temporary
-        )
-
-      job = %{job | pid: pid}
-      put(session, job)
-      ref = Process.monitor(pid)
-      # A sub-agent's job says it started once its child session has.
-      if kind != :agent, do: Event.broadcast(session, {:job_start, public(job)})
-
-      {:reply, {:ok, job},
-       %{state | next: state.next + 1, monitors: Map.put(state.monitors, ref, job_id)}}
+      start_job(state, kind, label, timeout_ms, run)
     end
+  end
+
+  defp start_job(state, kind, label, timeout_ms, run) do
+    job_id = "j#{state.next}"
+    log = log_path(state.id, job_id)
+
+    job = %{
+      id: job_id,
+      kind: kind,
+      label: label,
+      status: :running,
+      exit: nil,
+      started: now(),
+      ms: nil,
+      timeout_ms: timeout_ms,
+      log: log,
+      tail: "",
+      os_pid: nil,
+      pid: nil,
+      acknowledged: false
+    }
+
+    session = state.id
+
+    {:ok, pid} =
+      Task.Supervisor.start_child(state.tasks, fn -> run.(session, job) end, restart: :temporary)
+
+    job = %{job | pid: pid}
+    put(session, job)
+    ref = Process.monitor(pid)
+    # A sub-agent's job says it started once its child session has.
+    if kind != :agent, do: Event.broadcast(session, {:job_start, public(job)})
+
+    {:reply, {:ok, job},
+     %{state | next: state.next + 1, monitors: Map.put(state.monitors, ref, job_id)}}
   end
 
   # A council's member is marked as its, so the agent hears of the

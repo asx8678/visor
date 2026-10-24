@@ -720,7 +720,7 @@ defmodule Visor.Agent do
     (Map.get(state, :jobs_wake, true) or Map.get(state, :wake_texts, false)) and
       not Map.get(state, :wakes_held, false) and
       Map.get(state, :wakes, 0) < Limits.job_wakeups() and
-      Visor.ModelHealth.open() == nil
+      Visor.ModelHealth.open() == nil and Visor.Alarms.held() == nil
   end
 
   # Jobs that end close together wake the agent once.

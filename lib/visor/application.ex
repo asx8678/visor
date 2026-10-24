@@ -16,6 +16,7 @@ defmodule Visor.Application do
       {DynamicSupervisor, name: Visor.SessionLogs, strategy: :one_for_one},
       Visor.Lock,
       Visor.ModelHealth,
+      Visor.Alarms,
       Visor.Harness,
       Visor.Observer,
       # Start to serve requests, typically the last entry

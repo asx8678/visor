@@ -1,5 +1,13 @@
 import Config
 
+# The machine's alarms that hold back work (Visor.Alarms): system memory
+# and each disk past 95% full, the disks checked every 5 minutes.
+config :os_mon,
+  start_cpu_sup: false,
+  system_memory_high_watermark: 0.95,
+  disk_almost_full_threshold: 0.95,
+  disk_space_check_interval: 5
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

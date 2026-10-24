@@ -69,6 +69,9 @@ live supervision tree beside it. There is no database.
   `Visor.Limits.model_failures/0` failed model calls in a row it holds back
   wakes, sub-agents, councils and reviews for `model_cooldown_ms/0` (60 s;
   0 in the tests); the user's prompts still go.
+- `Visor.Alarms` reads os_mon's memory and disk alarms (thresholds in
+  `config/dev.exs`, `prod.exs`; os_mon isn't started in the tests, sasl is):
+  while one is on, the console says so and no wake, job or sub-agent starts.
 - `/advisor` and `/supervise goal` turn on the session's `Visor.Reviewer`:
   a model call of its own when a prompt ends or a tool call fails, whose
   rare message reaches the agent like a job notice (a supervisor's may wake

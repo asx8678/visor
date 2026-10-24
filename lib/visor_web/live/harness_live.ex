@@ -69,6 +69,7 @@ defmodule VisorWeb.HarnessLive do
 
     if connected?(socket) do
       Observer.subscribe()
+      Visor.Alarms.subscribe()
 
       # A reload names its session in the address (see handle_params/3):
       # within its grace period the page takes it back.
@@ -875,6 +876,14 @@ defmodule VisorWeb.HarnessLive do
   ## Events from the harness
 
   @impl true
+  def handle_info({:alarms, []}, socket),
+    do:
+      {:noreply,
+       note(socket, :info, "The machine's alarms passed: work starts on its own again.")}
+
+  def handle_info({:alarms, _active}, socket),
+    do: {:noreply, note(socket, :error, Visor.Alarms.held())}
+
   def handle_info({:observer, :snapshot, snapshot}, socket) do
     {:noreply, assign(socket, snapshot: snapshot, now: System.monotonic_time(:millisecond))}
   end

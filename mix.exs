@@ -21,9 +21,14 @@ defmodule Visor.MixProject do
   def application do
     [
       mod: {Visor.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:logger, :runtime_tools, :sasl] ++ os_mon(Mix.env())
     ]
   end
+
+  # The machine's memory and disk alarms (Visor.Alarms), raised through
+  # sasl's alarm handler; the tests don't read the machine they run on.
+  defp os_mon(:test), do: []
+  defp os_mon(_env), do: [:os_mon]
 
   def cli do
     [
