@@ -306,6 +306,30 @@ defmodule VisorWeb.HarnessLiveTest do
     assert has_element?(view, "#entries", "/resume needs a session's id.")
   end
 
+  test "turns the reviewer and prewalk on and off", %{view: view, id: id} do
+    submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
+
+    submit.("/advisor correctness")
+    assert Visor.Reviewer.status(id) == %{mode: :advisor, text: "correctness"}
+    assert has_element?(view, "#entries", "The advisor is on")
+
+    submit.("/supervise")
+    assert has_element?(view, "#entries", "/supervise needs a goal")
+    submit.("/supervise all tests pass")
+    assert Visor.Reviewer.status(id) == %{mode: :supervisor, text: "all tests pass"}
+    submit.("/supervise off")
+    assert Visor.Reviewer.status(id) == nil
+    assert has_element?(view, "#entries", "The reviewer is off.")
+
+    submit.("/prewalk on")
+    assert_receive {:agent, {:settings, %{prewalk: true}}}
+    assert has_element?(view, "#entries", "Prewalk is on")
+    submit.("/prewalk maybe")
+    assert has_element?(view, "#entries", "/prewalk takes on or off.")
+    submit.("/prewalk off")
+    assert_receive {:agent, {:settings, %{prewalk: false}}}
+  end
+
   test "takes the layout the page detects", %{view: view} do
     assert has_element?(view, "#visor-shell[data-layout=desktop]")
     render_hook(view, "client_layout", %{"layout" => "phone"})

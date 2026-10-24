@@ -29,7 +29,9 @@ live supervision tree beside it. There is no database.
   its script and dies with its session. When it ends the model hears of
   it, after the running tool calls or with the next prompt; an idle agent
   wakes for it on its own, at most `Visor.Limits.job_wakeups/0` times
-  between the user's prompts and never after Stop or a failed call.
+  between the user's prompts and never after Stop or a failed call
+  (`/jobs wake off` holds jobs' wakes, not a supervisor's). A job's log
+  file stops at `Visor.Limits.job_log_bytes/0`.
 - The agent's events are documented in `Visor.Agent.Event`. The console,
   `Visor.SessionLog` and `mix visor.log` all read them; change the event
   shapes there and keep the session log's JSON keys stable, since
@@ -48,13 +50,18 @@ live supervision tree beside it. There is no database.
   (`depth` 1, `Visor.Limits.agent_depth/0`) whose owner is the job's task,
   so stopping the job or the parent's session ends it. Its answer is the
   job's output, and its tokens count in the parent's totals.
+  `V.council(task, roles: [...])` runs one per role at once, then one that
+  weighs the answers that came back, as one job. A council's sessions only
+  read (`Visor.Harness.Session.read_only?/1`): `V` refuses its writes,
+  edits, shell commands, checks and saves.
 - `/advisor` and `/supervise goal` turn on the session's `Visor.Reviewer`:
   a model call of its own when a prompt ends or a tool call fails, whose
   rare message reaches the agent like a job notice (a supervisor's may wake
   it, within the wake limit).
 - `V.attempt(fn -> edits end, check: path)` keeps edits only if the check
   passes, and otherwise puts every file back through the same locked write
-  path; attempts don't nest and can't start background jobs.
+  path; attempts don't nest, and can't start background jobs, sub-agents
+  or saved scripts (`V.run`), whose changes they couldn't put back.
 - `V.save`/`V.run` keep and rerun scripts in the project's `.visor/scripts/`
   (`Visor.Scripts`), checked against their SHA-256; tools can't write
   `.visor/` and walks skip it. `/run name` runs one without the model.
