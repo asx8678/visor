@@ -86,23 +86,6 @@ defmodule Visor.ReviewerTest do
     refute_receive {:agent, {:review, _}}, 600
   end
 
-  # Vibe's goals are the model's to read and mark: V.goal reads the
-  # supervisor's, and V.goal(:done) has it review now.
-  test "gives a script the supervisor's goal, and reviews when it says it is met", %{id: id} do
-    context = %{session: id, call_id: "c1"}
-    assert {:ok, text} = Visor.Code.run("V.goal()", context)
-    assert text =~ "=> nil"
-    assert {:error, text} = Visor.Code.run("V.goal(:done)", context)
-    assert text =~ "No supervisor is on: /supervise GOAL starts one."
-
-    :ok = Reviewer.start(id, :supervisor, "the files are listed")
-    assert {:ok, text} = Visor.Code.run("V.goal()", context)
-    assert text =~ ~s(=> %{goal: "the files are listed"})
-
-    assert {:ok, _text} = Visor.Code.run("V.goal(:done)", context)
-    assert_receive {:agent, {:review, %{mode: :supervisor}}}, 5_000
-  end
-
   test "doesn't review what the user stopped", %{id: id} do
     :ok = Reviewer.start(id, :advisor, "")
     assert :ok = Agent.prompt(id, "$ sleep 5")

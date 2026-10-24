@@ -116,11 +116,6 @@ defmodule Visor.Agent do
     # %{effort, thinking, turns}, until the prompt ends, `turns` model
     # calls have used it, or the user changes either.
     think: nil,
-    # /prewalk: once a prompt's script first changes a file, its later
-    # model calls run at low effort without thinking (and on the
-    # executor model, when one is set). Armed at each user prompt.
-    prewalk: false,
-    prewalk_armed: false,
     # While the page that owned the session is gone: when it ends.
     grace_timer: nil,
     # What the session and its running prompt have spent, and may
@@ -717,7 +712,7 @@ defmodule Visor.Agent do
   defp start_prompt(state, text, pictures \\ []) do
     broadcast(state, {:user, with_names(text, pictures)})
     {state, notices} = take_notices(state)
-    text = Enum.join([text | notices] ++ recalled(state, text), "\n\n")
+    text = Enum.join([text | notices], "\n\n")
     labels = for {name, _part} <- pictures, do: "[The user's picture: #{name}]"
     parts = for {_name, part} <- pictures, do: part
 
@@ -729,7 +724,6 @@ defmodule Visor.Agent do
       repeat: nil,
       wakes: 0,
       wakes_held: false,
-      prewalk_armed: Map.get(state, :prewalk, false),
       prompt_changed: MapSet.new(),
       nudged: false,
       kept: nil,
@@ -815,8 +809,6 @@ defmodule Visor.Agent do
     turn = state.turn + 1
     id = state.id
     messages = surface(state)
-    # A prewalk's override also names the executor model, when one is set.
-    model = (Map.get(state, :think) || %{})[:model]
     {effort, thinking, state} = settings_for_turn(state)
 
     # The last call keeps the tools in the request, so the provider's cache
@@ -829,8 +821,6 @@ defmodule Visor.Agent do
       effort: effort,
       thinking: thinking
     }
-
-    request = if model, do: Map.put(request, :model, model), else: request
 
     # The request and response as sent and received go to the session
     # log; the console shows the snapshots.
@@ -1036,27 +1026,6 @@ defmodule Visor.Agent do
           {:ok, state, _info} -> state
           :keep -> state
         end
-    end
-  end
-
-  # The plan is made and the first change is in: the rest of the prompt
-  # executes, cheaper.
-  defp prewalk(state) do
-    if Map.get(state, :prewalk_armed, false) do
-      executor = Model.current().info()[:executor_model]
-      on = if executor, do: " on #{executor}", else: ""
-
-      note(
-        state,
-        :info,
-        "Prewalk: the first change is made, so the rest of this prompt runs at low effort " <>
-          "without thinking#{on}."
-      )
-
-      think = %{effort: "low", thinking: false, turns: nil, model: executor}
-      state |> Map.merge(%{prewalk_armed: false, think: think}) |> save()
-    else
-      state
     end
   end
 
@@ -1318,7 +1287,6 @@ defmodule Visor.Agent do
     reverted = for %{reverted: paths} <- script_facts, path <- paths, do: path
 
     changed = for %{changed: path} <- script_facts, path not in reverted, do: path
-    state = if changed != [], do: prewalk(state), else: state
 
     state =
       Map.update(
@@ -1697,10 +1665,6 @@ defmodule Visor.Agent do
       {:thinking, thinking}, {:ok, state} when is_boolean(thinking) ->
         {:cont, {:ok, %{state | thinking: thinking}}}
 
-      {:prewalk, on}, {:ok, state} when is_boolean(on) ->
-        {:cont,
-         {:ok, Map.merge(state, %{prewalk: on, prewalk_armed: on and state.status != :idle})}}
-
       {:jobs_wake, wake}, {:ok, state} when is_boolean(wake) ->
         {:cont, {:ok, schedule_wake(Map.put(state, :jobs_wake, wake))}}
 
@@ -1708,9 +1672,6 @@ defmodule Visor.Agent do
       when scope in [:prompt, :session] and is_number(dollars) and dollars > 0 ->
         limits = Map.put(Map.get(state, :limits) || default_limits(), scope, dollars / 1)
         {:cont, {:ok, Map.put(state, :limits, limits)}}
-
-      {:recall, on}, {:ok, state} when is_boolean(on) ->
-        {:cont, {:ok, Map.put(state, :recall, on)}}
 
       {:budget, _other}, _ ->
         {:halt, {:error, "A limit is prompt or session and a number of dollars above 0."}}
@@ -1722,11 +1683,9 @@ defmodule Visor.Agent do
       effort: state.effort,
       thinking: state.thinking,
       jobs_wake: Map.get(state, :jobs_wake, true),
-      prewalk: Map.get(state, :prewalk, false),
       think: Map.get(state, :think),
       spent: spent(state),
       limits: Map.get(state, :limits) || default_limits(),
-      recall: Map.get(state, :recall, false),
       status: state.status,
       messages: length(surface(state)),
       provider: Model.current().info()
@@ -1771,21 +1730,6 @@ defmodule Visor.Agent do
 
   defp with_names(text, pictures),
     do: Enum.join([text | for({name, _} <- pictures, do: "[picture: #{name}]")], "\n")
-
-  # With /recall on, what other sessions said of the prompt's subject.
-  defp recalled(state, text) do
-    with true <- Map.get(state, :recall, false),
-         [_ | _] = hits <- Visor.History.recall(text, state.id) do
-      lines =
-        Enum.map(hits, fn hit ->
-          "- #{hit.kind} in session #{hit.session}: #{hit.text} (V.history_entry(\"#{hit.ref}\"))"
-        end)
-
-      ["[Visor: earlier sessions on this, from their logs:\n" <> Enum.join(lines, "\n") <> "]"]
-    else
-      _none -> []
-    end
-  end
 
   ## Spending
 

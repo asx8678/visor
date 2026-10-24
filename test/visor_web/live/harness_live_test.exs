@@ -374,7 +374,7 @@ defmodule VisorWeb.HarnessLiveTest do
     assert has_element?(view, "#entries", "/budget session takes a number of dollars")
   end
 
-  test "turns the reviewer and prewalk on and off", %{view: view, id: id} do
+  test "turns the reviewer on and off", %{view: view, id: id} do
     submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
 
     submit.("/advisor correctness")
@@ -388,14 +388,6 @@ defmodule VisorWeb.HarnessLiveTest do
     submit.("/supervise off")
     assert Visor.Reviewer.status(id) == nil
     assert has_element?(view, "#entries", "The reviewer is off.")
-
-    submit.("/prewalk on")
-    assert_receive {:agent, {:settings, %{prewalk: true}}}
-    assert has_element?(view, "#entries", "Prewalk is on")
-    submit.("/prewalk maybe")
-    assert has_element?(view, "#entries", "/prewalk takes on or off.")
-    submit.("/prewalk off")
-    assert_receive {:agent, {:settings, %{prewalk: false}}}
   end
 
   test "takes the layout the page detects", %{view: view} do

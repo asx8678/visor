@@ -68,32 +68,6 @@ defmodule Visor.HistoryTest do
     assert Enum.any?(hits, &(&1.session == "ddd444" and &1.kind == :failure))
   end
 
-  # Vibe's context recall: with /recall on, a prompt gets what other
-  # sessions said of its subject, when two-fifths of its words match.
-  test "puts what other sessions said before a prompt, with recall on" do
-    assert [%{session: "aaa111", kind: :answer}] =
-             History.recall("the parser dropped a token", "z")
-
-    # One word of four letters or more isn't enough, nor is the session itself.
-    assert History.recall("the parser", "z") == []
-    assert History.recall("the parser dropped a token", "aaa111") == []
-
-    id = "recall#{System.unique_integer([:positive])}"
-    start_supervised!({Visor.Harness.Session, id: id, owner: self(), log_dir: false})
-    Visor.Agent.subscribe(id)
-    assert {:ok, %{recall: true}} = Visor.Agent.configure(id, recall: true)
-    assert :ok = Visor.Agent.prompt(id, "list the files: the parser dropped a token")
-    assert_receive {:agent, {:prompt_end, _}}, 5_000
-
-    agent = GenServer.whereis(Visor.Harness.via({id, :agent}))
-    [%{"content" => first} | _] = :sys.get_state(agent).messages
-
-    assert first =~
-             "[Visor: earlier sessions on this, from their logs:\n- answer in session aaa111:"
-
-    assert first =~ ~s|(V.history_entry("aaa111:4"))|
-  end
-
   test "reads a hit back in full, through V" do
     assert {:ok, "Fixed the parser: it dropped the last token."} = History.entry("aaa111:4")
     assert {:error, _message} = History.entry("ccc333:2")

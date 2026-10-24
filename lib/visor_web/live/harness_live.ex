@@ -824,24 +824,6 @@ defmodule VisorWeb.HarnessLive do
     )
   end
 
-  defp run_command(socket, "prewalk", [value | _]) when value in ~w(on off) do
-    socket = configure(socket, prewalk: value == "on")
-
-    note(
-      socket,
-      :info,
-      if(value == "on",
-        do:
-          "Prewalk is on: once a prompt makes its first change, the rest runs at low effort " <>
-            "without thinking.",
-        else: "Prewalk is off."
-      )
-    )
-  end
-
-  defp run_command(socket, "prewalk", _args),
-    do: note(socket, :error, "/prewalk takes on or off.")
-
   defp run_command(socket, "resume", [from | _]) do
     case Agent.resume(socket.assigns.session_id, from) do
       {:ok, _count} -> socket
@@ -918,21 +900,6 @@ defmodule VisorWeb.HarnessLive do
   defp run_command(socket, "jobs", _args) do
     note(socket, :error, "/jobs takes nothing, stop ID or wake on|off. Type /help for the list.")
   end
-
-  defp run_command(socket, "recall", [value | _]) when value in ~w(on off) do
-    socket = configure(socket, recall: value == "on")
-
-    note(
-      socket,
-      :info,
-      if(value == "on",
-        do: "Recall is on: a prompt also gets what earlier sessions said of its subject.",
-        else: "Recall is off."
-      )
-    )
-  end
-
-  defp run_command(socket, "recall", _args), do: note(socket, :error, "/recall takes on or off.")
 
   defp run_command(socket, "save", [name | _]) do
     id = socket.assigns.session_id

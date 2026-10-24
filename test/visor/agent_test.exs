@@ -454,49 +454,8 @@ defmodule Visor.AgentTest do
     assert {:error, "The level is off, low, high or max" <> _} = Agent.think(id, "huge", nil)
   end
 
-  # The demo model with an executor model, which says which model each
-  # request asked for.
-  defmodule ExecutorModel do
-    def info, do: Map.put(Visor.Model.Demo.info(), :executor_model, "exec-model")
-
-    def stream(request, emit) do
-      emit.({:request, %{url: "test", body: %{model: Map.get(request, :model)}}})
-      Visor.Model.Demo.stream(request, emit)
-    end
-  end
-
   @tag :tmp_dir
-  test "with prewalk, runs the rest of a prompt cheaper once it changes a file", %{
-    id: id,
-    tmp_dir: tmp_dir
-  } do
-    previous = {Application.get_env(:visor, :workspace), Visor.Model.current()}
-    Application.put_env(:visor, :workspace, tmp_dir)
-    Application.put_env(:visor, :model_provider, ExecutorModel)
-
-    on_exit(fn ->
-      Application.put_env(:visor, :workspace, elem(previous, 0))
-      Application.put_env(:visor, :model_provider, elem(previous, 1))
-    end)
-
-    assert {:ok, %{prewalk: true}} = Agent.configure(id, prewalk: true)
-    assert :ok = Agent.prompt(id, ~S|> V.write("a.txt", "x")|)
-    assert_receive {:agent, {:turn_start, %{turn: 1, effort: "high", thinking: true}}}
-    assert_receive {:agent, {:wire_request, 1, %{body: %{model: nil}}}}
-    assert_receive {:agent, {:note, :info, "Prewalk: the first change is made" <> _}}, 5_000
-    assert_receive {:agent, {:turn_start, %{turn: 2, effort: "low", thinking: false}}}, 5_000
-    assert_receive {:agent, {:wire_request, 2, %{body: %{model: "exec-model"}}}}
-    assert_receive {:agent, {:prompt_end, _}}, 5_000
-
-    # Off again with the prompt, and armed with the next one.
-    assert_receive {:agent, {:settings, %{think: nil}}}
-    assert :ok = Agent.configure(id, prewalk: false) |> elem(0)
-    ask(id, "list the files")
-    refute_received {:agent, {:note, :info, "Prewalk" <> _}}
-  end
-
-  @tag :tmp_dir
-  test "with prewalk, a change an attempt put back isn't the first change", %{
+  test "an attempt whose call fails removes the file it made", %{
     id: id,
     tmp_dir: tmp_dir
   } do
@@ -504,13 +463,11 @@ defmodule Visor.AgentTest do
     Application.put_env(:visor, :workspace, tmp_dir)
     on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
 
-    assert {:ok, _settings} = Agent.configure(id, prewalk: true)
     script = ~S|> V.attempt(fn -> V.write("a.txt", "x"); V.edit("a.txt", "nope", "y") end)|
     assert :ok = Agent.prompt(id, script)
     assert_receive {:agent, {:tool_end, %{status: :error, result: result}}}, 5_000
     assert result =~ "reverted: a.txt (the attempt failed)"
     assert_receive {:agent, {:prompt_end, _}}, 5_000
-    refute_received {:agent, {:note, :info, "Prewalk" <> _}}
     refute File.exists?(Path.join(tmp_dir, "a.txt"))
   end
 

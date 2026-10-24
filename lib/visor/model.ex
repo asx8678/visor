@@ -51,7 +51,6 @@ defmodule Visor.Model do
           required(:max_tokens) => pos_integer() | nil,
           required(:context_window) => pos_integer() | nil,
           optional(:compact_tokens) => pos_integer() | nil,
-          optional(:executor_model) => String.t() | nil,
           required(:key) => atom()
         }
 

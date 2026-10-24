@@ -65,8 +65,6 @@ defmodule Visor.Tools do
                                           it comes with your next model call
             V.remember(note)              keep a short note for every later session on this
                                           project (V.memories(), V.forget(note))
-            V.goal()                      the supervisor's goal, if the user set one; V.goal(:done)
-                                          asks it to review now
             V.tidewave(tool, args)        the running Phoenix app's Tidewave tools: "project_eval"
                                           (%{code: ...}, runs in the app), "get_logs" (%{tail: n}),
                                           "execute_sql_query"; V.tidewave() lists them

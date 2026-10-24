@@ -105,11 +105,8 @@ live supervision tree beside it. There is no database.
   `V.think` (the model's own effort for the rest of a prompt), `V.note`
   (a progress note for the user only), `V.history` (earlier sessions on
   this project, from their logs), and `timeout:` on the tool, `V.sh` and
-  `V.check`, and `V.goal` (the supervisor's goal; `V.goal(:done)` asks it to
-  review now). The console adds `/prewalk`, `/resume ID`, `/jobs`, `/budget`,
-  `/save NAME` (the last script that worked, as a saved script) and
-  `/recall on|off` (off by default: a prompt also gets what other sessions
-  said of its subject, `Visor.History.recall/3`).
+  `V.check`. The console adds `/resume ID`, `/jobs`, `/budget` and
+  `/save NAME` (the last script that worked, as a saved script).
 - When the model answers with Elixir files the prompt changed that no
   passing check has covered since (`Visor.Feedback.unverified/2`: a whole
   project's check covers every file, a test path's only its own), it is
