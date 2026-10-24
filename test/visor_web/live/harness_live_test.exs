@@ -331,6 +331,35 @@ defmodule VisorWeb.HarnessLiveTest do
     assert {:ok, %{code: "40 + 2"}} = Visor.Scripts.get("answer")
   end
 
+  test "sends a picture the user attached with the prompt", %{view: view, id: id} do
+    png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
+      )
+
+    input =
+      file_input(view, "#prompt-form", :pictures, [
+        %{name: "red.png", content: png, type: "image/png"}
+      ])
+
+    render_upload(input, "red.png")
+    assert has_element?(view, "#prompt-pictures", "red.png")
+
+    view |> form("#prompt-form", prompt: %{text: "what is this?"}) |> render_submit()
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, @flow_timeout
+    assert has_element?(view, "#entries", "[picture: red.png]")
+    assert has_element?(view, "#entries", "I see 1 image(s).")
+    refute has_element?(view, "#prompt-pictures")
+
+    agent = GenServer.whereis(Visor.Harness.via({id, :agent}))
+
+    assert [%{"content" => [%{"text" => text}, %{"image_url" => %{"url" => url}}]} | _] =
+             :sys.get_state(agent).messages
+
+    assert text =~ "what is this?\n\n[The user's picture: red.png]"
+    assert url =~ "data:image/png;base64,"
+  end
+
   test "shows and sets the spending limits", %{view: view, id: id} do
     submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
 

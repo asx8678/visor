@@ -162,6 +162,14 @@ defmodule Visor.Agent do
   def prompt(id, text), do: GenServer.call(via(id), {:prompt, text})
 
   @doc """
+  Sends a prompt with pictures the user attached, as `{name, part}`
+  (`Visor.Content.image/2`): they go in its user message, or with the
+  steering text while a prompt runs.
+  """
+  def prompt(id, text, []), do: prompt(id, text)
+  def prompt(id, text, pictures), do: GenServer.call(via(id), {:prompt, text, pictures})
+
+  @doc """
   Makes `owner` (a console page) session `id`'s owner again, within its
   grace period after the page it had went away. Returns `{:ok, settings}`,
   or `{:error, :in_use}` while another page owns it, `{:error, :sub_agent}`
@@ -324,6 +332,16 @@ defmodule Visor.Agent do
     {:reply, :queued, save(Map.put(state, :queued, Map.get(state, :queued, []) ++ [text]))}
   end
 
+  def handle_call({:prompt, text, pictures}, _from, %{status: :idle} = state) do
+    {:reply, :ok, start_prompt(state, text, pictures)}
+  end
+
+  def handle_call({:prompt, text, pictures}, from, state) do
+    labelled = for {name, part} <- pictures, do: {"[The user's picture: #{name}]", part}
+    state = Map.update(state, :pending_images, labelled, &(&1 ++ labelled))
+    handle_call({:prompt, with_names(text, pictures)}, from, state)
+  end
+
   def handle_call(:interrupt, _from, %{model_task: %Task{} = task} = state) do
     Task.shutdown(task, :brutal_kill)
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "interrupted"}})
@@ -428,7 +446,8 @@ defmodule Visor.Agent do
        state}
     else
       note(state, :info, "The model looks at #{path}.")
-      {:reply, :ok, Map.put(state, :pending_images, images ++ [{path, part}])}
+      label = ~s|[Visor: the picture V.image("#{path}") showed.]|
+      {:reply, :ok, Map.put(state, :pending_images, images ++ [{label, part}])}
     end
   end
 
@@ -705,13 +724,15 @@ defmodule Visor.Agent do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp start_prompt(state, text) do
-    broadcast(state, {:user, text})
+  defp start_prompt(state, text, pictures \\ []) do
+    broadcast(state, {:user, with_names(text, pictures)})
     {state, notices} = take_notices(state)
     text = Enum.join([text | notices] ++ recalled(state, text), "\n\n")
+    labels = for {name, _part} <- pictures, do: "[The user's picture: #{name}]"
+    parts = for {_name, part} <- pictures, do: part
 
     state
-    |> push_user(text)
+    |> push_user(Visor.Content.with_images(Enum.join([text | labels], "\n\n"), parts))
     |> Map.merge(%{
       steps: 0,
       overflowed: false,
@@ -1351,8 +1372,7 @@ defmodule Visor.Agent do
         state
 
       texts ->
-        shown =
-          for {path, _part} <- images, do: ~s|[Visor: the picture V.image("#{path}") showed.]|
+        shown = for {label, _part} <- images, do: label
 
         content =
           Visor.Content.with_images(
@@ -1751,6 +1771,12 @@ defmodule Visor.Agent do
       finish(state, :answered)
     end
   end
+
+  # The prompt as the console shows it: its pictures by name.
+  defp with_names(text, []), do: text
+
+  defp with_names(text, pictures),
+    do: Enum.join([text | for({name, _} <- pictures, do: "[picture: #{name}]")], "\n")
 
   # With /recall on, what other sessions said of the prompt's subject.
   defp recalled(state, text) do

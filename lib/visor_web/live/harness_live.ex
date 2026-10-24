@@ -66,6 +66,12 @@ defmodule VisorWeb.HarnessLive do
       |> stream(:entries, [])
       |> stream(:events, [])
       |> stream(:jobs, [], dom_id: &"job-#{&1.id}")
+      # Pictures for the next prompt: attached, dropped or pasted.
+      |> allow_upload(:pictures,
+        accept: ~w(.png .jpg .jpeg .gif .webp),
+        max_entries: Visor.Limits.images_per_call(),
+        max_file_size: Visor.Limits.image_bytes()
+      )
 
     if connected?(socket) do
       Observer.subscribe()
@@ -272,9 +278,13 @@ defmodule VisorWeb.HarnessLive do
           for={@form}
           id="prompt-form"
           phx-submit="submit"
+          phx-change="prompt_change"
           class="border-t border-rule bg-panel px-5 py-3 phone:px-3 phone:py-2.5"
         >
-          <div class="mx-auto flex max-w-3xl items-end gap-3 border border-rule bg-well pr-1.5 pl-3 transition-colors focus-within:border-amber">
+          <div
+            phx-drop-target={@uploads.pictures.ref}
+            class="mx-auto flex max-w-3xl items-end gap-3 border border-rule bg-well pr-1.5 pl-3 transition-colors focus-within:border-amber"
+          >
             <span
               class="self-start py-2.5 font-mono leading-6 text-amber phone:py-3"
               aria-hidden="true"
@@ -288,6 +298,7 @@ defmodule VisorWeb.HarnessLive do
                 type="textarea"
                 rows="1"
                 phx-hook=".CommandLine"
+                phx-debounce="blur"
                 autocomplete="off"
                 aria-label="Prompt or command"
                 placeholder={placeholder(@status)}
@@ -295,6 +306,15 @@ defmodule VisorWeb.HarnessLive do
                 class="block max-h-[40vh] w-full resize-none bg-transparent py-2.5 text-base leading-6 text-ink placeholder:text-ink-dim/70 focus:outline-none focus-visible:outline-none phone:py-3"
               />
             </div>
+            <label
+              id="attach-picture"
+              class="mb-1.5 cursor-pointer px-1.5 py-1.5 text-ink-dim transition-colors hover:text-ink"
+              title="Attach a picture (or paste or drop one)"
+            >
+              <.icon name="hero-photo" class="size-5" />
+              <span class="sr-only">Attach a picture</span>
+              <.live_file_input upload={@uploads.pictures} class="sr-only" />
+            </label>
             <button
               :if={@status == :idle}
               id="send-prompt"
@@ -312,6 +332,34 @@ defmodule VisorWeb.HarnessLive do
             >
               Stop
             </button>
+          </div>
+          <div
+            :if={@uploads.pictures.entries != [] or upload_errors(@uploads.pictures) != []}
+            id="prompt-pictures"
+            class="mx-auto mt-1.5 flex max-w-3xl flex-wrap gap-2 text-xs text-ink-dim"
+          >
+            <span
+              :for={entry <- @uploads.pictures.entries}
+              id={"picture-#{entry.ref}"}
+              class="flex items-center gap-1 border border-rule px-1.5 py-0.5"
+            >
+              {entry.client_name}
+              <span :for={error <- upload_errors(@uploads.pictures, entry)} class="text-alarm">
+                {picture_error(error)}
+              </span>
+              <button
+                type="button"
+                phx-click="drop_picture"
+                phx-value-ref={entry.ref}
+                aria-label={"Remove #{entry.client_name}"}
+                class="hover:text-ink"
+              >
+                <.icon name="hero-x-mark" class="size-3.5" />
+              </button>
+            </span>
+            <span :for={error <- upload_errors(@uploads.pictures)} class="text-alarm">
+              {picture_error(error)}
+            </span>
           </div>
         </.form>
       </section>
@@ -532,6 +580,14 @@ defmodule VisorWeb.HarnessLive do
           this.history = []
           this.index = 0
           this.el.addEventListener("input", () => this.fit())
+          // A picture pasted into the box goes with the prompt.
+          this.el.addEventListener("paste", e => {
+            const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith("image/"))
+            if (files.length) {
+              e.preventDefault()
+              this.upload("pictures", files)
+            }
+          })
           this.el.form.addEventListener("submit", () => {
             const text = this.el.value.trim()
             if (text && this.history[this.history.length - 1] !== text) this.history.push(text)
@@ -600,8 +656,17 @@ defmodule VisorWeb.HarnessLive do
 
   @impl true
   def handle_event("submit", %{"prompt" => %{"text" => text}}, socket) do
-    {:noreply, send_input(socket, String.trim(text))}
+    {socket, pictures} = take_pictures(socket)
+    text = String.trim(text)
+    text = if text == "" and pictures != [], do: "(See the picture.)", else: text
+    {:noreply, send_input(socket, text, pictures)}
   end
+
+  # The form changes as pictures are chosen; the text is read on submit.
+  def handle_event("prompt_change", _params, socket), do: {:noreply, socket}
+
+  def handle_event("drop_picture", %{"ref" => ref}, socket),
+    do: {:noreply, cancel_upload(socket, :pictures, ref)}
 
   def handle_event("example", %{"text" => text}, socket) do
     {:noreply, send_input(socket, text)}
@@ -631,6 +696,38 @@ defmodule VisorWeb.HarnessLive do
 
   def handle_event("configure", %{"key" => "thinking", "value" => value}, socket) do
     {:noreply, configure(socket, thinking: value == "on")}
+  end
+
+  # The pictures chosen for the prompt, read once it is sent; one that
+  # isn't a PNG, JPEG, GIF or WebP by its first bytes is left out.
+  defp take_pictures(socket) do
+    pictures =
+      consume_uploaded_entries(socket, :pictures, fn %{path: path}, entry ->
+        data = File.read!(path)
+
+        case Visor.Content.mime(data) do
+          nil -> {:ok, nil}
+          mime -> {:ok, {entry.client_name, Visor.Content.image(mime, data)}}
+        end
+      end)
+
+    {socket, Enum.reject(pictures, &is_nil/1)}
+  end
+
+  defp picture_error(:too_large), do: "over #{div(Visor.Limits.image_bytes(), 1_000_000)} MB"
+  defp picture_error(:not_accepted), do: "not a PNG, JPEG, GIF or WebP"
+  defp picture_error(:too_many_files), do: "at most #{Visor.Limits.images_per_call()} pictures"
+  defp picture_error(error), do: to_string(error)
+
+  # Commands take no pictures.
+  defp send_input(socket, "/" <> _ = command, _pictures), do: send_input(socket, command)
+  defp send_input(socket, text, []), do: send_input(socket, text)
+
+  defp send_input(socket, text, pictures) do
+    case Agent.prompt(socket.assigns.session_id, text, pictures) do
+      :ok -> socket
+      :queued -> socket
+    end
   end
 
   defp send_input(socket, ""), do: socket
