@@ -38,6 +38,32 @@ defmodule Visor.History do
     end
   end
 
+  @doc """
+  The few hits worth putting before a prompt (`/recall on`, after Vibe's
+  context recall): other sessions' prompts and answers that share at
+  least two of the prompt's words of four letters or more, and two-fifths
+  of them, best first.
+  """
+  def recall(text, exclude, limit \\ 3) do
+    terms =
+      text
+      |> String.downcase()
+      |> String.split(~r/\W+/u, trim: true)
+      |> Enum.filter(&(String.length(&1) >= 4))
+      |> Enum.uniq()
+
+    needed = max(2, ceil(length(terms) * 0.4))
+
+    logs()
+    |> Enum.reject(fn {_file, session} -> session == exclude end)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{file, session}, age} -> hits(file, session, age, terms) end)
+    |> Enum.filter(&(&1.kind in [:prompt, :answer] and &1.score >= needed))
+    |> Enum.sort_by(fn hit -> {-hit.score, hit.age, -hit.line} end)
+    |> Enum.take(limit)
+    |> Enum.map(&Map.drop(&1, [:score, :age, :line]))
+  end
+
   @doc "The whole of hit `ref` (`\"SESSION:LINE\"`): `{:ok, text}` or `{:error, message}`."
   def entry(ref) do
     with [session, line] <- String.split(ref, ":", parts: 2),

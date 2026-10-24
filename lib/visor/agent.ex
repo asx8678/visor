@@ -268,6 +268,9 @@ defmodule Visor.Agent do
   """
   def spent(id, cost, tokens), do: GenServer.cast(via(id), {:spent, cost, tokens})
 
+  @doc "The code of session `id`'s last script that worked, or nil (`/save`)."
+  def last_script(id), do: GenServer.call(via(id), :last_script)
+
   @doc """
   What session `id` may still spend: `%{prompt: dollars, session:
   dollars, tokens: n}`, for a sub-agent to start with.
@@ -410,6 +413,19 @@ defmodule Visor.Agent do
   end
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
+
+  def handle_call(:last_script, _from, state) do
+    facts = Map.get(state, :facts, %{})
+
+    code =
+      state.messages
+      |> Enum.flat_map(fn message -> message["tool_calls"] || [] end)
+      |> Enum.filter(&match?(%{status: :ok}, facts[&1["id"]]))
+      |> List.last()
+      |> then(&(&1 && Tools.script(get_in(&1, ["function", "arguments"]))))
+
+    {:reply, code, state}
+  end
 
   def handle_call(:allowance, _from, state) do
     spent = spent(state)
@@ -674,7 +690,7 @@ defmodule Visor.Agent do
   defp start_prompt(state, text) do
     broadcast(state, {:user, text})
     {state, notices} = take_notices(state)
-    text = Enum.join([text | notices], "\n\n")
+    text = Enum.join([text | notices] ++ recalled(state, text), "\n\n")
 
     state
     |> push_user(text)
@@ -1649,6 +1665,9 @@ defmodule Visor.Agent do
         limits = Map.put(Map.get(state, :limits) || default_limits(), scope, dollars / 1)
         {:cont, {:ok, Map.put(state, :limits, limits)}}
 
+      {:recall, on}, {:ok, state} when is_boolean(on) ->
+        {:cont, {:ok, Map.put(state, :recall, on)}}
+
       {:budget, _other}, _ ->
         {:halt, {:error, "A limit is prompt or session and a number of dollars above 0."}}
     end)
@@ -1663,6 +1682,7 @@ defmodule Visor.Agent do
       think: Map.get(state, :think),
       spent: spent(state),
       limits: Map.get(state, :limits) || default_limits(),
+      recall: Map.get(state, :recall, false),
       status: state.status,
       messages: length(surface(state)),
       provider: Model.current().info()
@@ -1699,6 +1719,21 @@ defmodule Visor.Agent do
       |> start_turn()
     else
       finish(state, :answered)
+    end
+  end
+
+  # With /recall on, what other sessions said of the prompt's subject.
+  defp recalled(state, text) do
+    with true <- Map.get(state, :recall, false),
+         [_ | _] = hits <- Visor.History.recall(text, state.id) do
+      lines =
+        Enum.map(hits, fn hit ->
+          "- #{hit.kind} in session #{hit.session}: #{hit.text} (V.history_entry(\"#{hit.ref}\"))"
+        end)
+
+      ["[Visor: earlier sessions on this, from their logs:\n" <> Enum.join(lines, "\n") <> "]"]
+    else
+      _none -> []
     end
   end
 

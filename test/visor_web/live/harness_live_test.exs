@@ -314,6 +314,23 @@ defmodule VisorWeb.HarnessLiveTest do
     assert_push_event(view, "prompt_done", %{reason: :answered, steps: 2})
   end
 
+  @tag :tmp_dir
+  test "saves the last script that worked, for /run", %{view: view, tmp_dir: dir} do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+
+    submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
+    submit.("/save early")
+    assert has_element?(view, "#entries", "No script has worked yet.")
+
+    submit.("> 40 + 2")
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, @flow_timeout
+    submit.("/save answer")
+    assert has_element?(view, "#entries", "Saved the last script that worked as answer")
+    assert {:ok, %{code: "40 + 2"}} = Visor.Scripts.get("answer")
+  end
+
   test "shows and sets the spending limits", %{view: view, id: id} do
     submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
 

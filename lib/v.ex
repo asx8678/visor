@@ -229,6 +229,35 @@ defmodule V do
     end)
   end
 
+  @doc """
+  The goal the user's supervisor works toward (`/supervise goal`):
+  `%{goal: text}`, or nil without one. `V.goal(:done)` says you think it
+  is met, and the supervisor reviews now rather than when the prompt ends.
+  """
+  def goal(done \\ nil)
+
+  def goal(nil) do
+    track(:goal, [], fn ->
+      case session() && Visor.Reviewer.status(session()) do
+        %{mode: :supervisor, text: goal} -> {:ok, %{goal: goal}}
+        _none -> {:ok, nil}
+      end
+    end)
+  end
+
+  def goal(:done) do
+    track(:goal, [:done], fn ->
+      case session() do
+        nil ->
+          {:error, "A goal needs a console session."}
+
+        session ->
+          with :ok <- Visor.Reviewer.ask(session, "the agent says the goal is met"),
+               do: {:ok, %{asked: true}}
+      end
+    end)
+  end
+
   @doc "The notes later sessions get (see `remember/1`)."
   def memories, do: track(:memories, [], fn -> {:ok, Visor.Memory.list()} end)
 

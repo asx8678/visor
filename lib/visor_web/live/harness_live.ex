@@ -822,6 +822,40 @@ defmodule VisorWeb.HarnessLive do
     note(socket, :error, "/jobs takes nothing, stop ID or wake on|off. Type /help for the list.")
   end
 
+  defp run_command(socket, "recall", [value | _]) when value in ~w(on off) do
+    socket = configure(socket, recall: value == "on")
+
+    note(
+      socket,
+      :info,
+      if(value == "on",
+        do: "Recall is on: a prompt also gets what earlier sessions said of its subject.",
+        else: "Recall is off."
+      )
+    )
+  end
+
+  defp run_command(socket, "recall", _args), do: note(socket, :error, "/recall takes on or off.")
+
+  defp run_command(socket, "save", [name | _]) do
+    id = socket.assigns.session_id
+
+    with code when is_binary(code) <-
+           Agent.last_script(id) || {:error, "No script has worked yet."},
+         {:ok, script} <- Visor.Scripts.save(name, code, "From session #{id}") do
+      note(
+        socket,
+        :info,
+        "Saved the last script that worked as #{script.name}: /run #{script.name} runs it."
+      )
+    else
+      {:error, message} -> note(socket, :error, message)
+    end
+  end
+
+  defp run_command(socket, "save", []),
+    do: note(socket, :error, "/save needs a name for the last script that worked.")
+
   defp run_command(socket, "budget", []) do
     %{spent: spent, limits: limits} = Agent.settings(socket.assigns.session_id)
     dollars = &Visor.Format.dollars/1

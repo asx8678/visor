@@ -261,6 +261,8 @@ defmodule VisorWeb.ConsoleComponents do
       {"/resume ID", "Carry on with another session's conversation, from its log"},
       {"/scripts", "List the saved scripts"},
       {"/run NAME", "Run a saved script now, without the model"},
+      {"/save NAME", "Save the last script that worked, to /run later"},
+      {"/recall on|off", "Add what earlier sessions said of a prompt's subject"},
       {"/jobs", "List the background jobs"},
       {"/jobs stop ID", "Stop a background job and what it started"},
       {"/jobs wake on|off", "Whether a job that ends may start the agent on its own"},

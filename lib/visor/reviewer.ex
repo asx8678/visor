@@ -60,6 +60,13 @@ defmodule Visor.Reviewer do
   @doc "What session `id`'s reviewer is doing: nil, or `%{mode, text}`."
   def status(id), do: GenServer.call(Harness.via({id, :reviewer}), :status)
 
+  @doc """
+  Asks session `id`'s supervisor for a review now, because the agent says
+  its goal is met (`V.goal(:done)`). `{:error, message}` when no
+  supervisor is on.
+  """
+  def ask(id, why), do: GenServer.call(Harness.via({id, :reviewer}), {:ask, why})
+
   ## Server
 
   @impl true
@@ -77,6 +84,12 @@ defmodule Visor.Reviewer do
 
   def handle_call(:stop, _from, state),
     do: {:reply, :ok, Map.put(%{state | mode: nil, text: nil}, :pending, nil)}
+
+  def handle_call({:ask, why}, _from, %{mode: :supervisor} = state),
+    do: {:reply, :ok, review(state, :prompt_end, why)}
+
+  def handle_call({:ask, _why}, _from, state),
+    do: {:reply, {:error, "No supervisor is on: /supervise GOAL starts one."}, state}
 
   def handle_call(:status, _from, %{mode: nil} = state), do: {:reply, nil, state}
 
