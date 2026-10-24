@@ -109,6 +109,10 @@ defmodule Visor.Limits do
   @doc "The conversation's last messages a review sees."
   def review_messages, do: 12
 
+  @doc "The newest session logs `V.history/2` reads, and the largest it reads."
+  def history_logs, do: 50
+  def history_log_bytes, do: 20_000_000
+
   @doc "Calls `V.all/1` runs at once."
   def parallel_calls, do: 4
 

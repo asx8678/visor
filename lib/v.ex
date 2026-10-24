@@ -424,7 +424,24 @@ defmodule V do
   defp not_nested(%{saved: outer}), do: {:error, "Saved script #{outer} can't run another."}
   defp not_nested(_context), do: :ok
 
-  @parallel ~w(ls glob exists? read grep sh output recall job jobs)a
+  @doc """
+  Searches what earlier sessions on this project said and did (their
+  prompts, answers, V calls and failed scripts) for the words of `query`,
+  best first: hits as `%{ref, session, at, kind, text}`. `limit:` caps
+  them (10). `V.history_entry(ref)` reads a hit in full.
+  """
+  def history(query, opts \\ []) when is_binary(query) and is_list(opts) do
+    track(:history, [query | opts_args(opts)], fn ->
+      {:ok, Visor.History.search(query, Keyword.get(opts, :limit, 10))}
+    end)
+  end
+
+  @doc "A `history/2` hit in full, by its ref (`\"SESSION:LINE\"`)."
+  def history_entry(ref) when is_binary(ref) do
+    track(:history_entry, [ref], fn -> Visor.History.entry(ref) end)
+  end
+
+  @parallel ~w(ls glob exists? read grep sh output recall job jobs history history_entry)a
 
   @doc """
   Runs several read-only calls at once, given as data: `V.all([{:sh,

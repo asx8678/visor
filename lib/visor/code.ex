@@ -220,6 +220,8 @@ defmodule Visor.Code.Allowlist do
       :scripts,
       :agent,
       :council,
+      :history,
+      :history_entry,
       :beam_stats
     ]
 

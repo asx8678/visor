@@ -76,6 +76,8 @@ defmodule Visor.Tools do
                                           keep a script to run again; V.run(name, input) runs
                                           it, with `input` bound, and returns its value;
                                           V.scripts() lists them
+            V.history(query, limit: n)    what earlier sessions on this project said and did,
+                                          best first; V.history_entry(ref) reads a hit in full
             V.note(text)                  a progress note for the user, under this step; you
                                           don't see it in the result
             V.think(:off | :low | :high | :max, turns: n)
