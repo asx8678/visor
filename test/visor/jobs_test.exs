@@ -230,6 +230,29 @@ defmodule Visor.JobsTest do
                "A council has at most 3 roles"
     end
 
+    # pi-fabric's members and synthesizer have only read-only tools; here
+    # they had all of V, and members at work on one task could change the
+    # same files under each other.
+    test "keeps a council to reading, and weighs only the answers that came back",
+         %{id: id, tmp_dir: tmp_dir} do
+      script = ~S|V.council(~s[> V.write("x.txt", "y")], roles: ["first"], synthesize: false)|
+      assert run(id, script) =~ ~s(=> %{job: "j1"})
+
+      assert_receive {:agent, {:job_end, %{id: "j1", kind: :council, status: :exited} = c}},
+                     10_000
+
+      assert c.tail =~ "V.write isn't open to a council member"
+      refute File.exists?(Path.join(tmp_dir, "x.txt"))
+
+      # With the session's jobs all but taken, the second member can't
+      # start: the first one's answer comes back alone, unweighed.
+      for _ <- 1..6, do: run(id, ~S|V.sh("sleep 5", background: true)|)
+      run(id, ~S|V.council("list the files", roles: ["a", "b"])|)
+      assert_receive {:agent, {:job_end, %{kind: :council, members: [_one]} = c}}, 10_000
+      assert c.tail =~ ~r/\A## a\n\nHere is what came back/
+      assert c.tail =~ "No answer from: b (8 jobs are running already"
+    end
+
     test "stops its members when it is stopped", %{id: id} do
       run(id, ~S|V.council("$ sleep 5", roles: ["a", "b"], synthesize: false)|)
       assert_receive {:agent, {:job_start, %{id: "j2", child: first}}}, 5_000

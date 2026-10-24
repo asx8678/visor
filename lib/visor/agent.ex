@@ -250,7 +250,7 @@ defmodule Visor.Agent do
       tasks: Keyword.fetch!(opts, :tasks),
       store: Keyword.get(opts, :store),
       max_steps: Keyword.get(opts, :max_steps, @max_steps),
-      system: system_prompt(Keyword.get(opts, :role)),
+      system: system_prompt(Keyword.get(opts, :role), Keyword.get(opts, :read_only, false)),
       depth: Keyword.get(opts, :depth, 0)
     }
 
@@ -1271,13 +1271,20 @@ defmodule Visor.Agent do
   end
 
   # A sub-agent's system prompt says what it is for (V.agent/2).
-  defp system_prompt(nil), do: @system
+  defp system_prompt(nil, _read_only), do: @system
 
-  defp system_prompt(role) do
+  defp system_prompt(role, read_only) do
     @system <>
       "\nYou are a sub-agent: another Visor agent gave you its task as the user's message, " <>
       "and only your final answer goes back to it. Do the task, then answer briefly with " <>
-      "what it needs: results, file paths, what failed. Your role: " <> role
+      "what it needs: results, file paths, what failed. Your role: " <>
+      role <>
+      if(read_only,
+        do:
+          "\nYou only read, as a council member: V.write, V.edit, V.sh, V.check and V.save " <>
+            "are refused, so read and search the project, then answer.",
+        else: ""
+      )
   end
 
   # What goes after a batch's last result: the calls left, and the jobs

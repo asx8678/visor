@@ -126,8 +126,14 @@ defmodule Visor.Jobs do
     answer = String.trim(job.tail || "")
     members = length(Map.get(job, :members, []))
 
-    "[Visor: council #{job.id} (#{label(job)}) of #{members} sub-agents " <>
-      "#{if job.status == :exited, do: "answered (#{shorten(answer, 300)})", else: "#{job.status}"} " <>
+    how =
+      case {job.status, answer} do
+        {:exited, answer} -> "answered (#{shorten(answer, 300)})"
+        {status, ""} -> "#{status}"
+        {status, why} -> "#{status} (#{shorten(why, 300)})"
+      end
+
+    "[Visor: council #{job.id} (#{label(job)}) of #{members} sub-agents #{how} " <>
       "after #{Format.duration(job.ms)}. " <> ~s|V.output("#{job.id}") has its whole answer.]|
   end
 
@@ -490,6 +496,7 @@ defmodule Visor.Jobs do
         depth: Session.depth(session) + 1,
         max_steps: opts.max_steps,
         role: opts.role,
+        read_only: Map.get(opts, :read_only, false),
         label: "agent #{job.id} of #{session}",
         parent: "#{session}/#{job.id}"
       )
@@ -523,44 +530,72 @@ defmodule Visor.Jobs do
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
   end
 
-  # Starts the members, waits for each, then for the synthesis.
+  # Starts the members, waits for each, then has the answers that came
+  # back weighed, after pi-fabric's council: one answer needs no
+  # synthesis, and a member that failed has no views to weigh.
   defp run_council(session, job, task, opts) do
     Process.set_label("job #{job.id}")
+    left = fn -> max(job.started + job.timeout_ms - now(), 0) end
 
     agent = fn prompt, role ->
       start_agent(session, prompt, Map.put(agent_opts(task, role, opts), :council, job.id))
     end
 
-    members =
-      for role <- opts.roles do
-        {:ok, member} = agent.(task, role)
-        {role, member.id}
-      end
-
-    ids = Enum.map(members, &elem(&1, 1))
+    started = for role <- Enum.uniq(opts.roles), do: {role, agent.(task, role)}
+    ids = for {_role, {:ok, member}} <- started, do: member.id
     update(session, job.id, &Map.put(&1, :members, ids))
 
     answers =
-      for {role, id} <- members do
-        {:ok, member} = wait(session, id, max(job.started + job.timeout_ms - now(), 0))
-        {role, member_answer(member)}
+      for {role, start} <- started do
+        with {:ok, member} <- start,
+             {:ok, %{status: :exited} = member} <- wait(session, member.id, left.()),
+             answer when answer != "" <- String.trim(member_answer(member)) do
+          {role, {:ok, answer}}
+        else
+          {:ok, %{status: :running}} -> {role, {:failed, "no answer in time"}}
+          {:ok, member} -> {role, {:failed, to_string(member.status)}}
+          {:error, message} -> {role, {:failed, message}}
+          "" -> {role, {:failed, "no answer"}}
+        end
       end
 
-    joined = Enum.map_join(answers, "\n\n", fn {role, answer} -> "## #{role}\n\n#{answer}" end)
+    answered = for {role, {:ok, answer}} <- answers, do: {role, answer}
+    failed = for {role, {:failed, why}} <- answers, do: "#{role} (#{why})"
+    joined = joined(answered, failed)
 
-    {answer, members} =
-      if opts.synthesize do
-        prompt =
-          "Several reviewers answered this task on their own. Weigh their answers and give " <>
-            "one: where they agree, where they differ and which is right, and what to do.\n\n" <>
-            "Task: #{task}\n\n#{joined}"
+    {status, answer, ids} =
+      cond do
+        answered == [] ->
+          {:failed, "No member of the council answered: #{Enum.join(failed, ", ")}.", ids}
 
-        {:ok, synthesis} = agent.(prompt, "the synthesizer of a council")
-        update(session, job.id, &Map.update!(&1, :members, fn ids -> ids ++ [synthesis.id] end))
-        {:ok, done} = wait(session, synthesis.id, max(job.started + job.timeout_ms - now(), 0))
-        {member_answer(done), Enum.map(members, &elem(&1, 1)) ++ [synthesis.id]}
-      else
-        {joined, Enum.map(members, &elem(&1, 1))}
+        not opts.synthesize or length(answered) == 1 ->
+          {:exited, joined, ids}
+
+        true ->
+          gone =
+            if failed == [],
+              do: "",
+              else: " Don't guess at the views of #{Enum.join(failed, ", ")}."
+
+          prompt =
+            "Several reviewers answered this task on their own. Weigh their answers and give " <>
+              "one decision: reject claims they don't support, keep the disagreements that " <>
+              "matter, and say which role raised each concern.#{gone}\n\nTask: #{task}\n\n" <>
+              joined
+
+          with {:ok, synthesis} <- agent.(prompt, "the synthesizer of a council"),
+               _ =
+                 update(
+                   session,
+                   job.id,
+                   &Map.update!(&1, :members, fn m -> m ++ [synthesis.id] end)
+                 ),
+               {:ok, %{status: :exited} = done} <- wait(session, synthesis.id, left.()) do
+            {:exited, member_answer(done), ids ++ [synthesis.id]}
+          else
+            _no_synthesis ->
+              {:exited, "The synthesis gave no answer; the members':\n\n" <> joined, ids}
+          end
       end
 
     File.mkdir_p!(Path.dirname(job.log))
@@ -569,18 +604,33 @@ defmodule Visor.Jobs do
 
     update(session, job.id, fn record ->
       Map.merge(record, %{
-        status: :exited,
+        status: status,
         ms: now() - record.started,
         tail: keep_tail(answer),
-        members: members
+        members: Map.get(record, :members, ids)
       })
     end)
 
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
   end
 
+  defp joined(answered, failed) do
+    answers = Enum.map_join(answered, "\n\n", fn {role, answer} -> "## #{role}\n\n#{answer}" end)
+
+    if failed == [],
+      do: answers,
+      else: answers <> "\n\nNo answer from: #{Enum.join(failed, ", ")}."
+  end
+
+  # Members and the synthesizer only read, as pi-fabric's council's do.
   defp agent_opts(task, role, opts) do
-    %{task: task, role: role, max_steps: opts.max_steps, timeout_ms: opts.timeout_ms}
+    %{
+      task: task,
+      role: role,
+      max_steps: opts.max_steps,
+      timeout_ms: opts.timeout_ms,
+      read_only: true
+    }
   end
 
   defp member_answer(%{log: log, tail: tail}) do

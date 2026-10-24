@@ -30,6 +30,16 @@ defmodule Visor.Harness.Session do
     end
   end
 
+  @doc "Whether session `id`'s scripts may only read: a council member's (see `Visor.Jobs`)."
+  def read_only?(id) do
+    with store when store != nil <- store(id),
+         [{:read_only, read_only}] <- :ets.lookup(store, :read_only) do
+      read_only
+    else
+      _ -> false
+    end
+  end
+
   @doc "The table session `id` keeps its conversation in, or nil."
   def store(id) do
     case Registry.lookup(Harness.Registry, {id, :store}) do
@@ -46,8 +56,10 @@ defmodule Visor.Harness.Session do
     tasks = Harness.via({id, :tasks})
     store = :ets.new(:visor_session, [:public, read_concurrency: true])
     {:ok, _owner} = Registry.register(Harness.Registry, {id, :store}, store)
-    # How deep under other agents this session's agent runs.
+    # How deep under other agents this session's agent runs, and whether
+    # its scripts only read (a council's members).
     :ets.insert(store, {:depth, Keyword.get(opts, :depth, 0)})
+    :ets.insert(store, {:read_only, Keyword.get(opts, :read_only, false)})
 
     job_tasks = Harness.via({id, :job_tasks})
 

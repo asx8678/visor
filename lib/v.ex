@@ -65,12 +65,29 @@ defmodule V do
 
   @doc "Writes a file, creating its folder if needed."
   def write(path, contents) when is_binary(path) and is_binary(contents) do
-    track(:write, [path, contents], fn -> change(path, fn -> Tools.write(path, contents) end) end)
+    track(:write, [path, contents], fn ->
+      with :ok <- not_read_only("V.write"),
+           do: change(path, fn -> Tools.write(path, contents) end)
+    end)
   end
 
   @doc "Replaces the one occurrence of `old` in a file with `new`."
   def edit(path, old, new) when is_binary(path) and is_binary(old) and is_binary(new) do
-    track(:edit, [path, old, new], fn -> change(path, fn -> Tools.edit(path, old, new) end) end)
+    track(:edit, [path, old, new], fn ->
+      with :ok <- not_read_only("V.edit"),
+           do: change(path, fn -> Tools.edit(path, old, new) end)
+    end)
+  end
+
+  # A council member only reads (see Visor.Jobs), as pi-fabric's have only
+  # read, grep, find and ls: members working on one task at once would
+  # change the same files under each other.
+  defp not_read_only(what) do
+    if Visor.Harness.Session.read_only?(session()),
+      do:
+        {:error,
+         "#{what} isn't open to a council member, which only reads: read, search, answer."},
+      else: :ok
   end
 
   @doc """
@@ -104,7 +121,8 @@ defmodule V do
       |> min(Limits.max_job_timeout_ms())
 
     track(:sh, [command, opts], fn ->
-      with {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout)) do
+      with :ok <- not_read_only("V.sh"),
+           {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout)) do
         {:ok, %{job: job.id, log: job.log}, %{started: job.id}}
       end
     end)
@@ -114,9 +132,11 @@ defmodule V do
     timeout = within_script(opts, Limits.shell_timeout_ms(), 1_000, [:timeout, :background])
 
     track(:sh, [command | opts_args(opts)], fn ->
-      {status, output} = Tools.shell(command, timeout: timeout)
-      ref = if status != 0, do: Feedback.keep(session(), output)
-      {:ok, %{status: status, output: output}, %{ran: command, exit: status, ref: ref}}
+      with :ok <- not_read_only("V.sh") do
+        {status, output} = Tools.shell(command, timeout: timeout)
+        ref = if status != 0, do: Feedback.keep(session(), output)
+        {:ok, %{status: status, output: output}, %{ran: command, exit: status, ref: ref}}
+      end
     end)
   end
 
@@ -143,7 +163,8 @@ defmodule V do
       root = Workspace.root()
       stats = Map.new(changed, &{&1, stat(Path.join(root, &1))})
 
-      with {:ok, check, output} <- Check.run(path, timeout) do
+      with :ok <- not_read_only("V.check"),
+           {:ok, check, output} <- Check.run(path, timeout) do
         # What mix test saw of the changed files (see change/2).
         Feedback.saw(session, stats)
         previous = Feedback.record_check(session, path, check)
@@ -372,7 +393,8 @@ defmodule V do
   def save(name, code, description \\ "")
       when is_binary(name) and is_binary(code) and is_binary(description) do
     track(:save, [name], fn ->
-      with {:ok, script} <- Visor.Scripts.save(name, code, description) do
+      with :ok <- not_read_only("V.save"),
+           {:ok, script} <- Visor.Scripts.save(name, code, description) do
         {:ok, %{name: script.name, digest: String.slice(script.digest, 0, 12)}}
       end
     end)
