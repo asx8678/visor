@@ -186,6 +186,33 @@ defmodule Visor.CodeTest do
     refute text =~ "hint:"
   end
 
+  # The 3D watch's live session lost 5 of its first prompt's 24 calls to
+  # these, writing JavaScript into scripts; each is cut from its script.
+  test "hints at the ways a script gets a file's text wrong" do
+    hints = %{
+      # Text right after the opening """, as in Python.
+      ~s|V.edit("main.js",\n"""for (let i = 0; i < 16; i++) {\n}""",\n"""for (;;) {}""")| =>
+        ~s|a heredoc's text starts on the line after its opening """|,
+      # A Python docstring in a heredoc's shell command ends the heredoc.
+      (~s|r = V.sh(~S"""\npython3 - <<'PYEOF'\ns = s.replace("""watch.add(f(1));""",\n| <>
+         ~s|"""function makeStrap(sign) {\n  const p = new THREE.Vector3(x * sign);""")\n| <>
+         ~s|PYEOF\n""")\nr.output|) => ~s|a heredoc ends at the first line that starts with """|,
+      # The whole script as a quoted string.
+      (~s|"\nV.edit(\\"main.js\\",\n  \\"const A = 1;\\",\n  \\"const A = 2;\\")\n| <>
+         ~s|V.sh(\\"ls\\")\n|) => "the script came as one quoted string"
+    }
+
+    for {script, hint} <- hints do
+      assert {:error, message} = Code.run(script, %{})
+      assert [_error, line] = String.split(message, "\nhint: "), "#{script} gave: #{message}"
+      assert line =~ hint, "#{script} gave: #{line}"
+    end
+
+    # A heredoc written right, beside an unrelated syntax error, gets no hint.
+    assert {:error, text} = Code.run(~s|x = ~S"""\nhello\n"""\ny = (1 +|, %{})
+    refute text =~ "hint:"
+  end
+
   test "hints at the right call for the mistakes models make" do
     hints = %{
       ~S|V.read_file("mix.exs")| => "V has no read_file; did you mean V.read(path)?",

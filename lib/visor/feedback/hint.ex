@@ -64,18 +64,50 @@ defmodule Visor.Feedback.Hint do
   end
 
   @doc """
-  The hint for a script that didn't parse, from its code, or nil: a
-  sigil ends at its first closing delimiter, so `~s|a |> b|` or
-  `~s(f(x))` ends early (the first live run's model, and this hint's own
-  tests, wrote both).
+  The hint for a script that failed before its first V call, from its
+  failure's `type` and `message` and its code, or nil. These are the ways
+  models got a file's text into a script wrong in live runs (the 3D
+  watch's session lost 5 of its 24 calls to them):
+
+    * text right after a heredoc's opening `\"""`, as in Python
+    * a heredoc whose text holds a line that starts with `\"""` (a Python
+      docstring in a shell command), which ends the heredoc there
+    * the whole script sent as a quoted string, its quotes escaped
+    * a sigil whose text holds its closing delimiter, so `~s|a |> b|`
+      or `~s(f(x))` ends early (the first live run's model, and this
+      hint's own tests, wrote both)
   """
-  @spec for_parse_error(String.t()) :: String.t() | nil
-  def for_parse_error(code) do
-    if code =~ ~r/~[a-zA-Z]+[|\/("'\[{<]/ do
-      "if a sigil's text holds its closing delimiter (| in ~s|...|, ) in ~s(...)), the " <>
-        "sigil ends there: give it a delimiter its text doesn't use, such as ~s[...] or " <>
-        ~s|~s{...}, or a heredoc (~S""" on a line of its own).|
+  @spec for_script(atom(), String.t(), String.t()) :: String.t() | nil
+  def for_script(type, message, code) do
+    cond do
+      type == :parsing and message =~ "heredoc allows only whitespace characters" ->
+        ~s|a heredoc's text starts on the line after its opening """ (or ~S"""): put a | <>
+          ~s|newline right after it and the closing """ on a line of its own. For text on | <>
+          "one line, use a plain string."
+
+      type == :parsing and code =~ ~r/^[ \t]*"""[ \t]*[A-Za-z_\[{']/m ->
+        ~s|a heredoc ends at the first line that starts with """, so text that holds such | <>
+          ~s|a line (a Python docstring, another heredoc) ends it early: put that text in | <>
+          ~s|~S''' and ''' instead.|
+
+      quoted?(code) ->
+        ~s|the script came as one quoted string, its quotes escaped (\\"): send the code | <>
+          "itself, with its quotes as they are."
+
+      # A heredoc sigil (~S\"""...) can't end on its delimiter's character.
+      type == :parsing and code =~ ~r/~[a-zA-Z]+(?:[|\/(\[{<]|"(?!"")|'(?!''))/ ->
+        "if a sigil's text holds its closing delimiter (| in ~s|...|, ) in ~s(...)), the " <>
+          "sigil ends there: give it a delimiter its text doesn't use, such as ~s[...] or " <>
+          ~s|~s{...}, or a heredoc (~S""" on a line of its own).|
+
+      true ->
+        nil
     end
+  end
+
+  defp quoted?(code) do
+    trimmed = String.trim_leading(code)
+    String.starts_with?(trimmed, ~s|"\n|) and length(String.split(trimmed, ~S|\"|)) > 3
   end
 
   defp undefined(name, arity) do

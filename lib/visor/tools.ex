@@ -118,6 +118,8 @@ defmodule Visor.Tools do
           A script may be up to #{Format.number(Limits.script_chars())} characters; write a \
           longer file in parts, the first with V.write and each next one with \
           V.write(path, V.read(path) <> part). \
+          Put a file's text in a heredoc: ~S\""" and a newline, the text, then \""" on a line of \
+          its own (~S''' when the text holds \"""). \
           A script starts with the variables the prompt's earlier scripts set, so read a file \
           into a variable once and use it in the next script; they last until the prompt ends.\
           """,

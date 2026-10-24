@@ -70,16 +70,18 @@ defmodule Visor.Code do
     {status, text, calls, session}
   end
 
-  # A script that didn't parse can only be hinted at from its code.
+  # A script that failed before its first V call (it didn't parse, or
+  # didn't compile) can only be hinted at from its error and its code.
   defp render(result, calls, context, code) do
     {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
 
-    case {result, Feedback.Hint.for_parse_error(code)} do
-      {%Dune.Failure{type: :parsing}, hint} when is_binary(hint) ->
-        {status, text <> "\nhint: " <> hint}
-
-      _other ->
-        {status, text}
+    with %Dune.Failure{type: type, message: message} <- result,
+         [] <- calls,
+         false <- text =~ "\nhint: ",
+         hint when is_binary(hint) <- Feedback.Hint.for_script(type, message, code) do
+      {status, text <> "\nhint: " <> hint}
+    else
+      _other -> {status, text}
     end
   end
 
