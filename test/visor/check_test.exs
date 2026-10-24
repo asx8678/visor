@@ -261,6 +261,13 @@ defmodule Visor.CheckTest do
 
       assert {:error, text} = Code.run(~S|V.attempt(fn -> V.agent("x") end)|, context)
       assert text =~ "A sub-agent can't start inside V.attempt"
+
+      # A saved script's changes are out of the attempt's reach: it would
+      # say it reverted them, and leave them.
+      {:ok, _} = Visor.Scripts.save("swap", ~S|V.edit("lib/demo.ex", "a + b", "a * b")|, "")
+      assert {:error, text} = Code.run(~S|V.attempt(fn -> V.run("swap") end)|, context)
+      assert text =~ "V.run can't run inside V.attempt"
+      assert File.read!(Path.join(tmp_dir, "lib/demo.ex")) == original
     end
 
     # Runs mix test in a small project of its own, never in Visor.

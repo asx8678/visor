@@ -391,6 +391,15 @@ defmodule V do
   calls count as its own; a saved script can't run another.
   """
   def run(name, input \\ nil) when is_binary(name) do
+    # The saved script runs in a sandbox of its own, out of the attempt's
+    # reach: its changes would stay when the attempt reverts.
+    if Process.get(:visor_attempt) do
+      raise Error,
+            "V.run can't run inside V.attempt: the attempt couldn't put the saved script's " <>
+              "changes back. Make the changes in the attempt, or start the attempt in the " <>
+              "saved script."
+    end
+
     track(:run, [name | if(input == nil, do: [], else: [input])], fn ->
       context = Process.get(Code)
 
