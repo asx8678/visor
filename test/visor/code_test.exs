@@ -112,6 +112,40 @@ defmodule Visor.CodeTest do
     assert Code.timeout_ms("300") == 120_000
   end
 
+  test "runs read-only calls at once, each reported as its own call" do
+    script = ~S"""
+    V.all([{:sh, "sleep 1; echo a"}, {:sh, "sleep 1; echo b"}, {:sh, ["sleep 1; echo c"]}])
+    |> Enum.map(fn {:ok, %{output: output}} -> output end)
+    """
+
+    started = System.monotonic_time(:millisecond)
+    assert {:ok, text, calls} = Code.execute(script, session())
+    assert System.monotonic_time(:millisecond) - started < 2_000
+
+    assert text =~ ~s(=> ["a\\n", "b\\n", "c\\n"])
+    for name <- ~w(a b c), do: assert(text =~ "ran: sleep 1; echo #{name} (exit 0)")
+    assert [1, 2, 3, 4] = Enum.map(calls, & &1.n)
+    assert [:all, :sh, :sh, :sh] = Enum.map(calls, & &1.name)
+  end
+
+  test "gives each call of V.all its own result, failed or not" do
+    script = ~S"""
+    V.all([{:read, "lib/app.ex"}, {:read, "lib/nope.ex"}]) |> Enum.map(&elem(&1, 0))
+    """
+
+    assert {:ok, text} = Code.run(script, %{})
+    assert text =~ "=> [:ok, :error]"
+
+    for script <- [
+          ~S|V.all([{:write, ["a.txt", "x"]}])|,
+          ~S|V.all([{:sh, ["sleep 1", [background: true]]}])|,
+          ~S|V.attempt(fn -> V.all([{:ls, []}]) end)|
+        ] do
+      assert {:error, message} = Code.run(script, %{})
+      assert message =~ ~r/V.all (runs only|can't run inside V.attempt)/
+    end
+  end
+
   test "hints at the right call for the mistakes models make" do
     hints = %{
       ~S|V.read_file("mix.exs")| => "V has no read_file; did you mean V.read(path)?",

@@ -59,6 +59,10 @@ defmodule Visor.Tools do
                                           are in, such as when a task is done
             V.context()                   %{tokens, threshold, window, share, band}: how full
                                           the context is
+            V.all([{:sh, "cmd"}, {:read, ["mix.exs"]}, ...])
+                                          run read-only calls (ls glob exists? read grep sh
+                                          output recall job jobs) at once; returns
+                                          [{:ok, value} | {:error, message}] in order
             V.attempt(fn -> edits end, check: path)
                                           make the edits, check (the tests at path, or all), and
                                           put every file back if the check fails; returns

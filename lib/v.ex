@@ -212,6 +212,81 @@ defmodule V do
     end)
   end
 
+  @parallel ~w(ls glob exists? read grep sh output recall job jobs)a
+
+  @doc """
+  Runs several read-only calls at once, given as data: `V.all([{:sh,
+  "mix format --check-formatted"}, {:read, ["mix.exs"]}, {:grep, ["foo",
+  "lib"]}])`. Returns one result per call, in order: `{:ok, value}`, or
+  `{:error, message}` for a call that failed, without stopping the others.
+  Up to `Visor.Limits.parallel_calls/0` run at a time, each within the
+  script's time.
+
+  Only #{Enum.map_join(@parallel, ", ", &inspect/1)} may run this way:
+  changes and checks run one at a time, so two of them never work on the
+  same file at once.
+  """
+  def all(calls) when is_list(calls) do
+    cond do
+      Process.get(:visor_attempt) ->
+        raise Error, "V.all can't run inside V.attempt; make its calls one after another."
+
+      bad = Enum.find(calls, &(not parallel?(&1))) ->
+        raise Error,
+              "V.all runs only #{Enum.map_join(@parallel, ", ", &inspect/1)}, each as " <>
+                "{name, [args]}, not #{inspect(bad)}: changes, checks and background jobs " <>
+                "run one at a time."
+
+      true ->
+        :ok
+    end
+
+    track(:all, [length(calls)], fn ->
+      context = Process.get(Code)
+      first = Process.get(:visor_calls, 0)
+      # The calls' numbers, taken now so each task reports under its own.
+      Process.put(:visor_calls, first + length(calls))
+      timeout = max((Code.time_left() || Limits.script_timeout_ms()) - 1_000, 0)
+
+      results =
+        calls
+        |> Enum.with_index(first)
+        |> Task.async_stream(
+          fn {{name, args}, n} ->
+            Process.put(Code, context)
+            Process.put(:visor_calls, n)
+
+            try do
+              {:ok, apply(__MODULE__, name, List.wrap(args))}
+            rescue
+              error in Error -> {:error, error.message}
+              error -> {:error, Exception.message(error)}
+            end
+          end,
+          max_concurrency: Limits.parallel_calls(),
+          timeout: timeout,
+          on_timeout: :kill_task,
+          ordered: true
+        )
+        |> Enum.map(fn
+          {:ok, result} -> result
+          {:exit, :timeout} -> {:error, "stopped at the script's time limit"}
+          {:exit, reason} -> {:error, Exception.format_exit(reason)}
+        end)
+
+      {:ok, results}
+    end)
+  end
+
+  # A background job isn't a read, even from V.all.
+  defp parallel?({:sh, [_command, opts]}) when is_list(opts),
+    do: not Keyword.get(opts, :background, false)
+
+  defp parallel?({name, args}) when name in @parallel and (is_list(args) or is_binary(args)),
+    do: true
+
+  defp parallel?(_call), do: false
+
   @doc """
   Runs `fun`, which changes files with `write/2` and `edit/3`, then checks
   them with `check/2` (`check:` a test path, or the whole project; and

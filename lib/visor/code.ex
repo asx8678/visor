@@ -203,6 +203,7 @@ defmodule Visor.Code.Allowlist do
       :context,
       :think,
       :attempt,
+      :all,
       :beam_stats
     ]
 

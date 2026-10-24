@@ -88,6 +88,9 @@ defmodule Visor.Limits do
   @doc "What a script printed, before it is cut and kept behind a ref."
   def printed_bytes, do: 8_000
 
+  @doc "Calls `V.all/1` runs at once."
+  def parallel_calls, do: 4
+
   @doc "Identical scripts in a row from which each result carries a warning."
   def repeat_warn, do: 3
 
