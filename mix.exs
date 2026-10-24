@@ -57,7 +57,7 @@ defmodule Visor.MixProject do
       {:req, "~> 0.5"},
       {:jason, "~> 1.2"},
       {:bandit, "~> 1.5"},
-      {:dune, "~> 0.3.18"}
+      {:dune, github: "asx8678/dune", ref: "989ddaebee4752efa99260dfd84bbc84e0e1be52"}
     ]
   end
 
