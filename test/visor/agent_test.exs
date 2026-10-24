@@ -555,6 +555,37 @@ defmodule Visor.AgentTest do
     assert {:error, "There is no session log for nope."} = Agent.resume(id, "nope")
   end
 
+  # Each script started empty, so a model read a file again in every step
+  # that needed it; Vibe's eval keeps its values (Dune.Session here).
+  test "keeps a prompt's variables from script to script, and says which", %{id: id} do
+    assert :ok = Agent.prompt(id, ">> text = \"hello\"\n>> String.length(text)")
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    assert [_first, second] = for({:done, result} <- tool_events(), do: result)
+    assert second =~ "=> 5"
+
+    last_result =
+      :sys.get_state(agent(id)).messages
+      |> Enum.filter(&(&1["role"] == "tool"))
+      |> List.last()
+
+    assert last_result["content"] =~
+             "[Visor: kept for this prompt's next scripts: text (string, 5 B).]"
+
+    # The next prompt starts without them, and the error says why.
+    assert :ok = Agent.prompt(id, "> String.length(text)")
+    assert_receive {:agent, {:tool_end, %{status: :error, result: error}}}, 5_000
+    assert error =~ "hint: text isn't set: a script keeps the variables"
+    assert_receive {:agent, {:prompt_end, _}}, 5_000
+
+    # Past their limit they are dropped, with a note.
+    assert :ok = Agent.prompt(id, ~S|> big = String.duplicate("x", 21_000_000); :ok|)
+    assert_receive {:agent, {:tool_end, %{result: dropped}}}, 10_000
+    assert dropped =~ "passed 20 MB, so they were dropped"
+    assert_receive {:agent, {:prompt_end, _}}, 5_000
+    assert :sys.get_state(agent(id)).kept == nil
+  end
+
   # BeamAgent's verifier catches a run that claims success without the
   # tools it needed; here, an answer after a change no check passed on.
   @tag :tmp_dir

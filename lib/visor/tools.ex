@@ -99,7 +99,9 @@ defmodule Visor.Tools do
           #{Format.number(Limits.v_calls())} V calls: grep a folder once rather than each file. \
           A script may be up to #{Format.number(Limits.script_chars())} characters; write a \
           longer file in parts, the first with V.write and each next one with \
-          V.write(path, V.read(path) <> part).\
+          V.write(path, V.read(path) <> part). \
+          A script starts with the variables the prompt's earlier scripts set, so read a file \
+          into a variable once and use it in the next script; they last until the prompt ends.\
           """,
           parameters: %{
             type: "object",
@@ -160,6 +162,35 @@ defmodule Visor.Tools do
   end
 
   def execute(name, _arguments, _context), do: {:error, "Unknown tool #{name}. Use elixir.", []}
+
+  @doc """
+  Like `execute/3`, continuing a prompt's `Dune.Session` (see
+  `Visor.Code.execute/3`): also returns the session for the next script.
+  """
+  def execute(name, arguments, context, %Dune.Session{} = session) do
+    case {name, script_arguments(arguments, context)} do
+      {"elixir", {:ok, code, args}} ->
+        context = Map.put(context, :timeout_ms, Visor.Code.timeout_ms(args["timeout"]))
+        {status, text, calls, session} = Visor.Code.execute(code, context, session)
+        {status, text, Visor.Code.facts(calls), session}
+
+      # Not a script to run: the same error, without telling of the
+      # arguments' repairs a second time.
+      _other ->
+        {status, text, facts} = execute(name, arguments, Map.delete(context, :session))
+        {status, text, facts, session}
+    end
+  end
+
+  defp script_arguments(arguments, context) do
+    with {:ok, %{} = args} <- Jason.decode(arguments),
+         %{"code" => code} = args when is_binary(code) and code != "" <-
+           repair_arguments(args, context) do
+      {:ok, code, args}
+    else
+      _ -> :error
+    end
+  end
 
   @doc """
   The script an `elixir` call's `arguments` carry, as `execute/3` would

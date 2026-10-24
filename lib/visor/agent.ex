@@ -636,7 +636,8 @@ defmodule Visor.Agent do
       wakes_held: false,
       prewalk_armed: Map.get(state, :prewalk, false),
       prompt_changed: MapSet.new(),
-      nudged: false
+      nudged: false,
+      kept: nil
     })
     |> start_turn()
   end
@@ -655,7 +656,8 @@ defmodule Visor.Agent do
       repeat: nil,
       wakes: Map.get(state, :wakes, 0) + 1,
       prompt_changed: MapSet.new(),
-      nudged: false
+      nudged: false,
+      kept: nil
     })
     |> start_turn()
   end
@@ -1095,10 +1097,12 @@ defmodule Visor.Agent do
 
   defp run_tool(state, ref, %{call: call} = tool) do
     context = %{session: state.id, call_id: call.id}
+    # The prompt's variables so far, which the script continues.
+    kept = Map.get(state, :kept) || Dune.Session.new()
 
     task =
       Harness.async(state.tasks, "tool #{call.name}", fn ->
-        Tools.execute(call.name, call.arguments, context)
+        Tools.execute(call.name, call.arguments, context, kept)
       end)
 
     deadline = Limits.tool_deadline_ms(Visor.Code.timeout_ms(asked_timeout(call)))
@@ -1155,6 +1159,24 @@ defmodule Visor.Agent do
   # A task started before a hot reload still returns {status, output}.
   defp finish_tool(state, ref, {status, output}),
     do: finish_tool(state, ref, {status, output, []})
+
+  # The script's variables go on to the next script of the prompt, unless
+  # they grew past Visor.Limits.kept_bytes/0. They aren't saved: a
+  # restarted agent starts a prompt without them.
+  defp finish_tool(state, ref, {status, output, facts, %Dune.Session{} = kept}) do
+    {kept, output} =
+      if :erlang.external_size(kept) > Limits.kept_bytes() do
+        {nil,
+         output <>
+           "\n\n[Visor: the variables kept from script to script passed " <>
+           "#{div(Limits.kept_bytes(), 1_000_000)} MB, so they were dropped; set what you " <>
+           "need again.]"}
+      else
+        {kept, output}
+      end
+
+    state |> Map.put(:kept, kept) |> finish_tool(ref, {status, output, facts})
+  end
 
   defp finish_tool(state, ref, {status, output, facts}) do
     tool = state.tools[ref]
@@ -1362,11 +1384,38 @@ defmodule Visor.Agent do
   # What goes after a batch's last result: the calls left, and the jobs
   # still running, so the model knows it will hear of them.
   defp footer(state) do
-    case Enum.reject([steps_left(state), running_jobs(state)], &is_nil/1) do
+    case Enum.reject([kept_values(state), steps_left(state), running_jobs(state)], &is_nil/1) do
       [] -> nil
       lines -> Enum.join(lines, "\n")
     end
   end
+
+  # The variables the next script starts with, so the model knows what it
+  # holds; they last until the prompt ends.
+  defp kept_values(state) do
+    case Map.get(state, :kept) && Visor.Code.kept(state.kept) do
+      [_ | _] = kept ->
+        {shown, rest} = Enum.split(Enum.sort(kept), 12)
+        more = if rest == [], do: "", else: " and #{length(rest)} more"
+        names = Enum.map_join(shown, ", ", fn {name, value} -> "#{name} (#{describe(value)})" end)
+        "[Visor: kept for this prompt's next scripts: #{names}#{more}.]"
+
+      _none ->
+        nil
+    end
+  end
+
+  defp describe(value) when is_binary(value),
+    do: "string, #{Visor.Format.short(byte_size(value))} B"
+
+  defp describe(value) when is_list(value), do: "list of #{length(value)}"
+  defp describe(%module{}), do: inspect(module)
+  defp describe(value) when is_map(value), do: "map of #{map_size(value)}"
+  defp describe(value) when is_integer(value), do: "integer"
+  defp describe(value) when is_float(value), do: "float"
+  defp describe(value) when is_atom(value), do: inspect(value)
+  defp describe(value) when is_tuple(value), do: "tuple of #{tuple_size(value)}"
+  defp describe(_value), do: "value"
 
   defp running_jobs(state) do
     case Jobs.running(state.id) do

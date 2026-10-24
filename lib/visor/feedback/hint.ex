@@ -44,6 +44,12 @@ defmodule Visor.Feedback.Hint do
         "the arguments don't fit #{signatures(name)}: paths, patterns, commands and " <>
           "contents are strings."
 
+      match = Regex.run(~r/undefined variable "(\w+)"/, message) ->
+        [_, name] = match
+
+        "#{name} isn't set: a script keeps the variables of the scripts before it only " <>
+          "within one prompt (the last result's footer lists them). Set it again."
+
       match = Regex.run(~r/function ([\w.:]+)\.([\w?!]+)\/\d+ is restricted/, message) ->
         [_, module, name] = match
         restricted(module, name)

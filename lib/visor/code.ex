@@ -59,21 +59,53 @@ defmodule Visor.Code do
   end
 
   @doc """
+  Like `execute/2`, continuing `session`, a `Dune.Session` that keeps one
+  prompt's variables from script to script (after Vibe's stateful eval):
+  returns the session after the script too, for the next one. A failed
+  script leaves it as it was.
+  """
+  def execute(code, context, %Dune.Session{} = session) do
+    {result, calls, session} = evaluate_in(code, context, session)
+    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
+    {status, text, calls, session}
+  end
+
+  @doc """
   Runs a script and returns Dune's result and the script's V calls, for a
   caller that wants the value itself (`V.run/2`). It sets the context in
   the calling process, so a caller that has its own puts it back.
   """
   def evaluate(code, context) do
+    {opts, table} = prepare(context)
+    result = Dune.eval_string(@begin <> code, opts)
+    log_script(context, result)
+    {result, calls(table)}
+  end
+
+  defp evaluate_in(code, context, session) do
+    {opts, table} = prepare(context)
+    session = Dune.Session.eval_string(session, @begin <> code, opts)
+    log_script(context, session.last_result)
+    {session.last_result, calls(table), %{session | last_result: nil}}
+  end
+
+  # The script records its V calls in a table rather than in this
+  # process's mailbox, which Dune waits in: a script can make thousands.
+  # Its calls read the deadline to fit their own limits under it.
+  defp prepare(context) do
     timeout = Map.get(context, :timeout_ms) || Visor.Limits.script_timeout_ms()
-    # The script records its V calls here rather than in this process's
-    # mailbox, which Dune waits in: a script can make thousands. Its
-    # calls read the deadline to fit their own limits under it.
     table = :ets.new(:visor_calls, [:public])
     deadline = System.monotonic_time(:millisecond) + timeout
     Process.put(__MODULE__, Map.merge(context, %{calls: table, deadline: deadline}))
-    result = Dune.eval_string(@begin <> code, Keyword.put(@opts, :timeout, timeout))
-    log_script(context, result)
-    {result, calls(table)}
+    {Keyword.put(@opts, :timeout, timeout), table}
+  end
+
+  @doc """
+  The variables `session` keeps, by their names in the script, each as
+  `{name, value}`.
+  """
+  def kept(%Dune.Session{bindings: bindings, env: env}) do
+    for {name, value} <- bindings, do: {Dune.AtomMapping.to_string(env.atom_mapping, name), value}
   end
 
   @doc """

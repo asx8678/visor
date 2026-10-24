@@ -79,7 +79,8 @@ defmodule Visor.Feedback.Script do
 
       true ->
         message = without_stacktrace(failure.message)
-        hint = Hint.for_error(message)
+        # A compile error's details are in what the compiler printed.
+        hint = Hint.for_error(message <> "\n" <> (failure.stdio || ""))
 
         "failed after #{Format.count(length(calls), "call")}:\n" <>
           indent(message) <> if(hint, do: "\nhint: " <> hint, else: "")

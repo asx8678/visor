@@ -133,6 +133,9 @@ defmodule Visor.Limits do
   @doc "Calls `V.all/1` runs at once."
   def parallel_calls, do: 4
 
+  @doc "The most the variables a prompt's scripts keep for each other may hold."
+  def kept_bytes, do: 20_000_000
+
   @doc "Identical scripts in a row from which each result carries a warning."
   def repeat_warn, do: 3
 
