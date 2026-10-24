@@ -270,6 +270,31 @@ defmodule Visor.CheckTest do
       assert File.read!(Path.join(tmp_dir, "lib/demo.ex")) == original
     end
 
+    # Vibe gates a change on the formatter and Credo as well as the tests.
+    @tag timeout: 180_000
+    test "runs the gates it is asked for: the formatter, and Credo when the project has it",
+         %{tmp_dir: tmp_dir, context: context} do
+      write_project(tmp_dir)
+      formatter = ~s|[inputs: ["{lib,test}/**/*.{ex,exs}"]]\n|
+      File.write!(Path.join(tmp_dir, ".formatter.exs"), formatter)
+      File.write!(Path.join(tmp_dir, "lib/ugly.ex"), "defmodule   Ugly do\nend\n")
+
+      script = ~S"""
+      V.check(format: true, credo: true) |> Map.take([:status, :format, :credo])
+      """
+
+      assert {:ok, text} = Code.run(script, context)
+      assert text =~ "format: 1 file to run mix format on: lib/ugly.ex"
+      assert text =~ "credo: didn't run, the project doesn't depend on credo"
+      assert text =~ ~s(format: ["lib/ugly.ex"])
+      assert text =~ "status: :ok"
+
+      assert {:error, message} = Code.run(~S|V.check(lint: true)|, context)
+
+      assert message =~
+               "The options are timeout: (seconds), format: true and credo: true, not [:lint]."
+    end
+
     # Runs mix test in a small project of its own, never in Visor.
     @tag timeout: 180_000
     test "checks a change, then says what the fix fixed", %{tmp_dir: tmp_dir, context: context} do

@@ -85,6 +85,98 @@ defmodule Visor.Check do
     end
   end
 
+  @doc """
+  Checks besides the tests, after Vibe's validation gates, as `gates`
+  asks: `format: true` runs `mix format --check-formatted` and lists the
+  files it would change; `credo: true` runs Credo, when the project
+  depends on it, and lists what it reports. Returns a map of what ran:
+  `format` and `credo` are lists, or a string saying why they couldn't run.
+  """
+  def gates(gates, timeout) do
+    for {gate, true} <- gates, gate in [:format, :credo], into: %{} do
+      {gate, gate(gate, timeout)}
+    end
+  end
+
+  defp gate(:format, timeout) do
+    if File.regular?(Path.join(Workspace.root(), ".formatter.exs")) do
+      case Tools.shell("mix format --check-formatted", timeout: timeout, max_bytes: 200_000) do
+        {0, _output} ->
+          []
+
+        {status, output} when is_integer(status) ->
+          files = unformatted(output)
+          if files == [], do: "it failed: " <> last_line(output), else: files
+
+        {:timeout, _output} ->
+          "it ran out of time"
+      end
+    else
+      "the project has no .formatter.exs"
+    end
+  end
+
+  defp gate(:credo, timeout) do
+    if File.dir?(Path.join(Workspace.root(), "deps/credo")) do
+      command = "mix credo --strict --format oneline --mute-exit-status"
+
+      case Tools.shell(command, timeout: timeout, max_bytes: 400_000) do
+        {0, output} -> for line <- String.split(output, "\n"), line =~ ~r/^\[\w\]/, do: line
+        {:timeout, _output} -> "it ran out of time"
+        {_status, output} -> "it failed: " <> last_line(output)
+      end
+    else
+      "the project doesn't depend on credo"
+    end
+  end
+
+  # Each file mix format would change: an absolute path on a line of its
+  # own before its diff (Elixir 1.20), or "  * path" (older Elixir).
+  defp unformatted(output) do
+    root = Workspace.root()
+    plain = String.replace(output, ~r/\e\[[0-9;]*m/, "")
+    pattern = ~r/^\s*(?:\*\s+)?(\S+\.(?:ex|exs|heex|eex|leex))\s*$/m
+
+    for [_, file] <- Regex.scan(pattern, plain), uniq: true do
+      if String.starts_with?(file, root <> "/"), do: Path.relative_to(file, root), else: file
+    end
+  end
+
+  defp last_line(output) do
+    output
+    |> String.trim()
+    |> String.split("\n")
+    |> List.last()
+    |> Kernel.||("")
+    |> String.slice(0, 200)
+  end
+
+  @doc "The lines `render/4`'s summary gets for the gates that ran."
+  def render_gates(gates) do
+    Enum.map_join(gates, "", fn
+      {:format, []} ->
+        "\nformat: clean"
+
+      {:format, files} when is_list(files) ->
+        "\nformat: #{Format.count(length(files), "file")} " <>
+          "to run mix format on: #{Enum.join(Enum.take(files, @shown_names), ", ")}"
+
+      {:credo, []} ->
+        "\ncredo: no issues"
+
+      {:credo, lines} when is_list(lines) ->
+        "\ncredo: #{Format.count(length(lines), "issue")}\n" <>
+          Enum.map_join(
+            Enum.take(lines, @shown_diagnostics),
+            "\n",
+            &("  " <> String.slice(&1, 0, @line_chars))
+          )
+
+      {gate, why} ->
+        "\n#{gate}: didn't run, #{why}"
+    end)
+  end
+
   defp mix_project do
     if File.regular?(Path.join(Workspace.root(), "mix.exs")),
       do: :ok,

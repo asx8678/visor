@@ -41,11 +41,13 @@ defmodule Visor.Tools do
             V.edit(path, old, new)        replace the one occurrence of old; returns :ok
             V.sh(command, timeout: s)     run a shell command (timeout optional, default
                                           #{div(Limits.shell_timeout_ms(), 1000)} s); returns %{status: code, output: text}
-            V.check(path \\\\ nil, timeout: s)
+            V.check(path \\\\ nil, timeout: s, format: true)
                                           compile and run the tests (or those at a path such as
                                           "test/app_test.exs:12") in a Mix project; returns
                                           %{status: :ok | :failed | :compile_error | :timeout | :error,
-                                            tests: n, failed: n, failures: [...], errors: [...]}
+                                            tests: n, failed: n, failures: [...], errors: [...]};
+                                          format: true also lists files mix format would change,
+                                          credo: true Credo's issues when the project has it
             V.sh(command, background: true)
                                           start a command as a background job (a long build, a
                                           server); returns %{job: id, log: path} at once. You hear

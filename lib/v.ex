@@ -165,13 +165,15 @@ defmodule V do
   `timeout:` (seconds) raises its time limit from
   `Visor.Limits.check_timeout_ms/0`, within the script's own limit, as
   for `sh/2`. `V.check(timeout: 300)` checks the whole project.
+  `format: true` also runs `mix format --check-formatted`, and
+  `credo: true` Credo when the project has it (see `Visor.Check.gates/2`).
   """
   def check(path \\ nil, opts \\ [])
 
   def check(opts, []) when is_list(opts), do: check(nil, opts)
 
   def check(path, opts) when (is_nil(path) or is_binary(path)) and is_list(opts) do
-    timeout = within_script(opts, Limits.check_timeout_ms(), 5_000)
+    timeout = within_script(opts, Limits.check_timeout_ms(), 5_000, [:timeout, :format, :credo])
 
     track(:check, List.wrap(path) ++ opts_args(opts), fn ->
       session = session()
@@ -191,8 +193,10 @@ defmodule V do
           else: if(check.status == :ok, do: Feedback.verified(session, path))
 
         ref = if check.status != :ok, do: Feedback.keep(session, output)
-        summary = Check.render(check, previous, changed, ref)
-        result = Check.result(check)
+        gate_ms = max((Code.time_left() || timeout) - 2_000, 1_000)
+        gates = Check.gates(Keyword.take(opts, [:format, :credo]), gate_ms)
+        summary = Check.render(check, previous, changed, ref) <> Check.render_gates(gates)
+        result = Map.merge(Check.result(check), gates)
         {:ok, result, %{check: summary, value: result}}
       end
     end)
@@ -865,7 +869,7 @@ defmodule V do
   # A call's time limit in ms: `opts[:timeout]` seconds or `default`,
   # ending `margin` ms before the script's own limit, so the call reports
   # its timeout before the script is stopped.
-  defp within_script(opts, default, margin, allowed \\ [:timeout]) do
+  defp within_script(opts, default, margin, allowed) do
     asked = asked_timeout(opts, default, allowed)
 
     case Code.time_left() do
@@ -883,8 +887,8 @@ defmodule V do
         raise Error, "The only option is timeout: (seconds), not #{inspect(keys)}."
 
       keys ->
-        raise Error,
-              "The options are timeout: (seconds) and background: true, not #{inspect(keys)}."
+        {last, rest} = allowed |> Enum.map(&option_text/1) |> List.pop_at(-1)
+        raise Error, "The options are #{Enum.join(rest, ", ")} and #{last}, not #{inspect(keys)}."
     end
 
     case Keyword.get(opts, :timeout) do
@@ -893,6 +897,9 @@ defmodule V do
       other -> raise Error, "timeout: is a number of seconds, not #{inspect(other)}."
     end
   end
+
+  defp option_text(:timeout), do: "timeout: (seconds)"
+  defp option_text(name), do: "#{name}: true"
 
   defp job_session do
     case session() do
