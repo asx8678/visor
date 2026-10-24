@@ -48,6 +48,22 @@ defmodule V do
     do: track(:read, [path], fn -> Tools.read(path) end)
 
   @doc """
+  The docs of a module or a function in it (`"Req.get/2"`, `"Enum.map"`,
+  `":ets"`), read from the project's compiled code, so for the versions it
+  depends on: its signatures, then the doc. Elixir's and Erlang's own
+  modules too. Prefer it to reading a dependency's source for its API.
+  """
+  def docs(ref) when is_binary(ref), do: track(:docs, [ref], fn -> Visor.Docs.docs(ref) end)
+
+  @doc """
+  Where a module or function is defined, `%{file: path, line: n}`, from
+  the project's compiled code; `"dep:name"` gives a dependency's folder.
+  Prefer it to grepping for a definition.
+  """
+  def source(ref) when is_binary(ref),
+    do: track(:source, [ref], fn -> Visor.Docs.source(ref) end)
+
+  @doc """
   Lines matching a regular expression, given as a string or a `~r` regex,
   as `%{file: path, line: n, text: line}`.
   """
@@ -472,7 +488,7 @@ defmodule V do
     track(:history_entry, [ref], fn -> Visor.History.entry(ref) end)
   end
 
-  @parallel ~w(ls glob exists? read grep sh output recall job jobs history history_entry)a
+  @parallel ~w(ls glob exists? read grep docs source sh output recall job jobs history history_entry)a
 
   @doc """
   Runs several read-only calls at once, given as data: `V.all([{:sh,

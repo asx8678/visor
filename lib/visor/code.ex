@@ -198,6 +198,8 @@ defmodule Visor.Code.Allowlist do
       :exists?,
       :read,
       :grep,
+      :docs,
+      :source,
       :write,
       :edit,
       :sh,

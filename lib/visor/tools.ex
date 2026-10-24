@@ -33,6 +33,10 @@ defmodule Visor.Tools do
             V.exists?(path)               whether a file or folder exists
             V.grep(pattern, path \\\\ ".")  matches of a regex (a string or ~r//) as
                                           %{file: path, line: n, text: line}
+            V.docs("Mod.fun/2")           a module's or function's docs and signatures, from
+                                          the project's compiled code (the versions it uses)
+            V.source("Mod.fun")           where it is defined, %{file, line}; "dep:name" for
+                                          a dependency's folder
             V.write(path, contents)       write a file, creating folders; returns :ok
             V.edit(path, old, new)        replace the one occurrence of old; returns :ok
             V.sh(command, timeout: s)     run a shell command (timeout optional, default
