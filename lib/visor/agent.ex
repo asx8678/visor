@@ -96,9 +96,11 @@ defmodule Visor.Agent do
     # are; `wake_texts` when one of them may wake the agent.
     pending_texts: [],
     wake_texts: false,
-    # Wakes since the user's last prompt, and whether they wait for the
-    # next one (after Stop or a failed model call).
+    # Wakes since the user's last prompt (`monitor_wakes`: those for a
+    # monitored job's lines alone), and whether they wait for the next one
+    # (after Stop or a failed model call).
     wakes: 0,
+    monitor_wakes: 0,
     wakes_held: false,
     jobs_wake: true,
     wake_timer: nil,
@@ -698,9 +700,11 @@ defmodule Visor.Agent do
     state = Map.put(state, :wake_timer, nil)
 
     if state.status == :idle and can_wake?(state) do
+      count = if wake_kind(state) == :monitor, do: :monitor_wakes, else: :wakes
+
       case take_notices(state) do
         {state, []} -> {:noreply, state}
-        {state, notices} -> {:noreply, start_wake(state, notices)}
+        {state, notices} -> {:noreply, start_wake(state, notices, count)}
       end
     else
       {:noreply, state}
@@ -723,6 +727,7 @@ defmodule Visor.Agent do
       overflowed: false,
       repeat: nil,
       wakes: 0,
+      monitor_wakes: 0,
       wakes_held: false,
       prompt_changed: MapSet.new(),
       nudged: false,
@@ -734,8 +739,9 @@ defmodule Visor.Agent do
   end
 
   # A prompt of the agent's own, when background jobs ended while it was
-  # idle: a fresh budget of model calls, without the user.
-  defp start_wake(state, notices) do
+  # idle: a fresh budget of model calls, without the user. `count` is the
+  # wakes it counts in.
+  defp start_wake(state, notices, count) do
     text = Enum.join(notices, "\n\n")
     broadcast(state, {:wake, text})
 
@@ -745,11 +751,11 @@ defmodule Visor.Agent do
       steps: 0,
       overflowed: false,
       repeat: nil,
-      wakes: Map.get(state, :wakes, 0) + 1,
       prompt_changed: MapSet.new(),
       nudged: false,
       kept: nil
     })
+    |> Map.put(count, Map.get(state, count, 0) + 1)
     |> start_turn()
   end
 
@@ -769,12 +775,29 @@ defmodule Visor.Agent do
   end
 
   # `/jobs wake off` holds what jobs wake the agent for; a supervisor's
-  # message wakes it all the same, within the same count.
+  # message wakes it all the same, within the same count. A wake for a
+  # monitored job's lines alone has a count of its own, so a monitor
+  # can't use up the wakes a job's end needs.
   defp can_wake?(state) do
+    left? =
+      if wake_kind(state) == :monitor,
+        do: Map.get(state, :monitor_wakes, 0) < Limits.monitor_wakeups(),
+        else: Map.get(state, :wakes, 0) < Limits.job_wakeups()
+
     (Map.get(state, :jobs_wake, true) or Map.get(state, :wake_texts, false)) and
-      not Map.get(state, :wakes_held, false) and
-      Map.get(state, :wakes, 0) < Limits.job_wakeups() and
+      not Map.get(state, :wakes_held, false) and left? and
       Visor.ModelHealth.open() == nil and Visor.Alarms.held() == nil
+  end
+
+  # What a wake would tell: `:monitor` when it is only running jobs' new
+  # lines, `:jobs` when a job ended or a reviewer spoke.
+  defp wake_kind(state) do
+    ended? =
+      Enum.any?(Map.get(state, :pending_jobs, []), fn id ->
+        match?(%{status: status} when status != :running, Jobs.get(state.id, id))
+      end)
+
+    if ended? or Map.get(state, :pending_texts, []) != [], do: :jobs, else: :monitor
   end
 
   # Jobs that end close together wake the agent once.

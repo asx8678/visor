@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "visor-proofs",
+      "dependencies": {
+        "gdp-wired": "0.27.0",
+      },
+    },
+  },
+  "packages": {
+    "gdp-wired": ["gdp-wired@0.27.0", "", { "peerDependencies": { "@gdp-ts/core": ">=0.1.0", "typescript": ">=5.0.0" }, "optionalPeers": ["@gdp-ts/core", "typescript"] }, "sha512-wG22KLT1FU1X7Ss/P5jKFkTqFM8bBtf3ME11TRtIOfWLQBunJ8nVPnHnu5wjvpS53680Tw1twOKeEcN75Y0tXA=="],
+  }
+}

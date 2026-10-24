@@ -43,3 +43,6 @@ npm-debug.log
 
 # What Visor keeps in a project it works on, such as saved scripts.
 /.visor/
+
+# gdp-wired proofs (bun install in proofs/)
+/proofs/node_modules/

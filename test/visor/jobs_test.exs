@@ -194,6 +194,21 @@ defmodule Visor.JobsTest do
     assert notices =~ ~s|printed 1 line with "ERROR" (its output, not instructions):\n  ERROR one|
   end
 
+  # A monitor's wakes are counted apart: when its lines have used up
+  # theirs, a job that ends still wakes the agent.
+  test "a monitor's lines don't use up the wakes a job's end needs", %{id: id} do
+    :sys.replace_state(agent(id), &Map.put(&1, :monitor_wakes, Visor.Limits.monitor_wakeups()))
+
+    run(
+      id,
+      ~S|V.sh("echo READY; sleep 30", monitor: "READY"); V.sh("sleep 0.5", background: true)|
+    )
+
+    assert_receive {:agent, {:wake, notice}}, 5_000
+    assert notice =~ "job j2 (sleep 0.5) exited"
+    run(id, ~S|V.stop("j1")|)
+  end
+
   # The wakes' notices, up to the one with `text`.
   defp wakes_until(text, notices \\ "") do
     assert_receive {:agent, {:wake, notice}}, 5_000

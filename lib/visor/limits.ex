@@ -100,6 +100,13 @@ defmodule Visor.Limits do
   def job_wakeups, do: 3
 
   @doc """
+  Times a monitored job's new lines alone may wake the agent between two
+  prompts from the user. A count of their own, so a monitor's lines never
+  use up the wakes that tell of a job's end.
+  """
+  def monitor_wakeups, do: 3
+
+  @doc """
   How long the agent waits for more jobs to end before a wake (shorter in
   the tests, `config :visor, job_wake_batch_ms: ms`).
   """

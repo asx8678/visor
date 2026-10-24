@@ -1,0 +1,7 @@
+{
+  "name": "visor-proofs",
+  "private": true,
+  "type": "module",
+  "scripts": {"prove": "bun wakes.ts"},
+  "dependencies": {"gdp-wired": "0.27.0"}
+}
