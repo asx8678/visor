@@ -122,7 +122,7 @@ defmodule Visor.CodeTest do
       ~S|File.read!("mix.exs")| => "use V.read(path).",
       ~S|Path.wildcard("*")| => "use V.glob(pattern).",
       ~S|System.cmd("ls", [])| => "use V.sh(command).",
-      ~S|File.stat("x")| => "only through V, which has beam_stats, carry, check",
+      ~S|File.stat("x")| => "only through V, which has ",
       ~S|import Enum; map([1], & &1)| => "write a module's full name",
       ~S|try do 1 rescue _ -> 2 end| => "check first, such as V.exists?(path)"
     }

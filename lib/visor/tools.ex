@@ -59,6 +59,10 @@ defmodule Visor.Tools do
                                           are in, such as when a task is done
             V.context()                   %{tokens, threshold, window, share, band}: how full
                                           the context is
+            V.attempt(fn -> edits end, check: path)
+                                          make the edits, check (the tests at path, or all), and
+                                          put every file back if the check fails; returns
+                                          %{status: :kept | :reverted, check: result, files: [...]}
             V.think(:off | :low | :high | :max, turns: n)
                                           your reasoning for the rest of this prompt, or n calls
             V.beam_stats()                runtime statistics as a map
@@ -248,6 +252,18 @@ defmodule Visor.Tools do
          :ok <- File.mkdir_p(Path.dirname(full)) |> describe_error(path, "write"),
          :ok <- File.write(full, contents) |> describe_error(path, "write") do
       :ok
+    end
+  end
+
+  @doc "Removes a project file, as undoing a write that created it (`V.attempt/2`)."
+  def remove(path) do
+    with {:ok, full} <- Workspace.resolve(path),
+         :ok <- Workspace.writable(full, path) do
+      case File.rm(full) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        error -> describe_error(error, path, "remove")
+      end
     end
   end
 

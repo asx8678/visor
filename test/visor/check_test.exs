@@ -202,6 +202,59 @@ defmodule Visor.CheckTest do
       assert result =~ "check failed"
     end
 
+    @tag timeout: 180_000
+    test "an attempt puts every file back when its check fails, and keeps them when it passes",
+         %{tmp_dir: tmp_dir, context: context} do
+      write_project(tmp_dir)
+      original = File.read!(Path.join(tmp_dir, "lib/demo.ex"))
+
+      failing = ~S"""
+      V.attempt(fn ->
+        V.edit("lib/demo.ex", "a + b", "a - b")
+        V.write("lib/extra.ex", "defmodule Extra do\nend\n")
+      end, check: "test/demo_test.exs")
+      """
+
+      assert {:ok, text} = Code.run(failing, context)
+      assert text =~ "reverted: lib/demo.ex, lib/extra.ex (the attempt's check failed)"
+      refute text =~ "changed:"
+      assert text =~ "status: :reverted"
+      assert File.read!(Path.join(tmp_dir, "lib/demo.ex")) == original
+      refute File.exists?(Path.join(tmp_dir, "lib/extra.ex"))
+
+      passing = ~S|V.attempt(fn -> V.edit("lib/demo.ex", "a + b", "b + a") end).status|
+      assert {:ok, text} = Code.run(passing, context)
+      assert text =~ "=> :kept"
+      assert File.read!(Path.join(tmp_dir, "lib/demo.ex")) =~ "b + a"
+    end
+
+    test "an attempt whose call fails puts its files back, and stops the script",
+         %{tmp_dir: tmp_dir, context: context} do
+      write_project(tmp_dir)
+      original = File.read!(Path.join(tmp_dir, "lib/demo.ex"))
+
+      script = ~S"""
+      V.attempt(fn ->
+        V.edit("lib/demo.ex", "a + b", "a * b")
+        V.edit("lib/demo.ex", "not there", "x")
+      end)
+      """
+
+      assert {:error, text} = Code.run(script, context)
+      assert text =~ "failed at call 1: V.attempt"
+      assert text =~ "V.attempt put 1 file back: The text to replace was not found"
+      assert text =~ "reverted: lib/demo.ex (the attempt failed)"
+      refute text =~ "changed:"
+      assert File.read!(Path.join(tmp_dir, "lib/demo.ex")) == original
+
+      assert {:error, text} = Code.run(~S|V.attempt(fn -> V.attempt(fn -> 1 end) end)|, context)
+      assert text =~ "V.attempt can't run inside another."
+
+      script = ~S|V.attempt(fn -> V.sh("sleep 1", background: true) end)|
+      assert {:error, text} = Code.run(script, context)
+      assert text =~ "A background job can't start inside V.attempt"
+    end
+
     # Runs mix test in a small project of its own, never in Visor.
     @tag timeout: 180_000
     test "checks a change, then says what the fix fixed", %{tmp_dir: tmp_dir, context: context} do

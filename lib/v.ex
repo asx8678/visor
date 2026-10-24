@@ -96,6 +96,12 @@ defmodule V do
   end
 
   defp background(command, opts) do
+    if Process.get(:visor_attempt) do
+      raise Error,
+            "A background job can't start inside V.attempt: it would go on running " <>
+              "against files the attempt may put back."
+    end
+
     timeout =
       opts
       |> asked_timeout(Limits.job_timeout_ms(), [:timeout, :background])
@@ -200,6 +206,77 @@ defmodule V do
         {:ok, job_view(job)}
       end
     end)
+  end
+
+  @doc """
+  Runs `fun`, which changes files with `write/2` and `edit/3`, then checks
+  them with `check/2` (`check:` a test path, or the whole project; and
+  `timeout:` for the check). When the check passes the changes stay;
+  when it fails, or `fun` raises, every file is put back as it was, and
+  files it created are removed. Returns
+  `%{status: :kept | :reverted, check: result, files: paths}`; a `fun`
+  that raised raises again once its files are back.
+
+  Files are put back with the same lock as any write, but another
+  session that changed one of them during the attempt loses that change.
+  Attempts don't nest, and a background job can't start in one.
+  """
+  def attempt(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
+    if Process.get(:visor_attempt), do: raise(Error, "V.attempt can't run inside another.")
+
+    {path, check_opts} = Keyword.pop(opts, :check)
+
+    track(:attempt, opts_args(opts), fn ->
+      Process.put(:visor_attempt, %{})
+
+      ran =
+        try do
+          fun.()
+          :ok
+        rescue
+          error -> {:error, Exception.message(error)}
+        end
+
+      originals = Process.delete(:visor_attempt) || %{}
+      files = originals |> Map.keys() |> Enum.map(&Path.relative_to(&1, Workspace.root()))
+      files = Enum.sort(files)
+
+      checked =
+        with :ok <- ran do
+          try do
+            {:ok, check(path, check_opts)}
+          rescue
+            error in Error -> {:error, "its check failed to run: " <> error.message}
+          end
+        end
+
+      case checked do
+        {:ok, %{status: :ok} = check} ->
+          {:ok, %{status: :kept, check: check, files: files}}
+
+        {:ok, check} ->
+          put_back(originals)
+          {:ok, %{status: :reverted, check: check, files: files}, %{reverted: files}}
+
+        {:error, message} ->
+          put_back(originals)
+
+          {:error, "V.attempt put #{Format.count(length(files), "file")} back: " <> message,
+           %{reverted: files}}
+      end
+    end)
+  end
+
+  defp put_back(originals) do
+    root = Workspace.root()
+
+    for {full, original} <- originals do
+      path = Path.relative_to(full, root)
+
+      change(path, fn ->
+        if original == :absent, do: Tools.remove(path), else: Tools.write(path, original)
+      end)
+    end
   end
 
   @doc """
@@ -354,6 +431,7 @@ defmodule V do
 
     Lock.hold({:file, full}, fn ->
       before = stat(full)
+      remember_original(full)
 
       with :ok <- write.() do
         path = Path.relative_to(full, root)
@@ -367,6 +445,21 @@ defmodule V do
         {:ok, :ok, %{changed: path}}
       end
     end)
+  end
+
+  # Inside V.attempt/2, a file's contents before its first change, or
+  # :absent, so the attempt can put them back.
+  defp remember_original(full) do
+    with %{} = originals <- Process.get(:visor_attempt),
+         false <- Map.has_key?(originals, full) do
+      original =
+        case File.read(full) do
+          {:ok, contents} -> contents
+          {:error, _reason} -> :absent
+        end
+
+      Process.put(:visor_attempt, Map.put(originals, full, original))
+    end
   end
 
   defp stat(full) do
@@ -499,6 +592,10 @@ defmodule V do
 
       {:error, message} ->
         Code.report(context, Map.put(%{call | status: :error}, :error, message))
+        raise Error, message
+
+      {:error, message, info} ->
+        Code.report(context, Map.merge(%{call | status: :error}, Map.put(info, :error, message)))
         raise Error, message
     end
   end

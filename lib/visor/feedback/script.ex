@@ -35,6 +35,7 @@ defmodule Visor.Feedback.Script do
         changed(calls),
         ran(calls),
         started(calls),
+        reverted(calls),
         for(%{status: :ok, check: summary} <- calls, do: summary),
         printed(result.stdio, keep),
         value(result, calls, keep)
@@ -59,13 +60,16 @@ defmodule Visor.Feedback.Script do
       "with V.write, each next one with V.write(path, V.read(path) <> part)."
   end
 
+  # A failed call stops its script, so the first is the one that did: an
+  # attempt whose call failed comes before that call.
   defp headline(failure, calls) do
     last = List.last(calls)
+    failed = Enum.find(calls, &(&1.status == :error))
     stop = stopped(failure)
 
     cond do
-      match?(%{status: :error}, last) ->
-        "failed at call #{last.n}: V.#{last.text}\n" <> indent(last.error)
+      failed ->
+        "failed at call #{failed.n}: V.#{failed.text}\n" <> indent(failed.error)
 
       stop && match?(%{status: :running}, last) ->
         "#{stop} while call #{last.n} was running: V.#{last.text}"
@@ -93,9 +97,16 @@ defmodule Visor.Feedback.Script do
   defp stopped(%Dune.Failure{type: :reductions}), do: "stopped at the work limit"
   defp stopped(_failure), do: nil
 
+  # What an attempt put back isn't changed.
   defp changed(calls) do
+    reverted = for %{reverted: files} <- calls, file <- files, do: file
+
     files =
-      for(%{status: :ok, changed: path} = call <- calls, do: {path, call.name})
+      for(
+        %{status: :ok, changed: path} = call <- calls,
+        path not in reverted,
+        do: {path, call.name}
+      )
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
       |> Enum.sort()
       |> Enum.map(fn {path, names} -> "#{path} (#{operations(names)})" end)
@@ -118,6 +129,13 @@ defmodule Visor.Feedback.Script do
       status = if call.exit == :timeout, do: "timed out", else: "exit #{call.exit}"
       status = if call.ref, do: "#{status}, output #{call.ref}", else: status
       "ran: #{one_line(command)} (#{status})"
+    end
+  end
+
+  defp reverted(calls) do
+    for %{reverted: [_ | _] = files} = call <- calls do
+      why = if call.status == :ok, do: "the attempt's check failed", else: "the attempt failed"
+      "reverted: #{Enum.join(files, ", ")} (#{why})"
     end
   end
 

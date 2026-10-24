@@ -356,7 +356,7 @@ defmodule Visor.Agent do
         else: "the rest of this prompt"
 
     note(state, :info, "The model set #{how} for #{span}.")
-    state = Map.put(state, :think, think)
+    state = save(Map.put(state, :think, think))
     broadcast(state, {:settings, public_settings(state)})
     {:reply, {:ok, public_settings(state)}, state}
   end
@@ -365,7 +365,7 @@ defmodule Visor.Agent do
     do: {:reply, {:error, "The level is off, low, high or max, not #{inspect(level)}."}, state}
 
   def handle_call({:request_compaction, reason}, _from, state) do
-    {:reply, :ok, Map.put(state, :compact_request, reason)}
+    {:reply, :ok, save(Map.put(state, :compact_request, reason))}
   end
 
   def handle_call(:context, _from, state) do
@@ -1107,6 +1107,8 @@ defmodule Visor.Agent do
         facts: Map.get(state, :facts, %{}),
         queued: Map.get(state, :queued, []),
         carry: Map.get(state, :carry, []),
+        think: Map.get(state, :think),
+        compact_request: Map.get(state, :compact_request),
         # The running batch's results so far, by call id.
         batch:
           for(
