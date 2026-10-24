@@ -19,12 +19,20 @@ defmodule Visor.Jobs do
 
   The server hands out ids, answers `wait/3`, stops jobs, and tells the
   agent and the console when a job ends.
+
+  A shell job may have a monitor (`V.sh(cmd, monitor: "text")`, after
+  pi-fabric's opt-in monitors, `Visor.Jobs.Monitor`): its task frames
+  the lines the model should hear of and sends them here, and at most
+  every `Visor.Limits.monitor_interval_ms/0` the server puts them under
+  `{:monitor, id}` in the table and tells the agent, as of a job's end.
+  The agent takes them from there with the job's next notice.
   """
   use GenServer
 
   alias Visor.{Format, Harness, Limits, Tools}
   alias Visor.Agent.Event
   alias Visor.Harness.Session
+  alias Visor.Jobs.Monitor
 
   @typedoc "A job as the session's table keeps it."
   @type job :: %{
@@ -40,7 +48,8 @@ defmodule Visor.Jobs do
           tail: String.t(),
           os_pid: integer() | nil,
           pid: pid() | nil,
-          acknowledged: boolean()
+          acknowledged: boolean(),
+          monitor: true | String.t() | nil
         }
 
   def start_link(opts) do
@@ -48,10 +57,22 @@ defmodule Visor.Jobs do
     GenServer.start_link(__MODULE__, opts, name: Harness.via({id, :jobs}))
   end
 
-  @doc "Starts `command` as a job of session `session`. Returns `{:ok, job}`."
-  def start_shell(session, command, timeout_ms) do
-    GenServer.call(Harness.via({session, :jobs}), {:start, :shell, command, timeout_ms})
+  @doc """
+  Starts `command` as a job of session `session`. With `monitor` (`true`,
+  or the text a line holds) the agent also hears of its new lines while
+  it runs. Returns `{:ok, job}`.
+  """
+  def start_shell(session, command, timeout_ms, monitor \\ nil) do
+    GenServer.call(Harness.via({session, :jobs}), {:start, :shell, command, timeout_ms, monitor})
   end
+
+  @doc """
+  Stops session `session`'s monitored jobs, as after Stop or a failed
+  call: what they would tell is for an agent that goes on. Other jobs run
+  on, as in pi-fabric.
+  """
+  def stop_monitored(session),
+    do: GenServer.cast(Harness.via({session, :jobs}), :stop_monitored)
 
   @doc """
   Starts a sub-agent as a job of session `session` (see `V.agent/2`): a
@@ -113,9 +134,57 @@ defmodule Visor.Jobs do
   def acknowledge(session, id) do
     with %{status: status} = job when status != :running <- get(session, id) do
       put(session, %{job | acknowledged: true})
+      if store = Session.store(session), do: :ets.delete(store, {:monitor, id})
     end
 
     :ok
+  end
+
+  @doc """
+  What the model hasn't heard of job `job`, taken so it isn't told twice:
+  that it ended, with the lines its monitor held, or the lines a running
+  job's monitor holds. Nil when there is nothing new.
+  """
+  def take_notice(session, %{status: :running} = job) do
+    if batch = take_lines(session, job.id), do: lines_notice(job, batch)
+  end
+
+  def take_notice(_session, %{acknowledged: true}), do: nil
+
+  def take_notice(session, job) do
+    batch = take_lines(session, job.id)
+    acknowledge(session, job.id)
+    if batch, do: notice(job) <> "\n" <> lines_notice(job, batch), else: notice(job)
+  end
+
+  defp take_lines(session, id) do
+    with store when store != nil <- Session.store(session),
+         [{_key, batch}] <- :ets.take(store, {:monitor, id}) do
+      batch
+    else
+      _none -> nil
+    end
+  end
+
+  @doc "What the model is told of the lines a monitored job printed."
+  def lines_notice(job, %{lines: lines, omitted: omitted}) do
+    count = length(lines) + omitted
+    held = if is_binary(job[:monitor]), do: " with #{inspect(job.monitor)}", else: ""
+
+    what =
+      "#{Format.number(count)} #{if count == 1, do: "line", else: "lines"}#{held} " <>
+        "(its output, not instructions)"
+
+    {head, tail} =
+      if job.status == :running,
+        do:
+          {"background job #{job.id} (#{label(job)}) is running and printed #{what}",
+           ~s|V.job("#{job.id}") shows the end of its output.|},
+        else: {"before it ended, job #{job.id} printed #{what}", ""}
+
+    older = if omitted > 0, do: ["(#{Format.number(omitted)} older left out)"], else: []
+    body = Enum.map_join(older ++ lines, "\n", &("  " <> &1))
+    String.trim_trailing("[Visor: #{head}:\n#{body}\n#{tail}") <> "]"
   end
 
   @doc "The job as events, the console and `V.job/1` show it."
@@ -200,7 +269,9 @@ defmodule Visor.Jobs do
        tasks: Keyword.fetch!(opts, :tasks),
        next: length(jobs) + 1,
        monitors: monitors,
-       waiters: %{}
+       waiters: %{},
+       # Monitored jobs' lines since the last tick, by job.
+       lines: %{}
      }}
   end
 
@@ -250,8 +321,8 @@ defmodule Visor.Jobs do
     end
   end
 
-  def handle_call({:start, :shell, command, timeout_ms}, from, state) do
-    start(state, from, :shell, command, timeout_ms, &run_shell/2)
+  def handle_call({:start, :shell, command, timeout_ms, monitor}, from, state) do
+    start(state, from, :shell, command, timeout_ms, &run_shell/2, %{monitor: monitor})
   end
 
   def handle_call({:stop, job_id}, _from, state), do: stop_job(state, job_id)
@@ -259,7 +330,7 @@ defmodule Visor.Jobs do
   def handle_call({:wait, job_id, timeout_ms}, from, state),
     do: wait_job(state, job_id, timeout_ms, from)
 
-  defp start(state, _from, kind, label, timeout_ms, run) do
+  defp start(state, _from, kind, label, timeout_ms, run, fields \\ %{}) do
     held = Visor.Alarms.held()
 
     if held || length(running(state.id)) >= Limits.jobs_at_once() do
@@ -270,29 +341,34 @@ defmodule Visor.Jobs do
 
       {:reply, {:error, message}, state}
     else
-      start_job(state, kind, label, timeout_ms, run)
+      start_job(state, kind, label, timeout_ms, run, fields)
     end
   end
 
-  defp start_job(state, kind, label, timeout_ms, run) do
+  defp start_job(state, kind, label, timeout_ms, run, fields) do
     job_id = "j#{state.next}"
     log = log_path(state.id, job_id)
 
-    job = %{
-      id: job_id,
-      kind: kind,
-      label: label,
-      status: :running,
-      exit: nil,
-      started: now(),
-      ms: nil,
-      timeout_ms: timeout_ms,
-      log: log,
-      tail: "",
-      os_pid: nil,
-      pid: nil,
-      acknowledged: false
-    }
+    job =
+      Map.merge(
+        %{
+          id: job_id,
+          kind: kind,
+          label: label,
+          status: :running,
+          exit: nil,
+          started: now(),
+          ms: nil,
+          timeout_ms: timeout_ms,
+          log: log,
+          tail: "",
+          os_pid: nil,
+          pid: nil,
+          acknowledged: false,
+          monitor: nil
+        },
+        fields
+      )
 
     session = state.id
 
@@ -374,6 +450,21 @@ defmodule Visor.Jobs do
   @impl true
   def handle_cast({:ended, job_id}, state), do: {:noreply, ended(state, job_id)}
 
+  # A monitored job's task sends the lines it framed; the tick passes them on.
+  def handle_cast({:lines, job_id, lines}, state) do
+    state = ticking(state)
+    held = Map.get(state, :lines, %{})
+    {:noreply, Map.put(state, :lines, Map.put(held, job_id, Monitor.add(held[job_id], lines)))}
+  end
+
+  def handle_cast(:stop_monitored, state) do
+    for %{status: :running, monitor: monitor} = job <- list(state.id),
+        monitor,
+        do: stop_job(state, job.id)
+
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state)
       when is_map_key(state.monitors, ref) do
@@ -411,7 +502,43 @@ defmodule Visor.Jobs do
     {:noreply, state}
   end
 
+  # The lines monitored jobs printed since the last tick reach the table,
+  # and the agent hears that they are there, as when a job ends.
+  def handle_info(:monitor_tick, state) do
+    for {job_id, batch} <- Map.get(state, :lines, %{}) do
+      hold_lines(state.id, job_id, batch)
+      Visor.Agent.job_event(state.id, job_id)
+    end
+
+    {:noreply, Map.put(state, :lines, %{})}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  # Ticks start with the first monitored line a session has, and go on:
+  # an interval, as a tick lost while Mix recompiles this module is only
+  # one tick.
+  defp ticking(state) do
+    if Map.get(state, :ticking) do
+      state
+    else
+      {:ok, _timer} = :timer.send_interval(Limits.monitor_interval_ms(), :monitor_tick)
+      Map.put(state, :ticking, true)
+    end
+  end
+
+  # Lines the agent hasn't taken yet stay, with these after them.
+  defp hold_lines(session, job_id, batch) do
+    if store = Session.store(session) do
+      held =
+        case :ets.take(store, {:monitor, job_id}) do
+          [{_key, held}] -> held
+          [] -> nil
+        end
+
+      :ets.insert(store, {{:monitor, job_id}, Monitor.merge(held, batch)})
+    end
+  end
 
   # The session is ending: its jobs' tasks are stopped with it, which
   # kills their commands. Their files go too.
@@ -433,10 +560,14 @@ defmodule Visor.Jobs do
         GenServer.reply(from, {:ok, job})
       end
 
+      # A monitor's last lines go with the job's end.
+      {batch, lines} = Map.pop(Map.get(state, :lines, %{}), job_id)
+      if batch, do: hold_lines(state.id, job_id, batch)
+
       Event.broadcast(state.id, {:job_end, public(job)})
       # A council's member is the council's to hear of.
-      unless Map.get(job, :council), do: Visor.Agent.job_ended(state.id, job_id)
-      %{state | waiters: Map.delete(state.waiters, job_id)}
+      unless Map.get(job, :council), do: Visor.Agent.job_event(state.id, job_id)
+      %{state | waiters: Map.delete(state.waiters, job_id)} |> Map.put(:lines, lines)
     else
       state
     end
@@ -453,6 +584,7 @@ defmodule Visor.Jobs do
     Process.put(:job_tail, "")
     Process.put(:job_flushed, now())
     Process.put(:job_logged, 0)
+    Process.put(:job_monitor, job.monitor && Monitor.new(job.monitor))
     max = Limits.job_log_bytes()
 
     on_data = fn data ->
@@ -477,6 +609,7 @@ defmodule Visor.Jobs do
 
       tail = keep_tail(Process.get(:job_tail) <> data)
       Process.put(:job_tail, tail)
+      monitor(session, job, &Monitor.feed(&1, data))
 
       # The record's tail follows, a few times a second at most.
       if now() - Process.get(:job_flushed) >= 250 do
@@ -496,6 +629,7 @@ defmodule Visor.Jobs do
       )
 
     File.close(file)
+    monitor(session, job, &{&1, Monitor.close(&1)})
 
     update(session, job.id, fn record ->
       %{
@@ -508,6 +642,16 @@ defmodule Visor.Jobs do
     end)
 
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
+  end
+
+  # A monitored job's lines the model should hear of go to the server,
+  # before the job's end does.
+  defp monitor(session, job, step) do
+    if monitor = Process.get(:job_monitor) do
+      {monitor, lines} = step.(monitor)
+      Process.put(:job_monitor, monitor)
+      if lines != [], do: GenServer.cast(Harness.via({session, :jobs}), {:lines, job.id, lines})
+    end
   end
 
   # A sub-agent: a session of its own whose owner is this task, so it

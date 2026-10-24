@@ -153,30 +153,59 @@ defmodule V do
   returns `%{job: id, log: path}` at once. A job isn't bound by its
   script: its limit is `Visor.Limits.job_timeout_ms/0`, or `timeout:`
   up to `max_job_timeout_ms/0`. When it ends, the model hears of it.
+
+  `monitor: "text"` (or `true`, for every line) runs it as a job too, and
+  while it runs the model also hears of its new lines that hold the text,
+  together at most every `Visor.Limits.monitor_interval_ms/0`, as of a
+  job's end (after pi-fabric's opt-in monitors, `Visor.Jobs.Monitor`). Its
+  limit is `monitor_timeout_ms/0`, or `timeout:` up to
+  `max_monitor_timeout_ms/0`, and Stop or a failed call stops it.
   """
   def sh(command, opts \\ [])
 
   def sh(command, opts) when is_binary(command) and is_list(opts) do
-    if Keyword.get(opts, :background, false),
+    if Keyword.get(opts, :background, false) or Keyword.get(opts, :monitor) not in [nil, false],
       do: background(command, opts),
       else: foreground(command, opts)
   end
 
   defp background(command, opts) do
     not_in_attempt("A background job")
+    monitor = Keyword.get(opts, :monitor)
+
+    {default, max} =
+      cond do
+        monitor in [nil, false] ->
+          {Limits.job_timeout_ms(), Limits.max_job_timeout_ms()}
+
+        Keyword.get(opts, :background) == false ->
+          raise Error, "monitor: runs the command in the background, not with background: false."
+
+        monitor == true or monitor_text?(monitor) ->
+          {Limits.monitor_timeout_ms(), Limits.max_monitor_timeout_ms()}
+
+        true ->
+          raise Error,
+                "monitor: is the text a line holds (up to 256 characters), or true for " <>
+                  "every line, not #{inspect(monitor)}."
+      end
 
     timeout =
       opts
-      |> asked_timeout(Limits.job_timeout_ms(), [:timeout, :background])
-      |> min(Limits.max_job_timeout_ms())
+      |> asked_timeout(default, [:timeout, :background, :monitor])
+      |> min(max)
+
+    monitor = if monitor == false, do: nil, else: monitor
 
     track(:sh, [command, opts], fn ->
       with :ok <- not_read_only("V.sh"),
-           {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout)) do
+           {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout, monitor)) do
         {:ok, %{job: job.id, log: job.log}, %{started: job.id}}
       end
     end)
   end
+
+  defp monitor_text?(text), do: is_binary(text) and text != "" and String.length(text) <= 256
 
   defp foreground(command, opts) do
     timeout = within_script(opts, Limits.shell_timeout_ms(), 1_000, [:timeout, :background])
@@ -1021,6 +1050,7 @@ defmodule V do
   end
 
   defp option_text(:timeout), do: "timeout: (seconds)"
+  defp option_text(:monitor), do: "monitor: \"text\""
   defp option_text(name), do: "#{name}: true"
 
   defp job_session do

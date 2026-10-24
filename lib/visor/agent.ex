@@ -135,8 +135,11 @@ defmodule Visor.Agent do
 
   defdelegate subscribe(id), to: Event
 
-  @doc "Tells session `id`'s agent that background job `job_id` ended."
-  def job_ended(id, job_id), do: GenServer.cast(via(id), {:job_ended, job_id})
+  @doc """
+  Tells session `id`'s agent that background job `job_id` has news: it
+  ended, or its monitor holds lines (`Visor.Jobs.take_notice/2`).
+  """
+  def job_event(id, job_id), do: GenServer.cast(via(id), {:job_event, job_id})
 
   @doc """
   Gives session `id`'s agent a reviewer's message (`Visor.Reviewer`): the
@@ -612,7 +615,7 @@ defmodule Visor.Agent do
 
   def handle_cast({:spent, cost, tokens}, state), do: {:noreply, spend(state, cost, tokens)}
 
-  def handle_cast({:job_ended, job_id}, state) do
+  def handle_cast({:job_event, job_id}, state) do
     pending = Map.get(state, :pending_jobs, [])
     pending = if job_id in pending, do: pending, else: pending ++ [job_id]
     {:noreply, schedule_wake(Map.put(state, :pending_jobs, pending))}
@@ -756,16 +759,14 @@ defmodule Visor.Agent do
     |> start_turn()
   end
 
-  # What the model hasn't heard of the jobs that ended. Taking them marks
-  # them as heard.
+  # What the model hasn't heard of the jobs that ended, or of the lines a
+  # running job's monitor holds. Taking them marks them as heard.
   defp take_notices(state) do
     notices =
       for id <- Map.get(state, :pending_jobs, []),
           job = Jobs.get(state.id, id),
-          job && job.status != :running && not job.acknowledged do
-        Jobs.acknowledge(state.id, id)
-        Jobs.notice(job)
-      end
+          notice = Jobs.take_notice(state.id, job),
+          do: notice
 
     texts = Map.get(state, :pending_texts, [])
 
@@ -1347,7 +1348,7 @@ defmodule Visor.Agent do
 
   # What the user sent while the batch ran reaches the model now, after its
   # results, as one user message.
-  # Background jobs that ended come after them.
+  # Background jobs that ended, and monitored jobs' new lines, come after them.
   defp steer(state) do
     {state, notices} = take_notices(state)
     images = Map.get(state, :pending_images, [])
@@ -1542,11 +1543,19 @@ defmodule Visor.Agent do
         nil
 
       jobs ->
-        shown = jobs |> Enum.take(8) |> Enum.map_join(", ", &"#{&1.id} (#{Jobs.label(&1)})")
+        shown = jobs |> Enum.take(8) |> Enum.map_join(", ", &running_job/1)
         more = if length(jobs) > 8, do: " and #{length(jobs) - 8} more", else: ""
 
         "[Visor: running in the background: #{shown}#{more}. Don't poll them: you'll hear " <>
           "when each ends, after your next tool calls or as a message of its own.]"
+    end
+  end
+
+  defp running_job(job) do
+    case Map.get(job, :monitor) do
+      nil -> "#{job.id} (#{Jobs.label(job)})"
+      true -> "#{job.id} (#{Jobs.label(job)}; you hear of its lines)"
+      text -> "#{job.id} (#{Jobs.label(job)}; you hear of its lines with #{inspect(text)})"
     end
   end
 
@@ -1874,11 +1883,15 @@ defmodule Visor.Agent do
       end
 
     # After Stop or a failed call, jobs that end wait for the user's next
-    # prompt rather than starting one.
+    # prompt rather than starting one, and monitored jobs stop, as
+    # pi-fabric's do: what they would tell is for an agent that goes on.
     state =
-      if reason in [:interrupted, :model_error, :model_crashed, :budget],
-        do: Map.put(state, :wakes_held, true),
-        else: state
+      if reason in [:interrupted, :model_error, :model_crashed, :budget] do
+        Jobs.stop_monitored(state.id)
+        Map.put(state, :wakes_held, true)
+      else
+        state
+      end
 
     case {Map.get(state, :queued, []), reason} do
       {[], _reason} ->

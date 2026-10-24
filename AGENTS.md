@@ -31,7 +31,12 @@ live supervision tree beside it. There is no database.
   wakes for it on its own, at most `Visor.Limits.job_wakeups/0` times
   between the user's prompts and never after Stop or a failed call
   (`/jobs wake off` holds jobs' wakes, not a supervisor's). A job's log
-  file stops at `Visor.Limits.job_log_bytes/0`.
+  file stops at `Visor.Limits.job_log_bytes/0`. `V.sh(cmd, monitor:
+  "text")`, after pi-fabric's opt-in monitors (`Visor.Jobs.Monitor`),
+  also tells the model of a running job's new lines with the text, at
+  most every `Visor.Limits.monitor_interval_ms/0`, through the same
+  notices and wakes; such a job stops after `monitor_timeout_ms/0`
+  (5 min, `timeout:` up to 30), and at Stop or a failed call.
 - The agent's events are documented in `Visor.Agent.Event`. The console,
   `Visor.SessionLog` and `mix visor.log` all read them; change the event
   shapes there and keep the session log's JSON keys stable, since

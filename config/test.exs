@@ -13,6 +13,9 @@ config :visor, model_provider: Visor.Model.Demo, demo_delay_ms: 0
 # Jobs that end within this wake the agent once (see Visor.Limits).
 config :visor, job_wake_batch_ms: 100
 
+# A monitored job's new lines reach the agent this often at most.
+config :visor, monitor_interval_ms: 50
+
 # A session ends with its page, unless a test gives it a grace period.
 config :visor, session_grace_ms: 0
 

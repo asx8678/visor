@@ -65,6 +65,21 @@ defmodule Visor.Limits do
   @doc "The longest time limit a background job may ask for."
   def max_job_timeout_ms, do: 24 * 60 * 60_000
 
+  @doc """
+  When a monitored job (`V.sh(cmd, monitor: "text")`) is stopped, unless
+  it asks for longer: pi-fabric's monitors last 5 minutes.
+  """
+  def monitor_timeout_ms, do: 5 * 60_000
+
+  @doc "The longest time limit a monitored job may ask for."
+  def max_monitor_timeout_ms, do: 30 * 60_000
+
+  @doc """
+  How often at most a monitored job's new lines reach the agent, together
+  (shorter in the tests, `config :visor, monitor_interval_ms: ms`).
+  """
+  def monitor_interval_ms, do: Application.get_env(:visor, :monitor_interval_ms, 5_000)
+
   @doc "Background jobs one session may run at once."
   def jobs_at_once, do: 8
 

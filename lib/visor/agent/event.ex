@@ -79,7 +79,8 @@ defmodule Visor.Agent.Event do
 
   From `Visor.Jobs`, for each background job, as `Visor.Jobs.public/1`
   gives it (`id`, `kind`, `label`, `status`, `exit`, `ms`, `timeout_ms`,
-  `log`, `tail`, `os_pid`, `acknowledged`):
+  `log`, `tail`, `os_pid`, `acknowledged`, and `monitor`, a monitored
+  job's text or `true`, nil for others):
 
     * `{:job_start, job}` and `{:job_end, job}`: a job started, and ended
       with `status` `:exited`, `:failed`, `:killed` or `:timed_out`

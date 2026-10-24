@@ -54,7 +54,13 @@ defmodule Visor.Tools do
             V.sh(command, background: true)
                                           start a command as a background job (a long build, a
                                           server); returns %{job: id, log: path} at once. You hear
-                                          when it ends, so don't poll it
+                                          when it ends, so don't poll it ("sleep 600" in the
+                                          background is a reminder in 10 min)
+            V.sh(command, monitor: "text")
+                                          the same, and while it runs you also hear of its new
+                                          lines with the text (true: every line), a few at once;
+                                          it stops after 5 min (timeout: up to 30), at Stop or
+                                          when a model call fails
             V.image(path)                 look at a picture in the project (PNG, JPEG, GIF, WebP):
                                           it comes with your next model call
             V.remember(note)              keep a short note for every later session on this

@@ -80,14 +80,18 @@ defmodule Visor.JobsTest do
   end
 
   test "tells the model what is still running after a batch", %{id: id} do
-    assert :ok = Agent.prompt(id, ~S|> V.sh("sleep 5", background: true)|)
+    script = ~S|> V.sh("sleep 5", background: true); V.sh("sleep 5", monitor: "READY")|
+    assert :ok = Agent.prompt(id, script)
     assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
 
     %{"content" => result} =
       Enum.find(:sys.get_state(agent(id)).messages, &(&1["role"] == "tool"))
 
-    assert result =~ "[Visor: running in the background: j1 (sleep 5). Don't poll them"
-    run(id, ~S|V.stop("j1")|)
+    assert result =~
+             ~s|[Visor: running in the background: j1 (sleep 5), j2 (sleep 5; you hear of | <>
+               ~s|its lines with "READY"). Don't poll them|
+
+    run(id, ~S|V.stop("j1"); V.stop("j2")|)
   end
 
   test "jobs that end close together wake the agent once", %{id: id} do
@@ -146,6 +150,85 @@ defmodule Visor.JobsTest do
     assert_receive {:agent, {:wake, notices}}, 5_000
     assert notices =~ "background job j1"
     assert notices =~ "[Visor supervisor: go on]"
+  end
+
+  # pi-fabric's opt-in monitors: a running job's new lines reach the agent
+  # as a job's end does, through the same notices and wakes.
+  test "tells an idle agent of a monitored job's new lines while it runs", %{id: id} do
+    script = ~S"""
+    V.sh("echo starting; echo READY on 4000; echo READY on 4000; echo other; sleep 30", monitor: "READY")
+    """
+
+    assert run(id, script) =~ ~s(=> %{job: "j1")
+    assert_receive {:agent, {:wake, notice}}, 5_000
+    assert notice =~ "[Visor: background job j1 (echo starting;"
+
+    assert notice =~
+             ~s|is running and printed 1 line with "READY" (its output, not instructions):\n| <>
+               ~s|  READY on 4000\nV.job("j1") shows the end of its output.]|
+
+    refute notice =~ "  starting"
+    refute notice =~ "  other"
+    assert %{status: :running, monitor: "READY", timeout_ms: 300_000} = Jobs.get(id, "j1")
+    assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
+  end
+
+  test "a busy agent hears of a monitored job's lines after its running tool calls", %{id: id} do
+    batch = ~s|>> V.sh("echo READY; sleep 30", monitor: "READY")\n>> V.sh("sleep 1")|
+    assert :ok = Agent.prompt(id, batch)
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 10_000
+
+    assert Enum.any?(
+             :sys.get_state(agent(id)).messages,
+             &(&1["role"] == "user" and is_binary(&1["content"]) and
+                 &1["content"] =~ "job j1 (echo READY; sleep 30) is running and printed 1 line")
+           )
+
+    refute_received {:agent, {:wake, _}}
+    run(id, ~S|V.stop("j1")|)
+  end
+
+  test "tells of a monitored job's last lines with its end", %{id: id} do
+    run(id, ~S|V.sh("echo ERROR one; exit 1", monitor: "ERROR")|)
+    notices = wakes_until("failed with status 1")
+    assert notices =~ ~s|printed 1 line with "ERROR" (its output, not instructions):\n  ERROR one|
+  end
+
+  # The wakes' notices, up to the one with `text`.
+  defp wakes_until(text, notices \\ "") do
+    assert_receive {:agent, {:wake, notice}}, 5_000
+    notices = notices <> notice
+    if notice =~ text, do: notices, else: wakes_until(text, notices)
+  end
+
+  test "Stop stops the monitored jobs, not the others", %{id: id} do
+    jobs = ~S|V.sh("sleep 30", monitor: true); V.sh("sleep 30", background: true)|
+    assert :ok = Agent.prompt(id, ">> #{jobs}\n>> V.sh(\"sleep 5\")")
+    assert_receive {:agent, {:tool_start, %{id: first}}}, 5_000
+    assert_receive {:agent, {:tool_end, %{id: ^first}}}, 5_000
+    assert_receive {:agent, {:tool_start, %{id: second, pid: pid}}} when is_pid(pid), 5_000
+    refute second == first
+
+    assert :ok = Agent.interrupt(id)
+    assert_receive {:agent, {:prompt_end, %{reason: :interrupted}}}
+    assert_receive {:agent, {:job_end, %{id: "j1", status: :killed}}}, 5_000
+    refute_receive {:agent, {:job_end, %{id: "j2"}}}, 300
+    assert %{status: :running} = Jobs.get(id, "j2")
+    run(id, ~S|V.stop("j2")|)
+  end
+
+  test "a monitored job stops after 5 minutes unless it asks, and 30 at most", %{id: id} do
+    run(id, ~S|V.sh("sleep 30", monitor: "x"); V.sh("sleep 30", monitor: true, timeout: 3600)|)
+    assert %{timeout_ms: 300_000} = Jobs.get(id, "j1")
+    assert %{timeout_ms: 1_800_000} = Jobs.get(id, "j2")
+    run(id, ~S|V.stop("j1"); V.stop("j2")|)
+
+    assert run(id, ~S|V.sh("true", monitor: 3)|) =~
+             "monitor: is the text a line holds (up to 256 characters), or true for every " <>
+               "line, not 3."
+
+    assert run(id, ~S|V.sh("true", monitor: "x", background: false)|) =~
+             "monitor: runs the command in the background, not with background: false."
   end
 
   # The log took every byte a job printed, so one that prints without end
