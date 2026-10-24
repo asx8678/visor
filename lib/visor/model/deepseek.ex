@@ -55,12 +55,18 @@ defmodule Visor.Model.DeepSeek do
     end
   end
 
-  defp do_stream(key, request, emit) do
+  # A response that sends nothing for `stream_idle_ms` has stalled. One
+  # that stalls before any of the reply came is sent once more: a model
+  # call changes nothing, so trying again is safe. One that stalls part
+  # way through ends the call.
+  defp do_stream(key, request, emit, attempt \\ 1) do
     url = base_url() <> "/chat/completions"
     body = body(request)
+    idle = Keyword.get(config(), :stream_idle_ms, Visor.Limits.stream_idle_ms())
     # Before sending, so a request that hangs or is rejected is on record.
     emit.({:request, %{url: url, body: body}})
     started = now()
+    Process.delete(:visor_stream_data)
 
     result =
       Req.post(
@@ -68,15 +74,35 @@ defmodule Visor.Model.DeepSeek do
         [
           json: body,
           auth: {:bearer, key},
-          # Thinking at high effort can stay silent for a long time.
-          receive_timeout: 600_000,
+          # Between any two pieces of the response, keep-alives included.
+          receive_timeout: idle,
           retry: false,
           into: fn {:data, data}, {req, resp} -> {:cont, {req, handle_data(resp, data, emit)}} end
         ] ++ Keyword.get(config(), :req_options, [])
       )
 
     emit.({:response, response_info(result)})
+    replied? = Process.get(:visor_stream_data, false)
 
+    case result do
+      {:error, %Req.TransportError{reason: :timeout}} when not replied? and attempt == 1 ->
+        do_stream(key, request, emit, 2)
+
+      {:error, %Req.TransportError{reason: :timeout}} ->
+        seconds = if rem(idle, 1000) == 0, do: div(idle, 1000), else: idle / 1000
+
+        {:error,
+         if(replied?,
+           do: "DeepSeek stopped sending its reply: nothing came for #{seconds} s.",
+           else: "DeepSeek sent nothing for #{seconds} s, twice, so the call was given up."
+         )}
+
+      result ->
+        handle_result(result, started, emit)
+    end
+  end
+
+  defp handle_result(result, started, emit) do
     case result do
       {:ok, %Req.Response{status: 200} = resp} ->
         parser = Req.Response.get_private(resp, :parser, StreamParser.new())
@@ -121,6 +147,8 @@ defmodule Visor.Model.DeepSeek do
   end
 
   defp handle_data(%Req.Response{status: 200} = resp, data, emit) do
+    if String.contains?(data, "data:"), do: Process.put(:visor_stream_data, true)
+
     parser =
       resp
       |> Req.Response.get_private(:parser, StreamParser.new())

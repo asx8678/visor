@@ -47,6 +47,12 @@ defmodule Visor.Limits do
   @doc "When the agent stops a model call that is still streaming."
   def model_deadline_ms, do: 20 * 60_000
 
+  @doc """
+  How long a model's response may send nothing at all (not even a
+  keep-alive) before it counts as stalled.
+  """
+  def stream_idle_ms, do: 90_000
+
   ## What the model sees
 
   @doc "A shell command's output kept, and a script's whole result."

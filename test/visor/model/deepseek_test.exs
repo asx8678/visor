@@ -204,4 +204,54 @@ defmodule Visor.Model.DeepSeekTest do
     assert {:error, :context_overflow, "DeepSeek returned HTTP 400. This model's maximum" <> _} =
              DeepSeek.stream(request, emit)
   end
+
+  describe "a response that goes quiet" do
+    # A real server: a stall is a socket that sends nothing.
+    defp serve(dir, behaviours) do
+      counter = :atomics.new(1, [])
+      plug = {Visor.StallPlug, %{counter: counter, behaviours: behaviours}}
+
+      server =
+        start_supervised!({Bandit, plug: plug, ip: :loopback, port: 0, startup_log: false})
+
+      {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+
+      File.write!(Path.join(dir, ".env"), """
+      DEEPSEEK_API_KEY=sk-test
+      DEEPSEEK_BASE_URL=http://127.0.0.1:#{port}
+      """)
+
+      Application.put_env(:visor, DeepSeek, stream_idle_ms: 200)
+      counter
+    end
+
+    @request %{system: "Be brief.", messages: [], tools: [], effort: "high", thinking: false}
+
+    test "is sent once more when nothing of the reply came", %{tmp_dir: dir} do
+      counter = serve(dir, [:silent, :answer])
+
+      assert {:ok, %{message: %{"content" => "ready"}}} =
+               DeepSeek.stream(@request, fn _ -> :ok end)
+
+      assert :atomics.get(counter, 1) == 2
+    end
+
+    test "is given up after a second silence", %{tmp_dir: dir} do
+      counter = serve(dir, [:silent, :silent])
+
+      assert {:error, "DeepSeek sent nothing for 0.2 s, twice, so the call was given up."} =
+               DeepSeek.stream(@request, fn _ -> :ok end)
+
+      assert :atomics.get(counter, 1) == 2
+    end
+
+    test "ends the call when it stops part way through", %{tmp_dir: dir} do
+      counter = serve(dir, [:partial])
+
+      assert {:error, "DeepSeek stopped sending its reply: nothing came for 0.2 s."} =
+               DeepSeek.stream(@request, fn _ -> :ok end)
+
+      assert :atomics.get(counter, 1) == 1
+    end
+  end
 end
