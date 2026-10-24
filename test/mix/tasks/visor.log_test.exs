@@ -206,6 +206,39 @@ defmodule Mix.Tasks.Visor.LogTest do
     end
   end
 
+  test "counts the V calls scripts got wrong, by function", %{tmp_dir: dir} do
+    lines = [
+      %{event: "code_call", call_id: "c2", n: 1, text: ~s|read("a")|, status: "ok"},
+      %{event: "code_call", call_id: "c2", n: 2, text: ~s|read("b")|, status: "error"},
+      %{
+        event: "script_end",
+        call_id: "c3",
+        status: "error",
+        message: "** (UndefinedFunctionError) function V.read_file/1 is undefined or private"
+      },
+      %{
+        event: "script_end",
+        call_id: "c4",
+        status: "error",
+        message: "** (FunctionClauseError) no function clause matching in V.read/1"
+      },
+      %{event: "script_end", call_id: "c5", status: "error", message: "** (MatchError) no match"}
+    ]
+
+    File.write!(
+      Path.join(dir, "2026-10-22T100000-def456.jsonl"),
+      Enum.map_join(lines, "\n", &Jason.encode!/1) <> "\n"
+    )
+
+    Log.run(["stats", "--dir", dir])
+    out = output()
+
+    # The first session has 1 finished V call; this one 2, and 2 rejected.
+    assert out =~ "2 sessions: 5 V calls, 2 rejected (400.0 per 1,000)"
+    assert out =~ "V.read_file: 1 of 1 rejected"
+    assert out =~ "V.read: 1 of 3 rejected"
+  end
+
   test "reads the latest session", %{tmp_dir: dir} do
     Log.run(["latest", "--dir", dir])
     assert output() =~ "session abc123 started, DeepSeek flash, in /w"

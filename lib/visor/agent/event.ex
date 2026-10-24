@@ -50,7 +50,9 @@ defmodule Visor.Agent.Event do
     * `{:repair, %{reason, answered, dropped}}`: tool calls without
       results were answered and results without calls dropped (see
       `Visor.Agent.Repair`), when the agent restarted mid-batch
-      (`:restart`) or before a request (`:request`)
+      (`:restart`) or before a request (`:request`); or, with `reason:
+      :arguments`, a tool call's arguments were put right before they
+      were read (`call_id`, and `fixes`, what was wrong)
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
 
@@ -123,9 +125,10 @@ defmodule Visor.Agent.Event do
           | {:repeat, %{id: call_id(), count: pos_integer(), blocked: boolean()}}
           | {:repair,
              %{
-               reason: :restart | :request,
-               answered: non_neg_integer(),
-               dropped: non_neg_integer()
+               required(:reason) => :restart | :request | :arguments,
+               required(:answered) => non_neg_integer(),
+               required(:dropped) => non_neg_integer(),
+               optional(atom()) => term()
              }}
           | {:status, :idle | :streaming | :tools}
           | {:note, :info | :error, String.t()}

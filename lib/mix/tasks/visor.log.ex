@@ -9,6 +9,7 @@ defmodule Mix.Tasks.Visor.Log do
       mix visor.log 3fa9c1       # one session by its id
       mix visor.log latest --full
       mix visor.log 3fa9c1 --request 4
+      mix visor.log stats        # how often scripts called V wrongly, over all sessions
       mix visor.log server       # what the latest server start logged
       mix visor.log server 2026-10-21T2201 --level warning
 
@@ -20,6 +21,12 @@ defmodule Mix.Tasks.Visor.Log do
   returned are only in the JSON lines (`returned`). `--dir` reads logs
   from another directory and `--limit` sets how many sessions the list
   shows (default 15).
+
+  `stats` counts, over every session log, the `V` calls scripts got wrong
+  (a function that doesn't exist, or arguments no clause takes) against
+  all the `V` calls they made, by function: how much friction `V` puts
+  in a model's way (pi-fabric's invocation-rejection rate). New argument
+  forms for `V` should come from what it shows.
 
   `server` prints a server log (`Visor.ServerLog`): the latest, or the
   one whose start time begins with the given text. `--level` leaves out
@@ -33,7 +40,7 @@ defmodule Mix.Tasks.Visor.Log do
   @levels ~w(emergency alert critical error warning notice info debug)
 
   @usage """
-  Usage: mix visor.log [latest | ID] [--full | --request N] [--dir DIR]
+  Usage: mix visor.log [latest | ID | stats] [--full | --request N] [--dir DIR]
          mix visor.log server [latest | START] [--level LEVEL] [--full] [--dir DIR]\
   """
   @preview_chars 700
@@ -46,6 +53,7 @@ defmodule Mix.Tasks.Visor.Log do
 
     case rest do
       ["server" | rest] -> server(rest, opts)
+      ["stats"] -> stats(opts)
       rest -> sessions(rest, opts)
     end
   end
@@ -67,6 +75,55 @@ defmodule Mix.Tasks.Visor.Log do
 
       _ ->
         Mix.raise(@usage)
+    end
+  end
+
+  # A rejected V call never runs, so it is in its script's end, not in a
+  # code_call line.
+  @rejection ~r/(?:function V\.([\w?!]+)\/\d+ is undefined|no function clause matching in V\.([\w?!]+)\/\d+)/
+
+  defp stats(opts) do
+    dir = opts[:dir] || Visor.SessionLog.dir() || Mix.raise("Session logging is turned off.")
+    files = dir |> Path.join("*.jsonl") |> Path.wildcard()
+
+    {calls, rejected} =
+      for file <- files, line <- read(file), reduce: {%{}, %{}} do
+        {calls, rejected} ->
+          case line do
+            %{"event" => "code_call", "status" => status, "text" => text}
+            when status != "running" ->
+              name = text |> String.split("(", parts: 2) |> hd()
+              {Map.update(calls, name, 1, &(&1 + 1)), rejected}
+
+            %{"event" => "script_end", "status" => "error", "message" => message}
+            when is_binary(message) ->
+              case Regex.run(@rejection, message) do
+                nil ->
+                  {calls, rejected}
+
+                match ->
+                  name = match |> Enum.drop(1) |> Enum.find(&(&1 != ""))
+                  {calls, Map.update(rejected, name, 1, &(&1 + 1))}
+              end
+
+            _other ->
+              {calls, rejected}
+          end
+      end
+
+    made = Enum.sum(Map.values(calls))
+    refused = Enum.sum(Map.values(rejected))
+    total = made + refused
+    rate = if total > 0, do: Float.round(refused * 1000 / total, 1), else: 0.0
+
+    Mix.shell().info(
+      "#{count(length(files), "session")}: #{count(total, "V call")}, " <>
+        "#{number(refused)} rejected (#{rate} per 1,000)"
+    )
+
+    for {name, n} <- Enum.sort_by(rejected, &elem(&1, 1), :desc) do
+      tried = n + Map.get(calls, name, 0)
+      Mix.shell().info("  V.#{name}: #{number(n)} of #{number(tried)} rejected")
     end
   end
 
@@ -449,6 +506,9 @@ defmodule Mix.Tasks.Visor.Log do
     what = if e["blocked"], do: "refused", else: "warned"
     ["repeat  the same script #{e["count"]} times in a row, #{what} (#{e["id"]})"]
   end
+
+  defp describe(%{"event" => "repair", "reason" => "arguments"} = e, _opts),
+    do: ["repair  arguments of #{e["call_id"]}: #{Enum.join(e["fixes"] || [], ", ")}"]
 
   defp describe(%{"event" => "repair"} = e, _opts) do
     [

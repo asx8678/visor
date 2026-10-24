@@ -128,7 +128,13 @@ defmodule Visor.Tools do
   def execute(name, arguments, context \\ %{})
 
   def execute("elixir", arguments, context) do
-    case Jason.decode(arguments) do
+    decoded =
+      case Jason.decode(arguments) do
+        {:ok, %{} = args} -> {:ok, repair_arguments(args, context)}
+        other -> other
+      end
+
+    case decoded do
       {:ok, %{"code" => code} = args} when is_binary(code) and code != "" ->
         context = Map.put(context, :timeout_ms, Visor.Code.timeout_ms(args["timeout"]))
         {status, text, calls} = Visor.Code.execute(code, context)
@@ -143,6 +149,64 @@ defmodule Visor.Tools do
   end
 
   def execute(name, _arguments, _context), do: {:error, "Unknown tool #{name}. Use elixir.", []}
+
+  # Shapes models give the arguments that have one clear meaning, put
+  # right before they are read, after pi-fabric's argument preparation:
+  # the script as a list of lines, in a code fence, or under another key
+  # as the only one. Each fix is a `repair` event; anything else is left
+  # for the error it gets.
+  defp repair_arguments(args, context) do
+    {args, fixes} =
+      Enum.reduce(
+        [&code_under_other_key/1, &code_as_lines/1, &code_in_fence/1],
+        {args, []},
+        fn fix, {args, fixes} ->
+          case fix.(args) do
+            {:fixed, args, what} -> {args, fixes ++ [what]}
+            :ok -> {args, fixes}
+          end
+        end
+      )
+
+    if fixes != [] and context[:session] do
+      Visor.Agent.Event.broadcast(
+        context.session,
+        {:repair,
+         %{reason: :arguments, call_id: context[:call_id], fixes: fixes, answered: 0, dropped: 0}}
+      )
+    end
+
+    args
+  end
+
+  defp code_under_other_key(%{"code" => _} = _args), do: :ok
+
+  defp code_under_other_key(args) do
+    case Map.drop(args, ["timeout"]) |> Map.to_list() do
+      [{key, code}] when key in ["script", "source", "elixir"] and is_binary(code) ->
+        {:fixed, args |> Map.delete(key) |> Map.put("code", code), "code was under #{key}"}
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp code_as_lines(%{"code" => [_ | _] = lines} = args) do
+    if Enum.all?(lines, &is_binary/1),
+      do: {:fixed, %{args | "code" => Enum.join(lines, "\n")}, "code was a list of lines"},
+      else: :ok
+  end
+
+  defp code_as_lines(_args), do: :ok
+
+  defp code_in_fence(%{"code" => code} = args) when is_binary(code) do
+    case Regex.run(~r/\A\s*```(?:elixir|ex)?[ \t]*\n(.*?)\n?```\s*\z/s, code) do
+      [_, inner] -> {:fixed, %{args | "code" => inner}, "code was in a code fence"}
+      nil -> :ok
+    end
+  end
+
+  defp code_in_fence(_args), do: :ok
 
   ## Operations, called by scripts through V
 

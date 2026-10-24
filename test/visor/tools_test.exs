@@ -100,6 +100,28 @@ defmodule Visor.ToolsTest do
     assert {3, "oops\n"} = Tools.shell("echo oops; exit 3")
   end
 
+  test "reads arguments the way they were meant when that is clear" do
+    for arguments <- [
+          ~s({"code": ["x = 20", "x + 22"]}),
+          ~s({"code": "```elixir\\nx = 20\\nx + 22\\n```"}),
+          ~s({"script": "x = 20; x + 22"})
+        ] do
+      assert {:ok, "ok: 0 calls\n=> 42"} = Tools.run("elixir", arguments), arguments
+    end
+
+    id = "tools-test-#{System.unique_integer([:positive])}"
+    Visor.Agent.subscribe(id)
+    Tools.run("elixir", ~s({"code": ["1"]}), %{session: id, call_id: "c9"})
+
+    assert_received {:agent,
+                     {:repair,
+                      %{reason: :arguments, call_id: "c9", fixes: ["code was a list of lines"]}}}
+
+    # Anything less clear gets its error.
+    assert {:error, "The elixir tool needs code" <> _} =
+             Tools.run("elixir", ~s({"script": "1", "source": "2"}))
+  end
+
   test "offers one tool, elixir, and returns errors the model can act on" do
     assert [%{function: %{name: "elixir", description: description}}] = Tools.definitions()
     assert description =~ "up to 2,000 V calls"

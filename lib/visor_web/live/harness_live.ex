@@ -935,6 +935,9 @@ defmodule VisorWeb.HarnessLive do
 
   defp agent_event({:repeat, _info}, socket), do: socket
 
+  defp agent_event({:repair, %{reason: :arguments, fixes: fixes}}, socket),
+    do: note(socket, :info, "Read the tool call's arguments as meant: #{Enum.join(fixes, ", ")}.")
+
   defp agent_event({:repair, info}, socket) do
     why =
       if info.reason == :restart,
