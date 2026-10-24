@@ -151,6 +151,10 @@ defmodule V do
         # What mix test saw of the changed files (see change/2).
         Feedback.saw(session, stats)
         previous = Feedback.record_check(session, path, check)
+        # An attempt that puts its files back puts this record back too.
+        if Process.get(:visor_attempt_check),
+          do: Process.put(:visor_attempt_check, {path, previous})
+
         ref = if check.status != :ok, do: Feedback.keep(session, output)
         summary = Check.render(check, previous, changed, ref)
         result = Check.result(check)
@@ -224,6 +228,11 @@ defmodule V do
   def attempt(fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
     if Process.get(:visor_attempt), do: raise(Error, "V.attempt can't run inside another.")
 
+    case Keyword.keys(opts) -- [:check, :timeout] do
+      [] -> :ok
+      keys -> raise Error, "V.attempt's options are check: and timeout:, not #{inspect(keys)}."
+    end
+
     {path, check_opts} = Keyword.pop(opts, :check)
 
     track(:attempt, opts_args(opts), fn ->
@@ -243,6 +252,8 @@ defmodule V do
 
       checked =
         with :ok <- ran do
+          Process.put(:visor_attempt_check, true)
+
           try do
             {:ok, check(path, check_opts)}
           rescue
@@ -252,19 +263,32 @@ defmodule V do
 
       case checked do
         {:ok, %{status: :ok} = check} ->
+          Process.delete(:visor_attempt_check)
           {:ok, %{status: :kept, check: check, files: files}}
 
         {:ok, check} ->
           put_back(originals)
+          forget_check()
           {:ok, %{status: :reverted, check: check, files: files}, %{reverted: files}}
 
         {:error, message} ->
           put_back(originals)
+          forget_check()
 
           {:error, "V.attempt put #{Format.count(length(files), "file")} back: " <> message,
            %{reverted: files}}
       end
     end)
+  end
+
+  # The check of a tree that was put back describes nothing that exists:
+  # the record it replaced comes back, so the next check compares with
+  # the tree as it is.
+  defp forget_check do
+    case Process.delete(:visor_attempt_check) do
+      {scope, previous} -> Feedback.record_check(session(), scope, previous)
+      _none -> :ok
+    end
   end
 
   defp put_back(originals) do

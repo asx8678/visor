@@ -222,6 +222,11 @@ defmodule Visor.CheckTest do
       assert File.read!(Path.join(tmp_dir, "lib/demo.ex")) == original
       refute File.exists?(Path.join(tmp_dir, "lib/extra.ex"))
 
+      # The check of the tree that was put back isn't what the next one is
+      # compared with.
+      assert {:ok, text} = Code.run(~S|V.check("test/demo_test.exs")|, context)
+      refute text =~ "fixed"
+
       passing = ~S|V.attempt(fn -> V.edit("lib/demo.ex", "a + b", "b + a") end).status|
       assert {:ok, text} = Code.run(passing, context)
       assert text =~ "=> :kept"
