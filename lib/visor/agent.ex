@@ -290,7 +290,7 @@ defmodule Visor.Agent do
       max_steps: Keyword.get(opts, :max_steps, @max_steps),
       system:
         system_prompt(Keyword.get(opts, :role), Keyword.get(opts, :read_only, false)) <>
-          project_rules(),
+          project_rules() <> Visor.Memory.prompt_text(),
       # A sub-agent's are what its parent's prompt had left (allowance/1).
       limits: Keyword.get(opts, :limits) || default_limits(),
       depth: Keyword.get(opts, :depth, 0)

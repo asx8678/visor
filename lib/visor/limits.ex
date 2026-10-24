@@ -196,6 +196,10 @@ defmodule Visor.Limits do
   @doc "Recent conversation kept as it was after a compaction, in tokens."
   def keep_recent_tokens, do: 20_000
 
+  @doc "Notes a project keeps for its later sessions (`V.remember/1`), and their length."
+  def memory_items, do: 50
+  def memory_chars, do: 300
+
   @doc "Items the model may ask every summary to carry forward, and their length."
   def carry_items, do: 16
   def carry_chars, do: 300

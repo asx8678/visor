@@ -57,6 +57,8 @@ defmodule Visor.Tools do
                                           when it ends, so don't poll it; wake_on: "text" also
                                           tells you of the first line with it (server ready)
             V.schedule(seconds, note)     hear note back in seconds, to look at something later
+            V.remember(note)              keep a short note for every later session on this
+                                          project (V.memories(), V.forget(note))
             V.agent(task, seed: :snippet, role: text)
                                           start a sub-agent with a fresh context on a task, as a
                                           job; you hear its answer when it is done

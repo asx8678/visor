@@ -218,6 +218,28 @@ defmodule V do
   end
 
   @doc """
+  Keeps a short note (up to #{Limits.memory_chars()} characters) for every later session on
+  this project: it is in their system prompt (`Visor.Memory`). For what
+  the next session should know, such as a convention the user asked for.
+  Returns the notes.
+  """
+  def remember(note) when is_binary(note) do
+    track(:remember, [note], fn ->
+      with :ok <- not_read_only("V.remember"), do: Visor.Memory.remember(note)
+    end)
+  end
+
+  @doc "The notes later sessions get (see `remember/1`)."
+  def memories, do: track(:memories, [], fn -> {:ok, Visor.Memory.list()} end)
+
+  @doc "Removes a note `remember/1` kept, by its text. Returns the notes."
+  def forget(note) when is_binary(note) do
+    track(:forget, [note], fn ->
+      with :ok <- not_read_only("V.forget"), do: Visor.Memory.forget(note)
+    end)
+  end
+
+  @doc """
   Sets a timer: in `seconds` (up to a day) you hear `note` back, as you
   hear of a job that ends, and an idle agent wakes for it. Returns
   `%{job: id}` at once; `V.stop(id)` cancels it. For something to look at

@@ -49,7 +49,8 @@ live supervision tree beside it. There is no database.
   from script to script (not saved: a restart or the next prompt starts
   without them; over `Visor.Limits.kept_bytes/0` they are dropped). The system
   prompt carries the project's own AGENTS.md (or CLAUDE.md), read once when
-  the session starts and cut to `Visor.Limits.rules_bytes/0`.
+  the session starts and cut to `Visor.Limits.rules_bytes/0`, and the notes
+  earlier sessions kept with `V.remember` (`.visor/memory.md`, `Visor.Memory`).
 - Every path a tool touches goes through `Visor.Workspace`, which confines
   it to the project, follows symlinks itself and refuses `.env` files.
   Tool limits live in `Visor.Limits`.
