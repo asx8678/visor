@@ -175,6 +175,17 @@ defmodule Visor.CodeTest do
     end
   end
 
+  test "hints at a sigil that ends where its text holds its delimiter" do
+    for script <- [~S[x = ~s|a |> b|], ~S[x = ~s(f(x)) <> "y"]] do
+      assert {:error, text} = Code.run(script, %{})
+      assert text =~ "hint: if a sigil's text holds its closing delimiter"
+    end
+
+    # A syntax error without a sigil gets no such hint.
+    assert {:error, text} = Code.run("x = (1 +", %{})
+    refute text =~ "hint:"
+  end
+
   test "hints at the right call for the mistakes models make" do
     hints = %{
       ~S|V.read_file("mix.exs")| => "V has no read_file; did you mean V.read(path)?",

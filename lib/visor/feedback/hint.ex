@@ -63,6 +63,21 @@ defmodule Visor.Feedback.Hint do
     end
   end
 
+  @doc """
+  The hint for a script that didn't parse, from its code, or nil: a
+  sigil ends at its first closing delimiter, so `~s|a |> b|` or
+  `~s(f(x))` ends early (the first live run's model, and this hint's own
+  tests, wrote both).
+  """
+  @spec for_parse_error(String.t()) :: String.t() | nil
+  def for_parse_error(code) do
+    if code =~ ~r/~[a-zA-Z]+[|\/("'\[{<]/ do
+      "if a sigil's text holds its closing delimiter (| in ~s|...|, ) in ~s(...)), the " <>
+        "sigil ends there: give it a delimiter its text doesn't use, such as ~s[...] or " <>
+        ~s|~s{...}, or a heredoc (~S""" on a line of its own).|
+    end
+  end
+
   defp undefined(name, arity) do
     known = functions()
 

@@ -54,7 +54,7 @@ defmodule Visor.Code do
   """
   def execute(code, context) do
     {result, calls} = evaluate(code, context)
-    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
+    {status, text} = render(result, calls, context, code)
     {status, text, calls}
   end
 
@@ -66,8 +66,21 @@ defmodule Visor.Code do
   """
   def execute(code, context, %Dune.Session{} = session) do
     {result, calls, session} = evaluate_in(code, context, session)
-    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
+    {status, text} = render(result, calls, context, code)
     {status, text, calls, session}
+  end
+
+  # A script that didn't parse can only be hinted at from its code.
+  defp render(result, calls, context, code) do
+    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
+
+    case {result, Feedback.Hint.for_parse_error(code)} do
+      {%Dune.Failure{type: :parsing}, hint} when is_binary(hint) ->
+        {status, text <> "\nhint: " <> hint}
+
+      _other ->
+        {status, text}
+    end
   end
 
   @doc """
