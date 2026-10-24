@@ -78,11 +78,11 @@ defmodule Visor.SessionLog do
   Starts logging session `id`, whose supervisor is `session` and whose
   console is `owner`. Does nothing when `dir` is `nil`.
   """
-  def start(id, owner, session, dir) do
+  def start(id, owner, session, dir, parent \\ nil) do
     if dir do
       DynamicSupervisor.start_child(
         @supervisor,
-        {__MODULE__, id: id, owner: owner, session: session, dir: dir}
+        {__MODULE__, id: id, owner: owner, session: session, dir: dir, parent: parent}
       )
     else
       :ignore
@@ -161,7 +161,9 @@ defmodule Visor.SessionLog do
           node: node(),
           elixir: System.version(),
           otp: System.otp_release(),
-          visor: to_string(Application.spec(:visor, :vsn))
+          visor: to_string(Application.spec(:visor, :vsn)),
+          # A sub-agent's: its parent session and job, as "session/job".
+          parent: Keyword.get(opts, :parent)
         })
 
       state = %{state | pending_start: start}

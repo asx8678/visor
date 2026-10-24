@@ -251,11 +251,19 @@ defmodule Mix.Tasks.Visor.Log do
       Mix.shell().info(
         "#{started}  #{id}  #{count(prompts, "prompt")}, #{count(used["turns"], "turn")}, " <>
           "#{count(used["tool_calls"], "tool call")}, #{number(used["prompt_tokens"])} tokens in, " <>
-          "#{number(used["completion_tokens"])} out, #{seconds(took)}  #{ending(events)}"
+          "#{number(used["completion_tokens"])} out, #{seconds(took)}  #{ending(events)}" <>
+          parent(events)
       )
     end
 
     Mix.shell().info("\nRead one with: mix visor.log ID, or ID --request N for a request as sent")
+  end
+
+  defp parent(events) do
+    case Enum.find(events, &(&1["event"] == "start")) do
+      %{"parent" => parent} when is_binary(parent) -> "  (sub-agent of #{parent})"
+      _ -> ""
+    end
   end
 
   # What a session used, as the log counted it: its summary line, or
@@ -335,7 +343,12 @@ defmodule Mix.Tasks.Visor.Log do
   end
 
   defp describe(%{"event" => "start"} = e, _opts) do
-    ["session #{e["session"]} started, #{e["provider"]} #{e["model"]}, in #{e["workspace"]}"]
+    parent = if e["parent"], do: ", a sub-agent of #{e["parent"]}", else: ""
+
+    [
+      "session #{e["session"]} started, #{e["provider"]} #{e["model"]}, in " <>
+        "#{e["workspace"]}#{parent}"
+    ]
   end
 
   defp describe(%{"event" => "user"} = e, opts) do

@@ -247,7 +247,8 @@ defmodule Visor.Jobs do
       job = %{job | pid: pid}
       put(session, job)
       ref = Process.monitor(pid)
-      Event.broadcast(session, {:job_start, public(job)})
+      # A sub-agent's job says it started once its child session has.
+      if kind != :agent, do: Event.broadcast(session, {:job_start, public(job)})
 
       {:reply, {:ok, job},
        %{state | next: state.next + 1, monitors: Map.put(state.monitors, ref, job_id)}}
@@ -262,7 +263,21 @@ defmodule Visor.Jobs do
       %{status: :running, pid: pid} = job ->
         # Marked first, so the exit that follows reads as stopped.
         put(state.id, %{job | status: :killed, ms: now() - job.started})
-        if is_pid(pid), do: Process.exit(pid, :kill)
+
+        cond do
+          not is_pid(pid) ->
+            :ok
+
+          # A sub-agent's task counts what its child did so far before it
+          # goes; it is killed if it hasn't within a second.
+          job.kind == :agent ->
+            send(pid, :stop)
+            Process.send_after(self(), {:kill, pid}, 1_000)
+
+          true ->
+            Process.exit(pid, :kill)
+        end
+
         {:reply, {:ok, get(state.id, job_id)}, state}
 
       job ->
@@ -318,6 +333,11 @@ defmodule Visor.Jobs do
       end)
 
     {:noreply, %{state | waiters: waiters}}
+  end
+
+  def handle_info({:kill, pid}, state) do
+    Process.exit(pid, :kill)
+    {:noreply, state}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -410,13 +430,18 @@ defmodule Visor.Jobs do
         depth: Session.depth(session) + 1,
         max_steps: opts.max_steps,
         role: opts.role,
-        label: "agent #{job.id} of #{session}"
+        label: "agent #{job.id} of #{session}",
+        parent: "#{session}/#{job.id}"
       )
 
     update(session, job.id, &Map.put(&1, :child, child))
+    Event.broadcast(session, {:job_start, public(get(session, job.id))})
     Visor.Agent.subscribe(child)
     :ok = Visor.Agent.prompt(child, prompt)
-    {reason, totals} = await_child(job.started + job.timeout_ms, %Visor.Agent.Totals{})
+
+    {reason, totals} =
+      await_child({session, job.id}, job.started + job.timeout_ms, %Visor.Agent.Totals{})
+
     answer = child_answer(child)
 
     File.mkdir_p!(Path.dirname(job.log))
@@ -438,16 +463,37 @@ defmodule Visor.Jobs do
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
   end
 
-  # The child's events, counted, until its first prompt ends.
-  defp await_child(deadline, totals) do
+  # The child's events, counted, until its first prompt ends. The count
+  # goes into the record as each model call and tool call ends, so a
+  # stopped child's spending is still counted.
+  defp await_child({session, job_id} = job, deadline, totals) do
     receive do
       {:agent, {:prompt_end, %{reason: reason}} = event} ->
         {reason, Visor.Agent.Totals.add(totals, event)}
 
+      {:agent, {kind, _info} = event} when kind in [:turn_end, :tool_end] ->
+        totals = Visor.Agent.Totals.add(totals, event)
+        update(session, job_id, &Map.put(&1, :totals, Visor.Agent.Totals.to_map(totals)))
+        await_child(job, deadline, totals)
+
       {:agent, event} ->
-        await_child(deadline, Visor.Agent.Totals.add(totals, event))
+        await_child(job, deadline, Visor.Agent.Totals.add(totals, event))
+
+      :stop ->
+        totals = drain(totals)
+        update(session, job_id, &Map.put(&1, :totals, Visor.Agent.Totals.to_map(totals)))
+        exit(:normal)
     after
       max(deadline - now(), 0) -> {:timeout, totals}
+    end
+  end
+
+  # The child's events already here when the job was stopped.
+  defp drain(totals) do
+    receive do
+      {:agent, event} -> drain(Visor.Agent.Totals.add(totals, event))
+    after
+      0 -> totals
     end
   end
 
@@ -490,10 +536,16 @@ defmodule Visor.Jobs do
 
   defp update(session, job_id, fun) do
     case get(session, job_id) do
-      # A job stopped while its task finishes stays stopped.
-      %{status: :killed} = job -> put(session, %{job | tail: Process.get(:job_tail) || job.tail})
-      nil -> :ok
-      job -> put(session, fun.(job))
+      # A job stopped while its task finishes stays stopped, at the time
+      # it was stopped.
+      %{status: :killed} = job ->
+        put(session, Map.merge(fun.(job), %{status: :killed, ms: job.ms}))
+
+      nil ->
+        :ok
+
+      job ->
+        put(session, fun.(job))
     end
   end
 

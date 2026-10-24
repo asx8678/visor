@@ -206,6 +206,21 @@ defmodule Mix.Tasks.Visor.LogTest do
     end
   end
 
+  test "shows which session a sub-agent's log belongs to", %{tmp_dir: dir} do
+    line =
+      Jason.encode!(%{
+        at: "2026-10-22T10:00:00.000",
+        event: "start",
+        session: "kid1",
+        parent: "abc123/j2"
+      })
+
+    File.write!(Path.join(dir, "2026-10-22T100000-kid1.jsonl"), line <> "\n")
+
+    Log.run(["--dir", dir])
+    assert output() =~ ~r/kid1 .*\(sub-agent of abc123\/j2\)/
+  end
+
   test "counts the V calls scripts got wrong, by function", %{tmp_dir: dir} do
     lines = [
       %{event: "code_call", call_id: "c2", n: 1, text: ~s|read("a")|, status: "ok"},

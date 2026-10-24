@@ -177,14 +177,6 @@ defmodule Visor.JobsTest do
   end
 
   describe "sub-agents" do
-    # The child session's id, once the job's task has started it.
-    defp child(id, tries \\ 100) do
-      case Jobs.get(id, "j1") do
-        %{child: child} -> child
-        _ when tries > 0 -> receive(after: (20 -> child(id, tries - 1)))
-      end
-    end
-
     defp session_pid(child) do
       [{pid, _store}] = Registry.lookup(Visor.Harness.Registry, {child, :store})
       pid
@@ -210,24 +202,21 @@ defmodule Visor.JobsTest do
 
     test "ends when it is stopped, or when its parent's session ends", %{id: id} do
       run(id, ~S|V.agent("$ sleep 5")|)
-      ref = Process.monitor(session_pid(child(id)))
+      assert_receive {:agent, {:job_start, %{id: "j1", child: first}}}, 5_000
+      Agent.subscribe(first)
+      ref = Process.monitor(session_pid(first))
+      # Stopped after its first model call: that call still counts.
+      assert_receive {:agent, {:tool_start, _call}}, 5_000
       assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 5_000
+      assert_receive {:agent, {:job_end, %{id: "j1", totals: %{turns: 1}}}}, 5_000
 
       run(id, ~S|V.agent("$ sleep 5")|)
-      assert_receive {:agent, {:job_start, %{id: "j2", kind: :agent}}}, 5_000
-      %{child: second} = wait_child(id, "j2")
+      assert_receive {:agent, {:job_start, %{id: "j2", child: second}}}, 5_000
       ref = Process.monitor(session_pid(second))
       stop_supervised!(:session)
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 5_000
       assert Registry.lookup(Visor.Harness.Registry, {second, :agent}) == []
-    end
-  end
-
-  defp wait_child(id, job_id, tries \\ 100) do
-    case Jobs.get(id, job_id) do
-      %{child: _} = job -> job
-      _ when tries > 0 -> receive(after: (20 -> wait_child(id, job_id, tries - 1)))
     end
   end
 end

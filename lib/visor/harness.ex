@@ -48,7 +48,7 @@ defmodule Visor.Harness do
     case DynamicSupervisor.start_child(@sessions, {Session, [id: id, owner: owner] ++ child}) do
       {:ok, pid} ->
         log_dir = Keyword.get_lazy(opts, :log_dir, &Visor.SessionLog.dir/0)
-        Visor.SessionLog.start(id, owner, pid, log_dir)
+        Visor.SessionLog.start(id, owner, pid, log_dir, Keyword.get(opts, :parent))
         {:ok, id}
 
       {:error, reason} ->

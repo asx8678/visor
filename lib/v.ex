@@ -187,6 +187,9 @@ defmodule V do
   default it gets the task alone), `role:` says what it is for,
   `max_steps:` (up to #{Limits.agent_steps()} by default) and `timeout:`
   (seconds). A sub-agent can't start one of its own.
+
+  `seed: :snippet` sends the conversation's text to the sub-agent as it
+  is, including anything secret a file read put in it.
   """
   def agent(task, opts \\ []) when is_binary(task) and is_list(opts) do
     track(:agent, [task | opts_args(opts)], fn ->
