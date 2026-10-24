@@ -57,6 +57,18 @@ live supervision tree beside it. There is no database.
 - `V.save`/`V.run` keep and rerun scripts in the project's `.visor/scripts/`
   (`Visor.Scripts`), checked against their SHA-256; tools can't write
   `.visor/` and walks skip it. `/run name` runs one without the model.
+- The rest of `V` a script has, each in `lib/v.ex`: `V.all` (read-only
+  calls at once), `V.carry`/`V.compact`/`V.context` (what every summary
+  keeps, a compaction at the next settled step, how full the context is),
+  `V.think` (the model's own effort for the rest of a prompt), `V.note`
+  (a progress note for the user only), `V.history` (earlier sessions on
+  this project, from their logs), and `timeout:` on the tool, `V.sh` and
+  `V.check`. The console adds `/prewalk`, `/resume ID` and `/jobs`.
+- The agent refuses the 6th identical script in a row and warns from the
+  3rd; a failed script's error ends with a hint when the mistake is known
+  (`Visor.Feedback.Hint`); `mix visor.log stats` counts V calls scripts
+  got wrong. The demo model refuses requests DeepSeek would refuse, so
+  message-order bugs fail the tests.
 - Several pages may work on one project. `Visor.Lock` makes a file's
   writes and edits, and the project's checks, run one at a time across
   sessions.
@@ -66,6 +78,8 @@ live supervision tree beside it. There is no database.
 - The DeepSeek key lives in the gitignored `.env`. Never print it, read it
   through a tool, or commit it; scan staged files before committing.
 - Writes and shell commands need no approval; don't add an approval step.
+- Check `mix precommit`'s exit code before committing: piped through
+  `tail`, a failing run still looks like success.
 - Session logs: `mix visor.log [latest|ID] [--full]`; server log:
   `mix visor.log server`. Start there when a task hung or failed.
 - In dev, Elixir changes hot-load into the running server. A message that
