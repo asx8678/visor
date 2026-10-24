@@ -377,6 +377,33 @@ defmodule Visor.AgentTest do
     assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
   end
 
+  test "lets the model set its own reasoning for the rest of the prompt", %{id: id} do
+    assert :ok = Agent.prompt(id, "> V.think(:off)")
+    assert_receive {:agent, {:turn_start, %{turn: 1, thinking: true, effort: "high"}}}
+
+    assert_receive {:agent,
+                    {:note, :info, "The model set no thinking for the rest of this prompt."}}
+
+    assert_receive {:agent, {:turn_start, %{turn: 2, thinking: false}}}, 5_000
+    assert_receive {:agent, {:prompt_end, _}}, 5_000
+
+    # The user's setting comes back with the next prompt.
+    assert_receive {:agent, {:settings, %{think: nil, thinking: true}}}
+    ask(id, "list the files")
+    assert_received {:agent, {:turn_start, %{turn: 3, thinking: true}}}
+  end
+
+  test "runs a count of model calls down, and gives way to the user", %{id: id} do
+    assert {:ok, %{think: %{turns: 1}}} = Agent.think(id, "max", 1)
+    ask(id, "list the files")
+    assert_received {:agent, {:turn_start, %{turn: 1, effort: "max"}}}
+    assert_received {:agent, {:turn_start, %{turn: 2, effort: "high"}}}
+
+    assert {:ok, _settings} = Agent.think(id, "low", nil)
+    assert {:ok, %{think: nil, effort: "max"}} = Agent.configure(id, effort: "max")
+    assert {:error, "The level is off, low, high or max" <> _} = Agent.think(id, "huge", nil)
+  end
+
   test "tells a script how full the context is", %{id: id} do
     ask(id, @big)
     assert :ok = Agent.prompt(id, ~S|> c = V.context(); {c.band, c.tokens > 0, c.threshold}|)

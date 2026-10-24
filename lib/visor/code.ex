@@ -201,6 +201,7 @@ defmodule Visor.Code.Allowlist do
       :carry,
       :compact,
       :context,
+      :think,
       :beam_stats
     ]
 

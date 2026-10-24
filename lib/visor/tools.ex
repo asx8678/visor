@@ -59,6 +59,8 @@ defmodule Visor.Tools do
                                           are in, such as when a task is done
             V.context()                   %{tokens, threshold, window, share, band}: how full
                                           the context is
+            V.think(:off | :low | :high | :max, turns: n)
+                                          your reasoning for the rest of this prompt, or n calls
             V.beam_stats()                runtime statistics as a map
 
           The result starts with ok, or with the call that failed and its error. Then come the \

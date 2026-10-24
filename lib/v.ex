@@ -248,6 +248,40 @@ defmodule V do
   end
 
   @doc """
+  Sets this prompt's reasoning for its next model calls: `:off` (no
+  thinking), `:low`, `:high` or `:max` effort with thinking. It lasts the
+  rest of the prompt, or `turns:` model calls (1 to 20); then, or when
+  the user changes the setting, the user's comes back. Raise it for a
+  hard step, lower it for routine ones.
+  """
+  def think(level, opts \\ []) when is_atom(level) and is_list(opts) do
+    track(:think, [level | opts_args(opts)], fn ->
+      turns =
+        case Keyword.get(opts, :turns) do
+          nil -> nil
+          n when is_integer(n) and n in 1..20 -> n
+          other -> {:invalid, other}
+        end
+
+      cond do
+        Keyword.keys(opts) -- [:turns] != [] ->
+          {:error, "The only option is turns: (1 to 20)."}
+
+        match?({:invalid, _}, turns) ->
+          {:error, "turns: is a whole number from 1 to 20, not #{inspect(elem(turns, 1))}."}
+
+        session = session() ->
+          with {:ok, settings} <- Visor.Agent.think(session, Atom.to_string(level), turns) do
+            {:ok, Map.take(settings, [:effort, :thinking, :think])}
+          end
+
+        true ->
+          {:error, "Thinking settings need a console session."}
+      end
+    end)
+  end
+
+  @doc """
   How full the context is: `tokens` the last request sent, the `threshold`
   that compacts it, the `window`, `share` of the threshold and `band`
   (`:ok`, `:warn` from 0.6, `:urgent` from 0.8), and what is carried.

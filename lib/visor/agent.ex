@@ -101,7 +101,11 @@ defmodule Visor.Agent do
     # What the model asked every summary to keep (V.carry/1), and its
     # request to compact at the next settled step (V.compact/1).
     carry: [],
-    compact_request: nil
+    compact_request: nil,
+    # Effort and thinking the model set for itself (V.think/2), as
+    # %{effort, thinking, turns}, until the prompt ends, `turns` model
+    # calls have used it, or the user changes either.
+    think: nil
   ]
 
   def start_link(opts) do
@@ -146,6 +150,14 @@ defmodule Visor.Agent do
   before the next model call (`V.compact/1`).
   """
   def request_compaction(id, reason), do: GenServer.call(via(id), {:request_compaction, reason})
+
+  @doc """
+  Sets the effort and thinking of this prompt's next model calls, as the
+  model asked (`V.think/2`): `level` is `"off"` (no thinking), `"low"`,
+  `"high"` or `"max"`, for `turns` calls or, with nil, the rest of the
+  prompt. The user's own setting comes back after.
+  """
+  def think(id, level, turns), do: GenServer.call(via(id), {:think, level, turns})
 
   @doc """
   How full the context is: the last request's tokens, the threshold that
@@ -289,6 +301,12 @@ defmodule Visor.Agent do
   def handle_call({:configure, settings}, _from, state) do
     case apply_settings(state, settings) do
       {:ok, state} ->
+        # The user's change ends the model's own.
+        state =
+          if Keyword.has_key?(settings, :effort) or Keyword.has_key?(settings, :thinking),
+            do: Map.put(state, :think, nil),
+            else: state
+
         broadcast(state, {:settings, public_settings(state)})
         {:reply, {:ok, public_settings(state)}, state}
 
@@ -322,6 +340,29 @@ defmodule Visor.Agent do
         {:reply, error, state}
     end
   end
+
+  def handle_call({:think, level, turns}, _from, state) when level in ~w(off low high max) do
+    think = %{
+      effort: if(level == "off", do: state.effort, else: level),
+      thinking: level != "off",
+      turns: turns
+    }
+
+    how = if level == "off", do: "no thinking", else: "#{level} effort with thinking"
+
+    span =
+      if turns,
+        do: "the next #{Visor.Format.count(turns, "model call")}",
+        else: "the rest of this prompt"
+
+    note(state, :info, "The model set #{how} for #{span}.")
+    state = Map.put(state, :think, think)
+    broadcast(state, {:settings, public_settings(state)})
+    {:reply, {:ok, public_settings(state)}, state}
+  end
+
+  def handle_call({:think, level, _turns}, _from, state),
+    do: {:reply, {:error, "The level is off, low, high or max, not #{inspect(level)}."}, state}
 
   def handle_call({:request_compaction, reason}, _from, state) do
     {:reply, :ok, Map.put(state, :compact_request, reason)}
@@ -500,6 +541,7 @@ defmodule Visor.Agent do
     turn = state.turn + 1
     id = state.id
     messages = surface(state)
+    {effort, thinking, state} = settings_for_turn(state)
 
     # The last call keeps the tools in the request, so the provider's cache
     # still covers it, but may not call them.
@@ -508,8 +550,8 @@ defmodule Visor.Agent do
       messages: messages,
       tools: Tools.definitions(),
       tool_choice: if(last_step?(state.steps + 1), do: "none", else: "auto"),
-      effort: state.effort,
-      thinking: state.thinking
+      effort: effort,
+      thinking: thinking
     }
 
     # The request and response as sent and received go to the session
@@ -533,8 +575,8 @@ defmodule Visor.Agent do
          step: state.steps + 1,
          max_steps: @max_steps,
          provider: info,
-         effort: state.effort,
-         thinking: state.thinking,
+         effort: effort,
+         thinking: thinking,
          messages: length(messages),
          pid: task.pid
        }}
@@ -694,6 +736,24 @@ defmodule Visor.Agent do
     case compact_messages(state, reason) do
       {:ok, state, _info} -> Map.delete(state, :requested)
       :keep -> Map.delete(state, :requested)
+    end
+  end
+
+  # This model call's effort and thinking: the model's own while it lasts,
+  # else the user's. A count of calls runs down with each.
+  defp settings_for_turn(state) do
+    case Map.get(state, :think) do
+      nil ->
+        {state.effort, state.thinking, state}
+
+      %{turns: 1} = think ->
+        {think.effort, think.thinking, Map.put(state, :think, nil)}
+
+      %{turns: turns} = think when is_integer(turns) ->
+        {think.effort, think.thinking, Map.put(state, :think, %{think | turns: turns - 1})}
+
+      think ->
+        {think.effort, think.thinking, state}
     end
   end
 
@@ -1124,6 +1184,7 @@ defmodule Visor.Agent do
       effort: state.effort,
       thinking: state.thinking,
       jobs_wake: Map.get(state, :jobs_wake, true),
+      think: Map.get(state, :think),
       status: state.status,
       messages: length(surface(state)),
       provider: Model.current().info()
@@ -1137,6 +1198,16 @@ defmodule Visor.Agent do
   defp finish(state, reason) do
     broadcast(state, {:prompt_end, %{reason: reason, steps: state.steps}})
     state = set_status(state, :idle)
+
+    # The model's own effort and thinking last no longer than its prompt.
+    state =
+      if Map.get(state, :think) do
+        state = Map.put(state, :think, nil)
+        broadcast(state, {:settings, public_settings(state)})
+        state
+      else
+        state
+      end
 
     # After Stop or a failed call, jobs that end wait for the user's next
     # prompt rather than starting one.
