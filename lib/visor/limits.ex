@@ -25,6 +25,9 @@ defmodule Visor.Limits do
   @doc "The most `V` calls one script may make."
   def v_calls, do: 2_000
 
+  @doc "The most of the project's AGENTS.md (or CLAUDE.md) the system prompt carries."
+  def rules_bytes, do: 8_000
+
   @doc "When a shell command is killed, unless it asks for longer."
   def shell_timeout_ms, do: 60_000
 

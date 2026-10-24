@@ -42,7 +42,9 @@ live supervision tree beside it. There is no database.
   scripted `Visor.Model.Demo` in `test/support`; never add a demo fallback.
 - The agent has one tool, `elixir` (code mode): one script per step, run in a
   Dune sandbox, calling the project through `V` (`lib/v.ex`). `V.check/1`
-  compiles and runs the tests and returns only the failures.
+  compiles and runs the tests and returns only the failures. The system
+  prompt carries the project's own AGENTS.md (or CLAUDE.md), read once when
+  the session starts and cut to `Visor.Limits.rules_bytes/0`.
 - Every path a tool touches goes through `Visor.Workspace`, which confines
   it to the project, follows symlinks itself and refuses `.env` files.
   Tool limits live in `Visor.Limits`.

@@ -555,6 +555,39 @@ defmodule Visor.AgentTest do
     assert {:error, "There is no session log for nope."} = Agent.resume(id, "nope")
   end
 
+  # The model never saw the project's own instructions.
+  @tag :tmp_dir
+  test "carries the project's AGENTS.md or CLAUDE.md in the system prompt, cut to a size",
+       %{tmp_dir: dir} do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+
+    system = fn name ->
+      id = "rules#{System.unique_integer([:positive])}"
+      start_supervised!({Visor.Harness.Session, id: id, owner: self()}, id: name)
+      :sys.get_state(agent(id)).system
+    end
+
+    refute system.(:none) =~ "instructions for working on it"
+
+    File.write!(Path.join(dir, "CLAUDE.md"), "Use tabs.\n")
+
+    assert system.(:claude) =~
+             "The project's CLAUDE.md, its instructions for working on it:\n\nUse tabs."
+
+    rules = "## Rules\n" <> String.duplicate("- keep it short\n", 1_000)
+    File.write!(Path.join(dir, "AGENTS.md"), rules)
+    text = system.(:agents)
+    assert text =~ "The project's AGENTS.md, its instructions for working on it:\n\n## Rules\n"
+
+    assert text =~
+             ~s|- keep it short\n\n[Visor: the first 8,000 of 16,009 bytes; V.read("AGENTS.md") | <>
+               "has the rest.]"
+
+    refute text =~ "CLAUDE.md"
+  end
+
   test "tells a script how full the context is", %{id: id} do
     ask(id, @big)
     assert :ok = Agent.prompt(id, ~S|> c = V.context(); {c.band, c.tokens > 0, c.threshold}|)

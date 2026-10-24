@@ -265,7 +265,9 @@ defmodule Visor.Agent do
       tasks: Keyword.fetch!(opts, :tasks),
       store: Keyword.get(opts, :store),
       max_steps: Keyword.get(opts, :max_steps, @max_steps),
-      system: system_prompt(Keyword.get(opts, :role), Keyword.get(opts, :read_only, false)),
+      system:
+        system_prompt(Keyword.get(opts, :role), Keyword.get(opts, :read_only, false)) <>
+          project_rules(),
       depth: Keyword.get(opts, :depth, 0)
     }
 
@@ -1313,6 +1315,38 @@ defmodule Visor.Agent do
             "are refused, so read and search the project, then answer.",
         else: ""
       )
+  end
+
+  # The project's own instructions for agents, AGENTS.md or else
+  # CLAUDE.md, as Codex and Claude Code read them. Read once, when the
+  # session starts: the system prompt, and the provider's cache of it,
+  # stays the same all session, so a change to the file shows in the
+  # next session. At most Visor.Limits.rules_bytes/0 of it, cut at a line;
+  # the model reads the rest itself.
+  defp project_rules do
+    with name when is_binary(name) <-
+           Enum.find(["AGENTS.md", "CLAUDE.md"], &match?({:ok, true}, Tools.exists(&1))),
+         {:ok, text} <- Tools.read(name) do
+      max = Limits.rules_bytes()
+
+      {kept, note} =
+        if byte_size(text) > max do
+          cut = binary_part(text, 0, max)
+          [_partial | lines] = cut |> String.split("\n") |> Enum.reverse()
+
+          {lines |> Enum.reverse() |> Enum.join("\n"),
+           "\n\n[Visor: the first #{Visor.Format.number(max)} of " <>
+             "#{Visor.Format.number(byte_size(text))} " <>
+             "bytes; V.read(\"#{name}\") has the rest.]"}
+        else
+          {text, ""}
+        end
+
+      "\n\nThe project's #{name}, its instructions for working on it:\n\n" <>
+        String.trim(kept) <> note
+    else
+      _none -> ""
+    end
   end
 
   # What goes after a batch's last result: the calls left, and the jobs
