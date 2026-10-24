@@ -602,6 +602,34 @@ defmodule VisorWeb.HarnessLive do
     end
   end
 
+  defp run_command(socket, "advisor", ["off" | _]), do: stop_reviewer(socket)
+  defp run_command(socket, "supervise", ["off" | _]), do: stop_reviewer(socket)
+
+  defp run_command(socket, "advisor", focus) do
+    :ok = Visor.Reviewer.start(socket.assigns.session_id, :advisor, Enum.join(focus, " "))
+
+    note(
+      socket,
+      :info,
+      "The advisor is on: it reviews when a prompt ends or a tool call fails, and speaks " <>
+        "only when it matters. /advisor off turns it off."
+    )
+  end
+
+  defp run_command(socket, "supervise", []),
+    do: note(socket, :error, "/supervise needs a goal, such as /supervise all tests pass.")
+
+  defp run_command(socket, "supervise", goal) do
+    :ok = Visor.Reviewer.start(socket.assigns.session_id, :supervisor, Enum.join(goal, " "))
+
+    note(
+      socket,
+      :info,
+      "The supervisor is on, toward: #{Enum.join(goal, " ")}. It may start the agent again " <>
+        "when it stops short. /supervise off turns it off."
+    )
+  end
+
   defp run_command(socket, "prewalk", [value | _]) when value in ~w(on off) do
     socket = configure(socket, prewalk: value == "on")
 
@@ -697,6 +725,11 @@ defmodule VisorWeb.HarnessLive do
     note(socket, :error, "There is no /#{command} command. Type /help for the list.")
   end
 
+  defp stop_reviewer(socket) do
+    :ok = Visor.Reviewer.stop(socket.assigns.session_id)
+    note(socket, :info, "The reviewer is off.")
+  end
+
   defp configure(socket, settings) do
     case Agent.configure(socket.assigns.session_id, settings) do
       {:ok, _settings} -> socket
@@ -756,6 +789,14 @@ defmodule VisorWeb.HarnessLive do
   defp agent_event({:wake, text}, socket) do
     socket |> add_entry(%{type: :wake, text: text}) |> start_work()
   end
+
+  defp agent_event({:review, %{action: :message, mode: mode, message: text}}, socket),
+    do: note(socket, :info, "#{if mode == :advisor, do: "Advisor", else: "Supervisor"}: #{text}")
+
+  defp agent_event({:review, %{action: :stop, message: text}}, socket),
+    do: note(socket, :info, "Supervisor: the goal is met. #{text} The supervisor is off.")
+
+  defp agent_event({:review, _info}, socket), do: socket
 
   defp agent_event({:job_start, job}, socket), do: stream_insert(socket, :jobs, job)
 

@@ -64,4 +64,10 @@ defmodule Visor.Agent.TotalsTest do
     assert %{prompt_tokens: 600, cached_tokens: 90, uncached_tokens: 10, unmeasured_tokens: 500} =
              totals
   end
+
+  test "counts reviews and their tokens apart from the agent's" do
+    usage = %{"prompt_tokens" => 300, "completion_tokens" => 20}
+    totals = Totals.add(%Totals{}, {:review, %{usage: usage}})
+    assert %{reviews: 1, review_tokens: 320, prompt_tokens: 0} = totals
+  end
 end

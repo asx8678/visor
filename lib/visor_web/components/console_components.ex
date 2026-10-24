@@ -25,7 +25,7 @@ defmodule VisorWeb.ConsoleComponents do
   def entry(%{entry: %{type: :wake}} = assigns) do
     ~H"""
     <article id={@id} class="border-l-2 border-rule py-1 pl-3">
-      <p class="text-xs text-ink-dim">Visor, for the background jobs that ended</p>
+      <p class="text-xs text-ink-dim">Visor, for what came in while the agent was idle</p>
       <p class="whitespace-pre-wrap break-words text-[13px] text-ink-dim">{@entry.text}</p>
     </article>
     """
@@ -256,6 +256,8 @@ defmodule VisorWeb.ConsoleComponents do
       {"/clear", "Forget the conversation and clear the console"},
       {"/compact", "Sum up the conversation so far, keeping its recent part as it was"},
       {"/prewalk on|off", "Plan at full effort, then make the changes at low effort"},
+      {"/advisor [focus] | off", "A quiet reviewer whose advice reaches the agent"},
+      {"/supervise GOAL | off", "A reviewer that keeps the agent going until the goal is met"},
       {"/scripts", "List the saved scripts"},
       {"/run NAME", "Run a saved script now, without the model"},
       {"/jobs", "List the background jobs"},

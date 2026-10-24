@@ -92,6 +92,10 @@ defmodule Visor.Agent do
     # (see Visor.Jobs). They reach it after the running tool calls, with
     # the next prompt, or as a prompt of their own: a wake.
     pending_jobs: [],
+    # A reviewer's messages (see Visor.Reviewer), delivered as job notices
+    # are; `wake_texts` when one of them may wake the agent.
+    pending_texts: [],
+    wake_texts: false,
     # Wakes since the user's last prompt, and whether they wait for the
     # next one (after Stop or a failed model call).
     wakes: 0,
@@ -127,6 +131,14 @@ defmodule Visor.Agent do
 
   @doc "Tells session `id`'s agent that background job `job_id` ended."
   def job_ended(id, job_id), do: GenServer.cast(via(id), {:job_ended, job_id})
+
+  @doc """
+  Gives session `id`'s agent a reviewer's message (`Visor.Reviewer`): the
+  model gets it after the running tool calls or with the next prompt.
+  With `wake: true` it may also start a prompt when the agent is idle,
+  within the wake limit.
+  """
+  def review(id, text, wake), do: GenServer.cast(via(id), {:review, text, wake})
   def efforts, do: @efforts
 
   @doc """
@@ -407,6 +419,15 @@ defmodule Visor.Agent do
   end
 
   @impl true
+  def handle_cast({:review, text, wake}, state) do
+    state =
+      state
+      |> Map.update(:pending_texts, [text], &(&1 ++ [text]))
+      |> Map.put(:wake_texts, Map.get(state, :wake_texts, false) or wake)
+
+    {:noreply, schedule_wake(state)}
+  end
+
   def handle_cast({:job_ended, job_id}, state) do
     pending = Map.get(state, :pending_jobs, [])
     pending = if job_id in pending, do: pending, else: pending ++ [job_id]
@@ -537,7 +558,10 @@ defmodule Visor.Agent do
         Jobs.notice(job)
       end
 
-    {Map.put(state, :pending_jobs, []), notices}
+    texts = Map.get(state, :pending_texts, [])
+
+    {Map.merge(state, %{pending_jobs: [], pending_texts: [], wake_texts: false}),
+     notices ++ texts}
   end
 
   defp can_wake?(state) do
@@ -547,7 +571,9 @@ defmodule Visor.Agent do
 
   # Jobs that end close together wake the agent once.
   defp schedule_wake(state) do
-    if state.status == :idle and Map.get(state, :pending_jobs, []) != [] and can_wake?(state) and
+    waiting? = Map.get(state, :pending_jobs, []) != [] or Map.get(state, :wake_texts, false)
+
+    if state.status == :idle and waiting? and can_wake?(state) and
          Map.get(state, :wake_timer) == nil do
       Map.put(state, :wake_timer, Process.send_after(self(), :wake, Limits.job_wake_batch_ms()))
     else

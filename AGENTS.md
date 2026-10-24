@@ -44,6 +44,10 @@ live supervision tree beside it. There is no database.
   (`depth` 1, `Visor.Limits.agent_depth/0`) whose owner is the job's task,
   so stopping the job or the parent's session ends it. Its answer is the
   job's output, and its tokens count in the parent's totals.
+- `/advisor` and `/supervise goal` turn on the session's `Visor.Reviewer`:
+  a model call of its own when a prompt ends or a tool call fails, whose
+  rare message reaches the agent like a job notice (a supervisor's may wake
+  it, within the wake limit).
 - `V.attempt(fn -> edits end, check: path)` keeps edits only if the check
   passes, and otherwise puts every file back through the same locked write
   path; attempts don't nest and can't start background jobs.

@@ -67,7 +67,11 @@ defmodule Visor.Model.Demo do
 
   defp answer(request, emit) do
     started = now()
-    {reasoning, content, calls} = reply(request.messages, Map.get(request, :tool_choice, "auto"))
+
+    {reasoning, content, calls} =
+      if String.starts_with?(Map.get(request, :system, ""), "[Visor review]"),
+        do: review(request),
+        else: reply(request.messages, Map.get(request, :tool_choice, "auto"))
 
     state = %{reasoning: "", content: "", tool_calls: [], chunks: 0}
     pause(8)
@@ -123,6 +127,24 @@ defmodule Visor.Model.Demo do
       {%{"role" => "tool"}, _auto} -> keep_going(messages)
       {%{"role" => "user", "content" => text}, _} -> respond(text)
     end
+  end
+
+  # A reviewer's request (Visor.Reviewer): a message when the digest says
+  # PROBLEM, the goal met when it says DONE, and silence otherwise.
+  defp review(%{messages: [%{"content" => digest} | _]} = request) do
+    json =
+      cond do
+        digest =~ "PROBLEM" ->
+          ~s({"action": "message", "message": "Look at the PROBLEM first."})
+
+        digest =~ "DONE" and request.system =~ "supervise" ->
+          ~s({"action": "stop", "message": "Done."})
+
+        true ->
+          ~s({"action": "silent"})
+      end
+
+    {"A review.", json, []}
   end
 
   # "keep going" asks for a task that never finishes: list the files after

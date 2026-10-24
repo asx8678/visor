@@ -29,7 +29,10 @@ defmodule Visor.Agent.Totals do
             tool_ms: 0,
             request_bytes: 0,
             jobs: 0,
-            wakes: 0
+            wakes: 0,
+            # The reviewer's model calls, and their tokens in and out.
+            reviews: 0,
+            review_tokens: 0
 
   @type t :: %__MODULE__{}
 
@@ -79,6 +82,12 @@ defmodule Visor.Agent.Totals do
   end
 
   def add(totals, {:wake, _text}), do: bump(totals, wakes: 1)
+
+  def add(totals, {:review, info}) do
+    usage = Usage.from(Map.get(info, :usage)) || %Usage{}
+    bump(totals, reviews: 1, review_tokens: (usage.prompt || 0) + (usage.completion || 0))
+  end
+
   def add(totals, _event), do: totals
 
   @doc "Adds to fields by name; anything but an integer counts as 0."

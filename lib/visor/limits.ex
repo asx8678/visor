@@ -103,6 +103,12 @@ defmodule Visor.Limits do
   @doc "Progress notes one script may show (`V.note/1`); the rest are dropped."
   def script_notes, do: 50
 
+  @doc "Reviews the reviewer makes per prompt from the user (`Visor.Reviewer`)."
+  def reviews_per_prompt, do: 3
+
+  @doc "The conversation's last messages a review sees."
+  def review_messages, do: 12
+
   @doc "Calls `V.all/1` runs at once."
   def parallel_calls, do: 4
 

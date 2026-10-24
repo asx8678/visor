@@ -54,6 +54,9 @@ defmodule Visor.Harness.Session do
     children = [
       {Task.Supervisor, name: tasks},
       {Visor.Feedback, id: id},
+      # Idle until the console turns it on; its model calls run under the
+      # session's task supervisor.
+      {Visor.Reviewer, id: id},
       # Stopped after the agent and the jobs server, and with them each
       # job's command.
       {Task.Supervisor, name: job_tasks},

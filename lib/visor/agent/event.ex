@@ -56,6 +56,13 @@ defmodule Visor.Agent.Event do
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
 
+  From `Visor.Reviewer`, when it is on:
+
+    * `{:review, %{mode, action, message, usage}}`: a review, as
+      `:advisor` or `:supervisor`, that kept `:silent`, gave a `:message`
+      (which reaches the model as a job notice does) or saw the goal met
+      (`:stop`)
+
   From `Visor.Jobs`, for each background job, as `Visor.Jobs.public/1`
   gives it (`id`, `kind`, `label`, `status`, `exit`, `ms`, `timeout_ms`,
   `log`, `tail`, `os_pid`, `acknowledged`):
@@ -138,6 +145,7 @@ defmodule Visor.Agent.Event do
              %{required(:status) => :running | :ok | :error, optional(atom()) => term()}}
           | {:script_end, call_id(), map()}
           | {:script_note, call_id(), String.t()}
+          | {:review, map()}
           | {:job_start, map()}
           | {:job_end, map()}
 

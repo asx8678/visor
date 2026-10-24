@@ -184,7 +184,7 @@ defmodule VisorWeb.HarnessLiveTest do
     # The wake is a prompt of its own, with its work line and answer.
     assert_receive {:agent, {:wake, _text}}, @flow_timeout
     assert_receive {:agent, {:prompt_end, _}}, @flow_timeout
-    assert has_element?(view, "#entries", "Visor, for the background jobs that ended")
+    assert has_element?(view, "#entries", "Visor, for what came in while the agent was idle")
     assert has_element?(view, "#entries", "[Visor: background job j1 (sleep 0.3)")
     assert view |> element("#entries") |> render() |> String.contains?("Worked")
   end

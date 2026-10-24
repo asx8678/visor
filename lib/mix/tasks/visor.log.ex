@@ -499,6 +499,11 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "wake"} = e, _opts), do: ["wake    #{e["text"]}"]
 
+  defp describe(%{"event" => "review"} = e, _opts) do
+    said = if e["message"] not in [nil, ""], do: ": #{e["message"]}", else: ""
+    ["review  #{e["mode"]} #{e["action"]}#{said}"]
+  end
+
   defp describe(%{"event" => "script_note"} = e, _opts),
     do: ["note    #{e["text"]} (#{e["call_id"]})"]
 
