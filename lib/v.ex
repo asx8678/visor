@@ -77,10 +77,16 @@ defmodule V do
   Runs a shell command in the project folder. `status` is the exit code,
   or `:timeout`. The output of a failed command is kept, so the script's
   result can point to it.
+
+  `timeout:` (seconds) raises its time limit from
+  `Visor.Limits.shell_timeout_ms/0`. A command never runs past its
+  script's own limit: it times out a second before.
   """
-  def sh(command) when is_binary(command) do
-    track(:sh, [command], fn ->
-      {status, output} = Tools.shell(command)
+  def sh(command, opts \\ []) when is_binary(command) and is_list(opts) do
+    timeout = within_script(opts, Limits.shell_timeout_ms(), 1_000)
+
+    track(:sh, [command | opts_args(opts)], fn ->
+      {status, output} = Tools.shell(command, timeout: timeout)
       ref = if status != 0, do: Feedback.keep(session(), output)
       {:ok, %{status: status, output: output}, %{ran: command, exit: status, ref: ref}}
     end)
@@ -91,15 +97,25 @@ defmodule V do
   (such as `"test/app_test.exs:12"`), in one `mix test`. Returns
   `%{status: :ok | :failed | :compile_error | :timeout | :error, ...}`;
   the script's result shows what failed (see `Visor.Check`).
+
+  `timeout:` (seconds) raises its time limit from
+  `Visor.Limits.check_timeout_ms/0`, within the script's own limit, as
+  for `sh/2`. `V.check(timeout: 300)` checks the whole project.
   """
-  def check(path \\ nil) when is_nil(path) or is_binary(path) do
-    track(:check, List.wrap(path), fn ->
+  def check(path \\ nil, opts \\ [])
+
+  def check(opts, []) when is_list(opts), do: check(nil, opts)
+
+  def check(path, opts) when (is_nil(path) or is_binary(path)) and is_list(opts) do
+    timeout = within_script(opts, Limits.check_timeout_ms(), 5_000)
+
+    track(:check, List.wrap(path) ++ opts_args(opts), fn ->
       session = session()
       changed = Feedback.changed_files(session)
       root = Workspace.root()
       stats = Map.new(changed, &{&1, stat(Path.join(root, &1))})
 
-      with {:ok, check, output} <- Check.run(path) do
+      with {:ok, check, output} <- Check.run(path, timeout) do
         # What mix test saw of the changed files (see change/2).
         Feedback.saw(session, stats)
         previous = Feedback.record_check(session, path, check)
@@ -181,6 +197,37 @@ defmodule V do
 
   defp lines(_text, lines, _ref),
     do: {:error, "Lines must be a range such as 1..50, not #{inspect(lines)}."}
+
+  # A call's time limit in ms: `opts[:timeout]` seconds or `default`,
+  # ending `margin` ms before the script's own limit, so the call reports
+  # its timeout before the script is stopped.
+  defp within_script(opts, default, margin) do
+    asked =
+      case Keyword.get(opts, :timeout) do
+        nil ->
+          default
+
+        seconds when is_number(seconds) and seconds > 0 ->
+          round(seconds * 1000)
+
+        other ->
+          raise Error, "timeout: is a number of seconds, not #{inspect(other)}."
+      end
+
+    case Keyword.keys(opts) -- [:timeout] do
+      [] -> :ok
+      keys -> raise Error, "The only option is timeout: (seconds), not #{inspect(keys)}."
+    end
+
+    case Code.time_left() do
+      nil -> asked
+      left -> min(asked, max(left - margin, 0))
+    end
+  end
+
+  # Options as a call's arguments, so the console and the log show them.
+  defp opts_args([]), do: []
+  defp opts_args(opts), do: [opts]
 
   defp session do
     case Process.get(Code) do

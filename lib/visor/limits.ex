@@ -25,17 +25,24 @@ defmodule Visor.Limits do
   @doc "The most `V` calls one script may make."
   def v_calls, do: 2_000
 
-  @doc "When a shell command is killed."
+  @doc "When a shell command is killed, unless it asks for longer."
   def shell_timeout_ms, do: 60_000
 
-  @doc "When a script is stopped."
+  @doc "When a check's `mix test` is stopped, unless it asks for longer."
+  def check_timeout_ms, do: 110_000
+
+  @doc "When a script is stopped, unless the call asks for longer."
   def script_timeout_ms, do: 120_000
+
+  @doc "The longest time limit a script may ask for."
+  def max_script_timeout_ms, do: 15 * 60_000
 
   @doc """
   When the agent stops a tool call that is still running: Dune's own
-  timeout, then time for its sandbox to shut down and the result to render.
+  timeout (`script_ms`), then time for its sandbox to shut down and the
+  result to render.
   """
-  def tool_deadline_ms, do: script_timeout_ms() + 15_000
+  def tool_deadline_ms(script_ms \\ script_timeout_ms()), do: script_ms + 15_000
 
   @doc "When the agent stops a model call that is still streaming."
   def model_deadline_ms, do: 20 * 60_000

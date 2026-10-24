@@ -145,6 +145,16 @@ defmodule Visor.Model.Demo do
 
         {"The user wrote several scripts. I'll run each as its own call.", "", calls}
 
+      # "timeout 300 > script": a script that asks for a longer time limit.
+      match = Regex.run(~r/^\s*timeout\s+(\d+)\s*>\s*(.+)$/s, text) ->
+        [_, seconds, code] = match
+
+        call(
+          "elixir",
+          %{code: String.trim(code), timeout: String.to_integer(seconds)},
+          "The user wrote a script that needs more time."
+        )
+
       match = Regex.run(~r/^\s*>\s*(.+)$/s, text) ->
         call(
           "elixir",

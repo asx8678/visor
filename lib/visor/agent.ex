@@ -309,8 +309,8 @@ defmodule Visor.Agent do
           result
 
         _stopped ->
-          seconds = div(Limits.tool_deadline_ms(), 1000)
-          {:error, "Stopped: the script was still running after #{seconds} s.", []}
+          deadline = Map.get(state.tools[ref], :deadline, Limits.tool_deadline_ms())
+          {:error, "Stopped: the script was still running after #{div(deadline, 1000)} s.", []}
       end
 
     {:noreply, finish_tool(state, ref, result)}
@@ -627,9 +627,10 @@ defmodule Visor.Agent do
         Tools.execute(call.name, call.arguments, context)
       end)
 
-    Process.send_after(self(), {:deadline, task.ref}, Limits.tool_deadline_ms())
+    deadline = Limits.tool_deadline_ms(Visor.Code.timeout_ms(asked_timeout(call)))
+    Process.send_after(self(), {:deadline, task.ref}, deadline)
     broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
-    tool = %{tool | task: task, started: now()}
+    tool = Map.merge(tool, %{task: task, started: now(), deadline: deadline})
     %{state | tools: state.tools |> Map.delete(ref) |> Map.put(task.ref, tool)}
   end
 
@@ -652,6 +653,14 @@ defmodule Visor.Agent do
     end
 
     {Map.put(state, :repeat, {hash, count}), count}
+  end
+
+  # The seconds a call's script asked for, if any (see Visor.Code.timeout_ms/1).
+  defp asked_timeout(call) do
+    case Jason.decode(call.arguments) do
+      {:ok, %{"timeout" => seconds}} -> seconds
+      _other -> nil
+    end
   end
 
   defp script_text(arguments) do

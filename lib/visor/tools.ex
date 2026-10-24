@@ -35,8 +35,10 @@ defmodule Visor.Tools do
                                           %{file: path, line: n, text: line}
             V.write(path, contents)       write a file, creating folders; returns :ok
             V.edit(path, old, new)        replace the one occurrence of old; returns :ok
-            V.sh(command)                 run a shell command; returns %{status: code, output: text}
-            V.check(path \\\\ nil)          compile and run the tests (or those at a path such as
+            V.sh(command, timeout: s)     run a shell command (timeout optional, default
+                                          #{div(Limits.shell_timeout_ms(), 1000)} s); returns %{status: code, output: text}
+            V.check(path \\\\ nil, timeout: s)
+                                          compile and run the tests (or those at a path such as
                                           "test/app_test.exs:12") in a Mix project; returns
                                           %{status: :ok | :failed | :compile_error | :timeout | :error,
                                             tests: n, failed: n, failures: [...], errors: [...]}
@@ -61,7 +63,16 @@ defmodule Visor.Tools do
           """,
           parameters: %{
             type: "object",
-            properties: %{code: %{type: "string", description: "The Elixir script to run."}},
+            properties: %{
+              code: %{type: "string", description: "The Elixir script to run."},
+              timeout: %{
+                type: "number",
+                description:
+                  "Seconds the whole script may take, when it needs more than the default " <>
+                    "#{div(Limits.script_timeout_ms(), 1000)} (up to " <>
+                    "#{div(Limits.max_script_timeout_ms(), 1000)}), such as for a long test suite."
+              }
+            },
             required: ["code"]
           }
         }
@@ -89,7 +100,8 @@ defmodule Visor.Tools do
 
   def execute("elixir", arguments, context) do
     case Jason.decode(arguments) do
-      {:ok, %{"code" => code}} when is_binary(code) and code != "" ->
+      {:ok, %{"code" => code} = args} when is_binary(code) and code != "" ->
+        context = Map.put(context, :timeout_ms, Visor.Code.timeout_ms(args["timeout"]))
         {status, text, calls} = Visor.Code.execute(code, context)
         {status, text, Visor.Code.facts(calls)}
 

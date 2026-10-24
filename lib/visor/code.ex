@@ -25,7 +25,6 @@ defmodule Visor.Code do
 
   @opts [
     allowlist: Visor.Code.Allowlist,
-    timeout: Visor.Limits.script_timeout_ms(),
     # Reductions include the work V does for the script (reading and
     # searching files), so this is high; the timeout is the real bound.
     max_reductions: 2_000_000_000,
@@ -49,17 +48,44 @@ defmodule Visor.Code do
     {status, text}
   end
 
-  @doc "Like `run/2`, and also returns the script's V calls (see `facts/1`)."
+  @doc """
+  Like `run/2`, and also returns the script's V calls (see `facts/1`).
+  `context[:timeout_ms]` is the script's time limit (see `timeout_ms/1`).
+  """
   def execute(code, context) do
+    timeout = Map.get(context, :timeout_ms) || Visor.Limits.script_timeout_ms()
     # The script records its V calls here rather than in this process's
-    # mailbox, which Dune waits in: a script can make thousands.
+    # mailbox, which Dune waits in: a script can make thousands. Its
+    # calls read the deadline to fit their own limits under it.
     table = :ets.new(:visor_calls, [:public])
-    Process.put(__MODULE__, Map.put(context, :calls, table))
-    result = Dune.eval_string(@begin <> code, @opts)
+    deadline = System.monotonic_time(:millisecond) + timeout
+    Process.put(__MODULE__, Map.merge(context, %{calls: table, deadline: deadline}))
+    result = Dune.eval_string(@begin <> code, Keyword.put(@opts, :timeout, timeout))
     log_script(context, result)
     calls = calls(table)
     {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
     {status, text, calls}
+  end
+
+  @doc """
+  The time limit for a script whose call asked for `seconds` (nil for
+  none): the default, raised to what was asked up to
+  `Visor.Limits.max_script_timeout_ms/0`. A limit is never lowered.
+  """
+  def timeout_ms(seconds) when is_number(seconds) and seconds > 0 do
+    asked = round(seconds * 1000)
+    asked |> max(Visor.Limits.script_timeout_ms()) |> min(Visor.Limits.max_script_timeout_ms())
+  end
+
+  def timeout_ms(_seconds), do: Visor.Limits.script_timeout_ms()
+
+  @doc """
+  The milliseconds the running script has left, from inside it, or nil
+  outside a script.
+  """
+  def time_left do
+    with %{deadline: deadline} <- Process.get(__MODULE__),
+         do: max(deadline - System.monotonic_time(:millisecond), 0)
   end
 
   @doc """

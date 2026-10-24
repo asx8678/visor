@@ -22,9 +22,6 @@ defmodule Visor.Check do
 
   alias Visor.{Format, Lock, Tools, Workspace}
 
-  # Under the elixir tool's 120 s limit, so a slow suite comes back as a
-  # stopped check instead of a stopped script.
-  @timeout_ms 110_000
   @max_output_bytes 4_000_000
   @shown_failures 8
   @shown_message_lines 8
@@ -48,7 +45,9 @@ defmodule Visor.Check do
             failures: [],
             diagnostics: [],
             aborted: nil,
-            tail: []
+            tail: [],
+            # The time limit it ran under.
+            limit_ms: nil
 
   @test_head ~r/^\s*\d+\) (test|doctest) (.+) \(([\w.]+)\)$/
   @module_head ~r/^\s*\d+\) ([\w.]+): (failure on .+)$/
@@ -66,7 +65,7 @@ defmodule Visor.Check do
   `Visor.Lock`). The time a check waits for another comes out of its
   time limit, so it still ends before the script's.
   """
-  def run(path \\ nil) do
+  def run(path \\ nil, timeout \\ Visor.Limits.check_timeout_ms()) do
     with :ok <- mix_project(),
          {:ok, args} <- path_args(path) do
       asked = System.monotonic_time(:millisecond)
@@ -76,13 +75,13 @@ defmodule Visor.Check do
           waited = System.monotonic_time(:millisecond) - asked
 
           Tools.shell(Enum.join(["mix test --seed 0" | args], " "),
-            timeout: max(@timeout_ms - waited, 0),
+            timeout: max(timeout - waited, 0),
             max_bytes: @max_output_bytes,
             env: [{"MIX_ENV", "test"}]
           )
         end)
 
-      {:ok, parse(output, exit), output}
+      {:ok, %{parse(output, exit) | limit_ms: timeout}, output}
     end
   end
 
@@ -357,8 +356,10 @@ defmodule Visor.Check do
   defp headline(%{status: :compile_error}),
     do: "check failed to compile; the tests did not run"
 
-  defp headline(%{status: :timeout}),
-    do: "check stopped at the #{div(@timeout_ms, 1000)} s time limit; the tests did not finish"
+  defp headline(%{status: :timeout} = check) do
+    seconds = div(check.limit_ms || Visor.Limits.check_timeout_ms(), 1000)
+    "check stopped at the #{seconds} s time limit; the tests did not finish"
+  end
 
   defp headline(check), do: "check failed: mix test exited with status #{check.exit}"
 

@@ -82,6 +82,36 @@ defmodule Visor.CodeTest do
     refute message =~ "lib/v.ex"
   end
 
+  test "times a command out at the timeout it asks for" do
+    assert {:ok, message} = Code.run(~S|V.sh("sleep 3; echo late", timeout: 0.5).status|, %{})
+    assert message =~ "ran: sleep 3; echo late (timed out)"
+    assert message =~ "=> :timeout"
+  end
+
+  test "ends a command a second before its script's own limit" do
+    started = System.monotonic_time(:millisecond)
+    script = ~S|V.sh("sleep 10", timeout: 60).status|
+    assert {:ok, message, _calls} = Code.execute(script, %{timeout_ms: 2_500})
+    assert message =~ "=> :timeout"
+    assert System.monotonic_time(:millisecond) - started < 2_500
+  end
+
+  test "takes only timeout: as an option, in seconds" do
+    assert {:error, message} = Code.run(~S|V.sh("ls", cwd: "lib")|, %{})
+    assert message =~ "The only option is timeout: (seconds), not [:cwd]."
+
+    assert {:error, message} = Code.run(~S|V.sh("ls", timeout: "5")|, %{})
+    assert message =~ ~s(timeout: is a number of seconds, not "5".)
+  end
+
+  test "raises a script's time limit to what its call asks, never lowers it" do
+    assert Code.timeout_ms(nil) == 120_000
+    assert Code.timeout_ms(30) == 120_000
+    assert Code.timeout_ms(300) == 300_000
+    assert Code.timeout_ms(10_000) == 900_000
+    assert Code.timeout_ms("300") == 120_000
+  end
+
   test "hints at the right call for the mistakes models make" do
     hints = %{
       ~S|V.read_file("mix.exs")| => "V has no read_file; did you mean V.read(path)?",

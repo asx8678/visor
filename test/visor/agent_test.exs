@@ -358,6 +358,19 @@ defmodule Visor.AgentTest do
     assert kept > 0
   end
 
+  test "gives a script that asks for more time a later deadline", %{id: id} do
+    assert :ok = Agent.prompt(id, "timeout 300 > V.sh(\"sleep 5\")")
+    assert_receive {:agent, {:tool_start, %{status: :running}}}, 1_000
+
+    assert [%{deadline: 315_000} = tool] = Map.values(:sys.get_state(agent(id)).tools)
+    send(agent(id), {:deadline, tool.task.ref})
+
+    assert_receive {:agent,
+                    {:tool_end, %{result: "Stopped: the script was still running after 315 s."}}}
+
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+  end
+
   test "stops a tool still running at its deadline and goes on", %{id: id} do
     assert :ok = Agent.prompt(id, "$ sleep 5")
     assert_receive {:agent, {:tool_start, %{status: :running}}}, 1_000
