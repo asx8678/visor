@@ -65,6 +65,10 @@ live supervision tree beside it. There is no database.
   ($5) before its next model call (`:budget`), its reviews' and
   sub-agents' spending included; a sub-agent starts with what its parent's
   prompt has left (`Visor.Agent.allowance/1`). `/budget` shows and sets it.
+- `Visor.ModelHealth` is a node-wide circuit breaker: after
+  `Visor.Limits.model_failures/0` failed model calls in a row it holds back
+  wakes, sub-agents, councils and reviews for `model_cooldown_ms/0` (60 s;
+  0 in the tests); the user's prompts still go.
 - `/advisor` and `/supervise goal` turn on the session's `Visor.Reviewer`:
   a model call of its own when a prompt ends or a tool call fails, whose
   rare message reaches the agent like a job notice (a supervisor's may wake

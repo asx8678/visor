@@ -565,6 +565,7 @@ defmodule Visor.Agent do
   @impl true
   def handle_info({ref, result}, %{model_task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
+    Visor.ModelHealth.record(if match?({:ok, _}, result), do: :ok, else: :error)
     {:noreply, handle_model_result(result, %{state | model_task: nil})}
   end
 
@@ -591,6 +592,7 @@ defmodule Visor.Agent do
   def handle_info(:grace_over, state), do: {:noreply, state}
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{model_task: %Task{ref: ref}} = state) do
+    Visor.ModelHealth.record(:error)
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "crashed"}})
     note(state, :error, "The model call crashed: #{Exception.format_exit(reason)}")
     {:noreply, finish(%{state | model_task: nil}, :model_crashed)}
@@ -717,7 +719,8 @@ defmodule Visor.Agent do
   defp can_wake?(state) do
     (Map.get(state, :jobs_wake, true) or Map.get(state, :wake_texts, false)) and
       not Map.get(state, :wakes_held, false) and
-      Map.get(state, :wakes, 0) < Limits.job_wakeups()
+      Map.get(state, :wakes, 0) < Limits.job_wakeups() and
+      Visor.ModelHealth.open() == nil
   end
 
   # Jobs that end close together wake the agent once.

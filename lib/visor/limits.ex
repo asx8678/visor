@@ -136,6 +136,15 @@ defmodule Visor.Limits do
     end
   end
 
+  @doc "Model calls failing in a row, in any session, that open the breaker (`Visor.ModelHealth`)."
+  def model_failures, do: 3
+
+  @doc """
+  How long the breaker stays open (0 in the tests, `config :visor,
+  model_cooldown_ms: ms`, so one test's failures don't hold back another's).
+  """
+  def model_cooldown_ms, do: Application.get_env(:visor, :model_cooldown_ms, 60_000)
+
   ## What the model sees
 
   @doc "A shell command's output kept, and a script's whole result."

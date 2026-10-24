@@ -309,6 +309,9 @@ defmodule V do
       not match?(n when is_integer(n) and n in 1..24, Keyword.get(opts, :max_steps, 1)) ->
         {:error, "max_steps: is a whole number from 1 to 24."}
 
+      held = Visor.ModelHealth.open() ->
+        {:error, held <> " Do the work yourself, or try again then."}
+
       not affordable?(allowance) ->
         {:error,
          "This prompt has reached its spending limit, so no sub-agent can start (/budget " <>

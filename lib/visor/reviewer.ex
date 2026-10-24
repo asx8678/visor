@@ -130,7 +130,7 @@ defmodule Visor.Reviewer do
   end
 
   defp review(state, _kind, why) do
-    if state.reviews >= Limits.reviews_per_prompt() do
+    if state.reviews >= Limits.reviews_per_prompt() or Visor.ModelHealth.open() do
       state
     else
       request = %{
@@ -165,6 +165,7 @@ defmodule Visor.Reviewer do
 
   defp answered(state, {:ok, %{message: message, usage: usage}}) do
     {action, text} = parse(message["content"] || "")
+    Visor.ModelHealth.record(:ok)
     # A review is the session's spending too.
     spent = Visor.Usage.from(usage) || %Visor.Usage{}
     Visor.Agent.spent(state.id, spent.cost, (spent.prompt || 0) + (spent.completion || 0))
@@ -188,7 +189,10 @@ defmodule Visor.Reviewer do
     end
   end
 
-  defp answered(state, _error), do: state
+  defp answered(state, _error) do
+    Visor.ModelHealth.record(:error)
+    state
+  end
 
   # The model's JSON, wherever it is in the reply; anything else is
   # silence.
