@@ -171,6 +171,12 @@ defmodule VisorWeb.ConsoleComponents do
         />
       </summary>
       <div class="mt-1.5 border border-rule bg-well">
+        <ul
+          :if={Map.get(@step, :notes, []) != []}
+          class="space-y-0.5 border-b border-rule px-3 py-2 text-xs text-ink-dim"
+        >
+          <li :for={note <- @step.notes} class="whitespace-pre-wrap break-words">{note}</li>
+        </ul>
         <div :if={@step.code}>
           <pre class="max-h-60 overflow-auto px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-ink/90">{@step.code}</pre>
           <ol

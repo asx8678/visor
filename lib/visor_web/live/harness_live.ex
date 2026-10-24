@@ -59,6 +59,7 @@ defmodule VisorWeb.HarnessLive do
         context_tokens: nil,
         last_request: nil,
         tools_running: 0,
+        early_notes: %{},
         examples: @examples,
         form: to_form(%{"text" => ""}, as: :prompt)
       )
@@ -797,9 +798,12 @@ defmodule VisorWeb.HarnessLive do
   defp agent_event({:turn_end, _info}, socket), do: socket
 
   defp agent_event({:tool_start, call}, socket) do
+    # Notes the script showed before this event reached the page.
+    {notes, early} = Map.pop(Map.get(socket.assigns, :early_notes, %{}), call.id, [])
+
     socket
-    |> assign(tools_running: socket.assigns.tools_running + 1)
-    |> put_step(%{tool_entry(call) | pid: pid_text(call.pid), started: now()})
+    |> assign(tools_running: socket.assigns.tools_running + 1, early_notes: early)
+    |> put_step(%{tool_entry(call) | pid: pid_text(call.pid), started: now(), notes: notes})
   end
 
   defp agent_event({:tool_end, call}, socket) do
@@ -813,7 +817,8 @@ defmodule VisorWeb.HarnessLive do
             | calls: run.calls,
               call_count: run.call_count,
               pid: run.pid,
-              started: Map.get(run, :started)
+              started: Map.get(run, :started),
+              notes: Map.get(run, :notes, [])
           }
 
         nil ->
@@ -827,6 +832,19 @@ defmodule VisorWeb.HarnessLive do
 
   # One V call inside a running elixir script. The full arguments and
   # value, such as a file's contents, are for the session log.
+  # A script runs as soon as its task starts, so a note can come before
+  # the call's tool_start; it waits for it.
+  defp agent_event({:script_note, call_id, text}, socket) do
+    case find_step(socket, "tool-" <> dom_safe(call_id)) do
+      %{} = entry ->
+        put_step(socket, Map.update(entry, :notes, [text], &(&1 ++ [text])))
+
+      nil ->
+        early = Map.get(socket.assigns, :early_notes, %{})
+        assign(socket, :early_notes, Map.update(early, call_id, [text], &(&1 ++ [text])))
+    end
+  end
+
   defp agent_event({:code_call, call_id, call}, socket) do
     case find_step(socket, "tool-" <> dom_safe(call_id)) do
       %{} = entry ->
@@ -956,7 +974,8 @@ defmodule VisorWeb.HarnessLive do
       started: nil,
       code: if(call.name == "elixir", do: script(call.arguments)),
       calls: [],
-      call_count: 0
+      call_count: 0,
+      notes: []
     }
   end
 

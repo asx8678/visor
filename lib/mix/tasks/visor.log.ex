@@ -429,6 +429,9 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "wake"} = e, _opts), do: ["wake    #{e["text"]}"]
 
+  defp describe(%{"event" => "script_note"} = e, _opts),
+    do: ["note    #{e["text"]} (#{e["call_id"]})"]
+
   defp describe(%{"event" => "carry", "items" => []}, _opts), do: ["carry   (nothing)"]
 
   defp describe(%{"event" => "carry"} = e, _opts),

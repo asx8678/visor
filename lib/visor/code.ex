@@ -204,6 +204,7 @@ defmodule Visor.Code.Allowlist do
       :think,
       :attempt,
       :all,
+      :note,
       :beam_stats
     ]
 

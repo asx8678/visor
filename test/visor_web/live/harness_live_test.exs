@@ -180,6 +180,17 @@ defmodule VisorWeb.HarnessLiveTest do
     assert view |> element("#entries") |> render() |> String.contains?("Worked")
   end
 
+  test "shows a script's progress notes under its step, not in its result", %{view: view} do
+    prompt = ~S|> V.note("halfway there"); V.exists?("mix.exs")|
+    view |> form("#prompt-form", prompt: %{text: prompt}) |> render_submit()
+    assert_receive {:agent, {:script_note, _call_id, "halfway there"}}, @flow_timeout
+    assert_receive {:agent, {:tool_end, %{result: result}}}, @flow_timeout
+    assert_receive {:agent, {:prompt_end, _}}, @flow_timeout
+
+    refute result =~ "halfway"
+    assert has_element?(view, "#entries [id^='tool-'] li", "halfway there")
+  end
+
   test "lists and stops background jobs with /jobs", %{view: view} do
     view |> form("#prompt-form", prompt: %{text: "/jobs"}) |> render_submit()
     assert has_element?(view, "#entries", "No background jobs yet.")

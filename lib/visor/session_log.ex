@@ -29,7 +29,8 @@ defmodule Visor.SessionLog do
       together;
     * `tool_start`, `tool_end`: each tool call and the result the model saw;
     * `code_call`: each `V` call of a script, with its full arguments and
-      the value it returned (`returned`); `script_end`: the script's whole
+      the value it returned (`returned`); `script_note`: a progress note a
+      script showed (`V.note/1`); `script_end`: the script's whole
       output and value before they were cut for the model;
     * `prompt_end`: how a prompt ended (`reason`) and what it used: model
       calls, tool and `V` calls, errors, tokens, time; `summary`: the same
@@ -409,6 +410,9 @@ defmodule Visor.SessionLog do
   defp record({:repeat, info}, state), do: logged(state, "repeat", info)
 
   defp record({:wake, text}, state), do: logged(state, "wake", %{text: text})
+
+  defp record({:script_note, call_id, text}, state),
+    do: logged(state, "script_note", %{call_id: call_id, text: text})
 
   defp record({:carry, items}, state), do: logged(state, "carry", %{items: items})
 

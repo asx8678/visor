@@ -88,6 +88,9 @@ defmodule Visor.Limits do
   @doc "What a script printed, before it is cut and kept behind a ref."
   def printed_bytes, do: 8_000
 
+  @doc "Progress notes one script may show (`V.note/1`); the rest are dropped."
+  def script_notes, do: 50
+
   @doc "Calls `V.all/1` runs at once."
   def parallel_calls, do: 4
 

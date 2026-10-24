@@ -66,6 +66,8 @@ defmodule Visor.Agent.Event do
     * `{:code_call, call_id, call}`: a `V` call, first `status: :running`,
       then `:ok` with what it `returned` or `:error` with its `error`
       (see `V`)
+    * `{:script_note, call_id, text}`: a progress note the script showed
+      the user (`V.note/1`); not part of its result
     * `{:script_end, call_id, %{status, stdio, ...}}`: the script's whole
       output and value, before they were cut for the model
   """
@@ -132,6 +134,7 @@ defmodule Visor.Agent.Event do
           | {:code_call, call_id(),
              %{required(:status) => :running | :ok | :error, optional(atom()) => term()}}
           | {:script_end, call_id(), map()}
+          | {:script_note, call_id(), String.t()}
           | {:job_start, map()}
           | {:job_end, map()}
 

@@ -212,6 +212,25 @@ defmodule V do
     end)
   end
 
+  @doc """
+  Shows `text` under this script's step in the console, as a progress
+  note, and writes it to the session log. It isn't part of the script's
+  result, so the model doesn't see it again. At most
+  `Visor.Limits.script_notes/0` a script; each is cut to 300 characters.
+  """
+  def note(text) when is_binary(text) do
+    n = Process.get(:visor_notes, 0) + 1
+    Process.put(:visor_notes, n)
+
+    with true <- n <= Limits.script_notes(),
+         %{session: session, call_id: call_id} <- Process.get(Code) do
+      text = if String.length(text) > 300, do: String.slice(text, 0, 300) <> "…", else: text
+      Visor.Agent.Event.broadcast(session, {:script_note, call_id, text})
+    end
+
+    :ok
+  end
+
   @parallel ~w(ls glob exists? read grep sh output recall job jobs)a
 
   @doc """

@@ -67,6 +67,8 @@ defmodule Visor.Tools do
                                           make the edits, check (the tests at path, or all), and
                                           put every file back if the check fails; returns
                                           %{status: :kept | :reverted, check: result, files: [...]}
+            V.note(text)                  a progress note for the user, under this step; you
+                                          don't see it in the result
             V.think(:off | :low | :high | :max, turns: n)
                                           your reasoning for the rest of this prompt, or n calls
             V.beam_stats()                runtime statistics as a map
