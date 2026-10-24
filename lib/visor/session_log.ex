@@ -32,7 +32,9 @@ defmodule Visor.SessionLog do
       for the whole session, before its last line;
     * `compaction`: the conversation's first `summarized` messages became
       a summary (see `Visor.Compaction`), with why and the estimated
-      tokens before and after;
+      tokens before and after; `repair`: tool calls answered (or results
+      dropped) to put the conversation back in an order the API accepts,
+      after a restart mid-batch or before a request;
     * `stream` (one line every few seconds per turn), `status`, `note`,
       `settings` and `context`.
 
@@ -395,6 +397,8 @@ defmodule Visor.SessionLog do
   defp record({:compaction, info}, state), do: logged(state, "compaction", info)
 
   defp record({:steer, text}, state), do: logged(state, "steer", %{text: text})
+
+  defp record({:repair, info}, state), do: logged(state, "repair", info)
 
   # The console's short preview; the request as sent follows.
   defp record({:request, _turn, _preview}, state), do: state

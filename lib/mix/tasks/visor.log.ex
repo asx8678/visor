@@ -427,6 +427,13 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "steer"} = e, _opts), do: ["steer   #{e["text"]}"]
 
+  defp describe(%{"event" => "repair"} = e, _opts) do
+    [
+      "repair  #{count(e["answered"], "tool call")} answered, " <>
+        "#{count(e["dropped"], "stray result")} dropped (#{e["reason"]})"
+    ]
+  end
+
   defp describe(%{"event" => "compaction"} = e, _opts) do
     [
       "compact  #{count(e["summarized"], "message")} summarized (#{e["reason"]}), " <>

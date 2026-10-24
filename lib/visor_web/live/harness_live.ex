@@ -819,6 +819,20 @@ defmodule VisorWeb.HarnessLive do
 
   defp agent_event({:context, messages}, socket), do: assign(socket, :context_messages, messages)
 
+  defp agent_event({:repair, info}, socket) do
+    why =
+      if info.reason == :restart,
+        do: "The agent restarted in the middle of a batch",
+        else: "The conversation had tool calls out of order"
+
+    note(
+      socket,
+      :info,
+      "#{why}, so before the next request it answered #{count(info.answered, "tool call")} " <>
+        "and dropped #{count(info.dropped, "stray result")}."
+    )
+  end
+
   defp agent_event({:compaction, info}, socket) do
     why =
       case info.reason do

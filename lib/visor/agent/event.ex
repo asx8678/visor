@@ -37,6 +37,10 @@ defmodule Visor.Agent.Event do
       `Visor.Compaction`), because the context passed its threshold
       (`:threshold`), the user asked (`:manual`) or the provider rejected a
       request as too long (`:overflow`). Tokens are estimates
+    * `{:repair, %{reason, answered, dropped}}`: tool calls without
+      results were answered and results without calls dropped (see
+      `Visor.Agent.Repair`), when the agent restarted mid-batch
+      (`:restart`) or before a request (`:request`)
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
 
@@ -92,6 +96,12 @@ defmodule Visor.Agent.Event do
           | {:prompt_end, %{reason: reason(), steps: non_neg_integer()}}
           | {:compaction,
              %{required(:reason) => :threshold | :manual | :overflow, optional(atom()) => term()}}
+          | {:repair,
+             %{
+               reason: :restart | :request,
+               answered: non_neg_integer(),
+               dropped: non_neg_integer()
+             }}
           | {:status, :idle | :streaming | :tools}
           | {:note, :info | :error, String.t()}
           | {:settings, map()}

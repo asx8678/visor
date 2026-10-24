@@ -272,6 +272,33 @@ defmodule Visor.AgentTest do
     assert %{messages: ^before} = Agent.settings(id)
   end
 
+  test "answers the calls an agent crash left running, and carries on", %{
+    id: id,
+    session: session
+  } do
+    assert :ok = Agent.prompt(id, ">> V.ls()\n>> V.sh(\"sleep 5\")")
+    assert_receive {:agent, {:tool_start, %{id: first}}}, 5_000
+    assert_receive {:agent, {:tool_end, %{id: ^first, status: :ok, result: listing}}}, 5_000
+    assert_receive {:agent, {:tool_start, %{id: second, pid: pid}}} when is_pid(pid), 5_000
+    refute second == first
+
+    agent = agent(id)
+    ref = Process.monitor(agent)
+    Process.exit(agent, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}
+    _ = :sys.get_state(session)
+
+    # The finished call keeps its result; the running one is answered.
+    assert_receive {:agent, {:repair, %{reason: :restart, answered: 2, dropped: 0}}}
+
+    assert [_user, _calls, %{"content" => ^listing}, %{"content" => "Not run: " <> _}] =
+             :sys.get_state(agent(id)).messages
+
+    # The demo model refuses unanswered calls, as DeepSeek does.
+    assert :ok = Agent.prompt(id, "list the files")
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+  end
+
   test "compacts the conversation on request and still recalls what it summarized", %{id: id} do
     first = ask(id, @big)
     ask(id, @big)

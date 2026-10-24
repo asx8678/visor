@@ -10,7 +10,9 @@ live supervision tree beside it. There is no database.
   the agent, a task supervisor for its model and tool calls, and its
   `Visor.Feedback` collector. Closing or reloading the page stops the session.
   The conversation lives in a table the session supervisor owns, so a crash
-  of the agent or the collector doesn't lose it.
+  of the agent or the collector doesn't lose it. A batch the agent was
+  running keeps the results that came in, and the rest are answered as not
+  run (`Visor.Agent.Repair`, which also checks every request's order).
 - Past its threshold (`DEEPSEEK_COMPACT_TOKENS`, by default
   `Visor.Limits.compact_tokens/0` kept under the window) the agent compacts
   the conversation deterministically, after pi-fabric (`Visor.Compaction`):

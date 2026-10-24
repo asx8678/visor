@@ -18,7 +18,7 @@ defmodule Visor.Agent do
   use GenServer
 
   alias Visor.{Compaction, Harness, Limits, Model, Tools, Usage}
-  alias Visor.Agent.Event
+  alias Visor.Agent.{Event, Repair}
   alias Visor.Harness.Session
 
   # Model calls allowed for one prompt. The last runs without tools, so the
@@ -155,6 +155,9 @@ defmodule Visor.Agent do
 
     {:ok, restore(state)}
   end
+
+  @restarted "Not run: the agent restarted before this call finished."
+  @missing "No result: this call's result was missing from the conversation."
 
   @impl true
   def handle_call({:prompt, text}, _from, %{status: :idle} = state) do
@@ -320,7 +323,7 @@ defmodule Visor.Agent do
   end
 
   defp start_turn(state) do
-    state = maybe_compact(state)
+    state = state |> repair(:request, %{}) |> maybe_compact()
     provider = Model.current()
     info = provider.info()
     turn = state.turn + 1
@@ -629,7 +632,9 @@ defmodule Visor.Agent do
 
     state = put_in(state.tools[ref].result, output)
     facts = Map.put(Map.get(state, :facts, %{}), tool.call.id, %{status: status, calls: facts})
-    state = Map.put(state, :facts, facts)
+    # Saved as it comes in, so an agent that crashes later in the batch
+    # still answers this call with its result.
+    state = save(Map.put(state, :facts, facts))
 
     cond do
       Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
@@ -738,7 +743,15 @@ defmodule Visor.Agent do
         messages: state.messages,
         compaction: Map.get(state, :compaction),
         facts: Map.get(state, :facts, %{}),
-        queued: Map.get(state, :queued, [])
+        queued: Map.get(state, :queued, []),
+        # The running batch's results so far, by call id.
+        batch:
+          for(
+            {_ref, %{result: result, call: call}} <- state.tools,
+            result,
+            into: %{},
+            do: {call.id, result}
+          )
       }
 
       :ets.insert(store, {:conversation, conversation})
@@ -748,12 +761,32 @@ defmodule Visor.Agent do
   end
 
   # A restarted agent carries on with the conversation its last run kept.
+  # A batch it was running when it went down is answered: with the
+  # results that had come in, and the rest as not run.
   defp restore(%{store: nil} = state), do: state
 
   defp restore(state) do
     case :ets.lookup(state.store, :conversation) do
-      [{:conversation, conversation}] -> struct(state, conversation)
-      [] -> state
+      [{:conversation, conversation}] ->
+        state
+        |> struct(Map.delete(conversation, :batch))
+        |> repair(:restart, Map.get(conversation, :batch, %{}))
+
+      [] ->
+        state
+    end
+  end
+
+  defp repair(state, reason, results) do
+    missing = if reason == :restart, do: @restarted, else: @missing
+
+    case Repair.messages(state.messages, results, missing) do
+      {_messages, nil} ->
+        state
+
+      {messages, info} ->
+        broadcast(state, {:repair, Map.put(info, :reason, reason)})
+        put_messages(state, messages)
     end
   end
 
