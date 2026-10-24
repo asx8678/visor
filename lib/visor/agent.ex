@@ -1131,12 +1131,9 @@ defmodule Visor.Agent do
     end
   end
 
-  defp script_text(arguments) do
-    case Jason.decode(arguments) do
-      {:ok, %{"code" => code}} when is_binary(code) -> String.trim(code)
-      _other -> arguments
-    end
-  end
+  # The script as it runs, after the argument repairs, as pi-fabric's
+  # fingerprint is taken: a code fence or a list of lines isn't a change.
+  defp script_text(arguments), do: Tools.script(arguments) || arguments
 
   defp repeat_warning(count) do
     "[Visor: this exact script has run #{count} times in a row. At " <>

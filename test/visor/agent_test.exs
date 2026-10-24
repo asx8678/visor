@@ -286,6 +286,13 @@ defmodule Visor.AgentTest do
     assert_received {:agent, {:repeat, %{count: 6, blocked: true}}}
   end
 
+  test "counts a script the same in a code fence or out of one", %{id: id} do
+    fenced = "```elixir\nV.ls()\n```"
+    assert :ok = Agent.prompt(id, Enum.map_join(["V.ls()", fenced, "V.ls()"], "\n", &">> #{&1}"))
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+    assert_received {:agent, {:repeat, %{count: 3, blocked: false}}}
+  end
+
   test "counts only identical scripts back to back", %{id: id} do
     scripts = ["V.ls()", "V.ls()", ~S|V.exists?("lib")|, "V.ls()", "V.ls()"]
     assert :ok = Agent.prompt(id, Enum.map_join(scripts, "\n", &">> #{&1}"))

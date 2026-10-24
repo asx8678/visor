@@ -157,23 +157,27 @@ defmodule Visor.Tools do
 
   def execute(name, _arguments, _context), do: {:error, "Unknown tool #{name}. Use elixir.", []}
 
+  @doc """
+  The script an `elixir` call's `arguments` carry, as `execute/3` would
+  run it after putting its shape right, trimmed; nil when there is none.
+  The agent counts scripts run again unchanged by it.
+  """
+  def script(arguments) do
+    with {:ok, %{} = args} <- Jason.decode(arguments),
+         {%{"code" => code}, _fixes} when is_binary(code) <- repaired(args) do
+      String.trim(code)
+    else
+      _ -> nil
+    end
+  end
+
   # Shapes models give the arguments that have one clear meaning, put
   # right before they are read, after pi-fabric's argument preparation:
   # the script as a list of lines, in a code fence, or under another key
   # as the only one. Each fix is a `repair` event; anything else is left
   # for the error it gets.
   defp repair_arguments(args, context) do
-    {args, fixes} =
-      Enum.reduce(
-        [&code_under_other_key/1, &code_as_lines/1, &code_in_fence/1],
-        {args, []},
-        fn fix, {args, fixes} ->
-          case fix.(args) do
-            {:fixed, args, what} -> {args, fixes ++ [what]}
-            :ok -> {args, fixes}
-          end
-        end
-      )
+    {args, fixes} = repaired(args)
 
     if fixes != [] and context[:session] do
       Visor.Agent.Event.broadcast(
@@ -184,6 +188,19 @@ defmodule Visor.Tools do
     end
 
     args
+  end
+
+  defp repaired(args) do
+    Enum.reduce(
+      [&code_under_other_key/1, &code_as_lines/1, &code_in_fence/1],
+      {args, []},
+      fn fix, {args, fixes} ->
+        case fix.(args) do
+          {:fixed, args, what} -> {args, fixes ++ [what]}
+          :ok -> {args, fixes}
+        end
+      end
+    )
   end
 
   defp code_under_other_key(%{"code" => _} = _args), do: :ok
