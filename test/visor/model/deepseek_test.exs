@@ -245,6 +245,23 @@ defmodule Visor.Model.DeepSeekTest do
       assert :atomics.get(counter, 1) == 2
     end
 
+    test "is sent once more when DeepSeek ended it for want of resources", %{tmp_dir: dir} do
+      counter = serve(dir, [:overloaded, :answer])
+
+      assert {:ok, %{message: %{"content" => "ready"}}} =
+               DeepSeek.stream(@request, fn _ -> :ok end)
+
+      assert :atomics.get(counter, 1) == 2
+
+      # Twice in a row, it is the agent's to report as unfinished.
+      counter = serve(dir, [:overloaded, :overloaded])
+
+      assert {:ok, %{finish_reason: "insufficient_system_resource"}} =
+               DeepSeek.stream(@request, fn _ -> :ok end)
+
+      assert :atomics.get(counter, 1) == 2
+    end
+
     test "ends the call when it stops part way through", %{tmp_dir: dir} do
       counter = serve(dir, [:partial])
 

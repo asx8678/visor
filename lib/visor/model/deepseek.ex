@@ -60,7 +60,9 @@ defmodule Visor.Model.DeepSeek do
   # A response that sends nothing for `stream_idle_ms` has stalled. One
   # that stalls before any of the reply came is sent once more: a model
   # call changes nothing, so trying again is safe. One that stalls part
-  # way through ends the call.
+  # way through ends the call. So does a reply that DeepSeek ended for
+  # want of resources before any of it came (as BeamWeaver counts it a
+  # server error, not an answer).
   defp do_stream(key, request, emit, attempt \\ 1) do
     url = base_url() <> "/chat/completions"
     body = body(request)
@@ -100,7 +102,16 @@ defmodule Visor.Model.DeepSeek do
          )}
 
       result ->
-        handle_result(result, started, emit)
+        case handle_result(result, started, emit) do
+          {:ok, %{finish_reason: "insufficient_system_resource", tool_calls: []} = reply}
+          when attempt == 1 ->
+            if reply.message["content"] in [nil, ""],
+              do: do_stream(key, request, emit, 2),
+              else: {:ok, reply}
+
+          handled ->
+            handled
+        end
     end
   end
 
