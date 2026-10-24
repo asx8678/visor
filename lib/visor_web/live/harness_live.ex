@@ -30,7 +30,7 @@ defmodule VisorWeb.HarnessLive do
   @shown_calls 100
 
   @impl true
-  def mount(_params, session, socket) do
+  def mount(params, session, socket) do
     socket =
       socket
       |> assign(
@@ -69,19 +69,88 @@ defmodule VisorWeb.HarnessLive do
 
     if connected?(socket) do
       Observer.subscribe()
-      {:ok, id} = Harness.start_session(self())
+
+      # A reload names its session in the address (see handle_params/3):
+      # within its grace period the page takes it back.
+      {id, reattached?} =
+        with asked when is_binary(asked) <- params["session"],
+             {:ok, _settings} <- Agent.adopt(asked, self()) do
+          {asked, true}
+        else
+          _ ->
+            {:ok, id} = Harness.start_session(self())
+            {id, false}
+        end
+
       Agent.subscribe(id)
       settings = Agent.settings(id)
 
-      {:ok,
-       assign(socket,
-         session_id: id,
-         settings: Map.take(settings, [:effort, :thinking]),
-         provider: settings.provider
-       )}
+      socket =
+        assign(socket,
+          session_id: id,
+          settings: Map.take(settings, [:effort, :thinking]),
+          provider: settings.provider,
+          context_messages: settings.messages
+        )
+
+      socket = if reattached?, do: show_conversation(socket, id), else: socket
+      # A prompt still running: the rest of it, and its answer, land here.
+      socket = if reattached? and settings.status != :idle, do: start_work(socket), else: socket
+      {:ok, socket}
     else
       {:ok, socket}
     end
+  end
+
+  # The address carries the session, so a reload comes back to it.
+  @impl true
+  def handle_params(params, _uri, socket) do
+    case socket.assigns.session_id do
+      id when is_binary(id) ->
+        if params["session"] == id,
+          do: {:noreply, socket},
+          else: {:noreply, push_patch(socket, to: ~p"/?#{[session: id]}", replace: true)}
+
+      _none ->
+        {:noreply, socket}
+    end
+  end
+
+  # A reattached page shows the conversation's prompts and answers again;
+  # the steps between them were the old page's.
+  defp show_conversation(socket, id) do
+    messages =
+      with store when store != nil <- Visor.Harness.Session.store(id),
+           [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation) do
+        messages
+      else
+        _ -> []
+      end
+
+    socket =
+      Enum.reduce(messages, socket, fn
+        %{"role" => "user", "content" => "[Visor" <> _ = text}, socket ->
+          add_entry(socket, %{type: :wake, text: text})
+
+        %{"role" => "user", "content" => text}, socket when is_binary(text) ->
+          add_entry(socket, %{type: :user, text: text})
+
+        %{"role" => "assistant", "content" => text} = message, socket
+        when is_binary(text) and text != "" ->
+          if message["tool_calls"] in [nil, []],
+            do: add_entry(socket, %{type: :answer, text: text}),
+            else: socket
+
+        _message, socket ->
+          socket
+      end)
+
+    note(
+      socket,
+      :info,
+      "Back in session #{id}, with its #{count(length(messages), "message")}. The steps " <>
+        "before now aren't shown again."
+    )
   end
 
   @impl true
@@ -916,8 +985,9 @@ defmodule VisorWeb.HarnessLive do
               notes: Map.get(run, :notes, [])
           }
 
+        # A call that started before this page (a reattached one) did.
         nil ->
-          entry
+          %{entry | started: now() - (entry.ms || 0)}
       end
 
     socket

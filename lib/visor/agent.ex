@@ -120,7 +120,9 @@ defmodule Visor.Agent do
     # model calls run at low effort without thinking (and on the
     # executor model, when one is set). Armed at each user prompt.
     prewalk: false,
-    prewalk_armed: false
+    prewalk_armed: false,
+    # While the page that owned the session is gone: when it ends.
+    grace_timer: nil
   ]
 
   def start_link(opts) do
@@ -147,6 +149,18 @@ defmodule Visor.Agent do
   calls, or starts the next prompt if the model answers first.
   """
   def prompt(id, text), do: GenServer.call(via(id), {:prompt, text})
+
+  @doc """
+  Makes `owner` (a console page) session `id`'s owner again, within its
+  grace period after the page it had went away. Returns `{:ok, settings}`,
+  or `{:error, :in_use}` while another page owns it, `{:error, :sub_agent}`
+  for a sub-agent's session, `{:error, :gone}` when it has ended.
+  """
+  def adopt(id, owner) do
+    GenServer.call(via(id), {:adopt, owner})
+  catch
+    :exit, _reason -> {:error, :gone}
+  end
 
   @doc "Interrupts the running model call or tools."
   def interrupt(id), do: GenServer.call(via(id), :interrupt)
@@ -343,6 +357,22 @@ defmodule Visor.Agent do
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
 
+  def handle_call({:adopt, owner}, _from, state) do
+    cond do
+      Map.get(state, :depth, 0) > 0 ->
+        {:reply, {:error, :sub_agent}, state}
+
+      state.owner_ref != nil ->
+        {:reply, {:error, :in_use}, state}
+
+      true ->
+        if timer = Map.get(state, :grace_timer), do: Process.cancel_timer(timer)
+        state = Map.merge(state, %{owner_ref: Process.monitor(owner), grace_timer: nil})
+        broadcast(state, {:reattached, %{owner: owner, messages: length(state.messages)}})
+        {:reply, {:ok, public_settings(state)}, state}
+    end
+  end
+
   def handle_call({:carry, change}, _from, state) do
     items = Map.get(state, :carry, [])
 
@@ -445,9 +475,22 @@ defmodule Visor.Agent do
     {:noreply, finish_tool(state, ref, result)}
   end
 
+  # A console's page that closes or reloads leaves its session for
+  # Visor.Limits.session_grace_ms/0, for the page to come back to (see
+  # adopt/2); a sub-agent goes with its job.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = state) do
-    {:stop, :normal, state}
+    grace = Limits.session_grace_ms()
+
+    if Map.get(state, :depth, 0) > 0 or grace == 0 do
+      {:stop, :normal, state}
+    else
+      timer = Process.send_after(self(), :grace_over, grace)
+      {:noreply, Map.merge(state, %{owner_ref: nil, grace_timer: timer})}
+    end
   end
+
+  def handle_info(:grace_over, %{owner_ref: nil} = state), do: {:stop, :normal, state}
+  def handle_info(:grace_over, state), do: {:noreply, state}
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{model_task: %Task{ref: ref}} = state) do
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "crashed"}})

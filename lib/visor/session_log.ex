@@ -16,6 +16,8 @@ defmodule Visor.SessionLog do
       ran, for the model after the running tool calls; `wake`: a prompt
       of the agent's own, the notices of background jobs that ended;
     * `script_run`: a saved script run from the console's `/run`;
+    * `reattached`: a page came back to the session within its grace
+      period (`Visor.Limits.session_grace_ms/0`), with the messages it has;
     * `review`: the advisor's or supervisor's review: what it did
       (`action`), its `message` and token `usage`;
     * `job_start`, `job_end`: a background job, with its command
@@ -191,14 +193,24 @@ defmodule Visor.SessionLog do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{owner_ref: ref} = state) do
     running = running_labels(state)
 
+    grace = Visor.Limits.session_grace_ms()
+    kept? = grace > 0 and Visor.Harness.Session.depth(state.id) == 0
+
     text =
-      if state.status == :idle,
-        do: "The console page closed or reloaded, so the session stops.",
-        else:
+      cond do
+        kept? ->
+          "The console page closed or reloaded; the session is kept for " <>
+            "#{Visor.Format.duration(grace)} for a page to come back to it (#{state.status})."
+
+        state.status == :idle ->
+          "The console page closed or reloaded, so the session stops."
+
+        true ->
           "The console page closed or reloaded while the session was busy (#{state.status}), " <>
             "so the session stops and its work is lost."
+      end
 
-    if state.status != :idle, do: Logger.warning("Session #{state.id}: #{text}")
+    if state.status != :idle and not kept?, do: Logger.warning("Session #{state.id}: #{text}")
 
     if state.pending_start == nil do
       write(state, "owner_down", %{
@@ -409,6 +421,12 @@ defmodule Visor.SessionLog do
   defp record({:compaction, info}, state), do: logged(state, "compaction", info)
 
   defp record({:steer, text}, state), do: logged(state, "steer", %{text: text})
+
+  # A page came back to the session: the log follows its new owner.
+  defp record({:reattached, %{owner: owner} = info}, state) do
+    state = %{state | owner: owner, owner_ref: Process.monitor(owner)}
+    logged(state, "reattached", %{owner: owner, messages: info.messages})
+  end
 
   defp record({:repair, info}, state), do: logged(state, "repair", info)
 

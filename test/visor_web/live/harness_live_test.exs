@@ -231,6 +231,66 @@ defmodule VisorWeb.HarnessLiveTest do
     assert has_element?(view, "#entries", "Stopped job j1.")
   end
 
+  describe "a page that closes or reloads" do
+    setup do
+      Application.put_env(:visor, :session_grace_ms, 1_000)
+      on_exit(fn -> Application.put_env(:visor, :session_grace_ms, 0) end)
+    end
+
+    # Pages closed with no grace left, so their sessions end with them and
+    # the next test's tree doesn't hold them.
+    defp close(views) do
+      Application.put_env(:visor, :session_grace_ms, 0)
+      for view <- views, do: GenServer.stop(view.pid, :normal)
+    end
+
+    test "comes back to its session and conversation within the grace period", %{
+      conn: conn,
+      view: view,
+      id: id
+    } do
+      view |> form("#prompt-form", prompt: %{text: "read mix.exs"}) |> render_submit()
+      assert_receive {:agent, {:prompt_end, _}}, @flow_timeout
+
+      GenServer.stop(view.pid, :normal)
+      {:ok, back, _html} = live(conn, ~p"/?session=#{id}")
+      assert_receive {:agent, {:reattached, %{messages: 4}}}, @flow_timeout
+
+      assert has_element?(back, "#session-id", "session #{id}")
+      assert has_element?(back, "#entries", "read mix.exs")
+      assert has_element?(back, "#entries", "Here is what came back")
+      assert has_element?(back, "#entries", "Back in session #{id}, with its 4 messages.")
+
+      # Another page doesn't take a session a page owns: it gets its own.
+      {:ok, other, _html} = live(conn, ~p"/?session=#{id}")
+      refute has_element?(other, "#session-id", "session #{id}")
+      close([back, other])
+    end
+
+    test "shows the rest of a prompt that was running when it reloaded", %{
+      conn: conn,
+      view: view,
+      id: id
+    } do
+      view |> form("#prompt-form", prompt: %{text: "$ sleep 1"}) |> render_submit()
+      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), @flow_timeout
+
+      GenServer.stop(view.pid, :normal)
+      {:ok, back, _html} = live(conn, ~p"/?session=#{id}")
+      assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+      assert has_element?(back, "#entries", "Here is what came back")
+      close([back])
+    end
+
+    test "ends the session once the grace period is over", %{view: view, id: id} do
+      [{session, _store}] = Registry.lookup(Visor.Harness.Registry, {id, :store})
+      ref = Process.monitor(session)
+      GenServer.stop(view.pid, :normal)
+      refute_receive {:DOWN, ^ref, :process, _pid, _reason}, 500
+      assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 2_000
+    end
+  end
+
   test "handles slash commands", %{view: view} do
     view |> form("#prompt-form", prompt: %{text: "/help"}) |> render_submit()
     assert has_element?(view, "#entries", "/effort low|high|max")

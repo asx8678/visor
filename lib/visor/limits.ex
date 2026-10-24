@@ -68,6 +68,13 @@ defmodule Visor.Limits do
   """
   def job_wake_batch_ms, do: Application.get_env(:visor, :job_wake_batch_ms, 1_000)
 
+  @doc """
+  How long a console's session outlives its page, for a reload to come
+  back to it (0 ends it with the page; the tests set it with
+  `config :visor, session_grace_ms: ms`).
+  """
+  def session_grace_ms, do: Application.get_env(:visor, :session_grace_ms, 5 * 60_000)
+
   @doc "How deep sub-agents may go: 1 lets a console's agent start them, not theirs."
   def agent_depth, do: 1
 

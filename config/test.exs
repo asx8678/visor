@@ -13,6 +13,9 @@ config :visor, model_provider: Visor.Model.Demo, demo_delay_ms: 0
 # Jobs that end within this wake the agent once (see Visor.Limits).
 config :visor, job_wake_batch_ms: 100
 
+# A session ends with its page, unless a test gives it a grace period.
+config :visor, session_grace_ms: 0
+
 # Tests that check session logs pass their own directory.
 config :visor, session_log_dir: false, server_log_dir: false
 

@@ -8,7 +8,10 @@ live supervision tree beside it. There is no database.
 
 - `Visor.Harness` supervises one `Visor.Harness.Session` per console page:
   the agent, a task supervisor for its model and tool calls, and its
-  `Visor.Feedback` collector. Closing or reloading the page stops the session.
+  `Visor.Feedback` collector. Closing or reloading the page leaves the
+  session for `Visor.Limits.session_grace_ms/0` (5 min): a reload, whose
+  address names the session, takes it back (`Visor.Agent.adopt/2`); after
+  that it stops.
   The conversation lives in a table the session supervisor owns, so a crash
   of the agent or the collector doesn't lose it. A batch the agent was
   running keeps the results that came in, and the rest are answered as not

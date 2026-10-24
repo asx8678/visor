@@ -206,28 +206,11 @@ defmodule Mix.Tasks.Visor.Log do
       else: timeline(file, opts)
   end
 
-  # A request put back together: its own line has the messages the one
-  # before it didn't, and the tools when they changed.
   defp request(events, turn) do
-    requests = for %{"event" => "request"} = event <- events, do: event
-
-    # After an agent crash, turns count from 1 again; the latest wins.
-    last =
-      Enum.find_index(Enum.reverse(requests), &(&1["turn"] == turn)) ||
-        Mix.raise("No request for model call #{turn} in this log.")
-
-    requests = Enum.take(requests, length(requests) - last)
-
-    messages =
-      Enum.reduce(requests, [], fn r, messages ->
-        Enum.take(messages, r["messages_from"]) ++ r["messages"]
-      end)
-
-    tools =
-      requests |> Enum.reverse() |> Enum.find_value(&if(is_list(&1["tools"]), do: &1["tools"]))
-
-    body = Map.put(List.last(requests)["params"], "messages", messages)
-    if tools, do: Map.put(body, "tools", tools), else: body
+    case Visor.SessionLog.Reader.request(events, turn) do
+      {:ok, body} -> body
+      {:error, message} -> Mix.raise(message)
+    end
   end
 
   defp find(files, id) do
@@ -331,16 +314,7 @@ defmodule Mix.Tasks.Visor.Log do
     end
   end
 
-  defp read(file) do
-    file
-    |> File.stream!()
-    |> Enum.flat_map(fn line ->
-      case Jason.decode(line) do
-        {:ok, event} -> [event]
-        {:error, _} -> [%{"event" => "unreadable", "line" => line}]
-      end
-    end)
-  end
+  defp read(file), do: Visor.SessionLog.Reader.read(file)
 
   defp describe(%{"event" => "start"} = e, _opts) do
     parent = if e["parent"], do: ", a sub-agent of #{e["parent"]}", else: ""
@@ -498,6 +472,9 @@ defmodule Mix.Tasks.Visor.Log do
   defp describe(%{"event" => "steer"} = e, _opts), do: ["steer   #{e["text"]}"]
 
   defp describe(%{"event" => "wake"} = e, _opts), do: ["wake    #{e["text"]}"]
+
+  defp describe(%{"event" => "reattached"} = e, _opts),
+    do: ["PAGE    a page came back to the session (#{count(e["messages"], "message")})"]
 
   defp describe(%{"event" => "script_run"} = e, opts),
     do: ["run     #{e["name"]} (#{e["status"]})" | preview(e["text"], opts)]

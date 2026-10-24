@@ -108,6 +108,19 @@ defmodule Visor.SessionLogTest do
   end
 
   @tag :capture_log
+  test "says a closed page's session is kept, with a grace period", %{tmp_dir: dir} do
+    Application.put_env(:visor, :session_grace_ms, 60_000)
+    on_exit(fn -> Application.put_env(:visor, :session_grace_ms, 0) end)
+    %{id: id, owner: owner, log: log, path: path} = start_log(dir)
+
+    broadcast(id, {:status, :idle})
+    stop(owner)
+    sync(log)
+
+    assert %{"text" => text} = find(events(path), "owner_down")
+    assert text =~ "the session is kept for 1 min 0 s for a page to come back to it"
+  end
+
   test "says when the page went away in the middle of a prompt", %{tmp_dir: dir} do
     %{id: id, owner: owner, session: session, log: log, path: path} = start_log(dir)
     tool = waiting()
