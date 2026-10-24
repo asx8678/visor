@@ -306,6 +306,14 @@ defmodule VisorWeb.HarnessLiveTest do
     assert has_element?(view, "#entries", "/resume needs a session's id.")
   end
 
+  test "tells the page a prompt ended, for a notification when its tab is hidden",
+       %{view: view} do
+    assert has_element?(view, "#prompt-notify[phx-hook]")
+    view |> form("#prompt-form", prompt: %{text: "list the files"}) |> render_submit()
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, @flow_timeout
+    assert_push_event(view, "prompt_done", %{reason: :answered, steps: 2})
+  end
+
   test "turns the reviewer and prewalk on and off", %{view: view, id: id} do
     submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
 

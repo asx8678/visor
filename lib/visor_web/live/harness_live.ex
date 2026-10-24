@@ -420,6 +420,7 @@ defmodule VisorWeb.HarnessLive do
       />
 
       <div id="client-layout" phx-hook=".ClientLayout" hidden></div>
+      <div id="prompt-notify" phx-hook=".Notify" hidden></div>
 
       <.hooks />
     </Layouts.app>
@@ -467,6 +468,28 @@ defmodule VisorWeb.HarnessLive do
         },
         destroyed() {
           window.removeEventListener("resize", this.onResize)
+        }
+      }
+    </script>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".Notify">
+      // A prompt that ends while the tab is hidden shows a notification,
+      // as Vibe's notify plugin does in the terminal. Permission is asked
+      // once, when the first prompt is sent: a click the browser accepts.
+      export default {
+        mounted() {
+          const supported = "Notification" in window
+          this.ask = () => {
+            if (supported && Notification.permission === "default") Notification.requestPermission()
+          }
+          const form = document.getElementById("prompt-form")
+          if (form) form.addEventListener("submit", this.ask, {once: true})
+
+          this.handleEvent("prompt_done", ({reason, steps}) => {
+            if (!supported || !document.hidden || Notification.permission !== "granted") return
+            const how = reason === "answered" ? "answered" : `ended: ${reason.replace("_", " ")}`
+            new Notification("Visor", {body: `The prompt ${how}, after ${steps} model calls.`})
+          })
         }
       }
     </script>
@@ -1049,6 +1072,8 @@ defmodule VisorWeb.HarnessLive do
   end
 
   defp agent_event({:prompt_end, %{reason: reason} = info}, socket) do
+    socket = push_event(socket, "prompt_done", %{reason: reason, steps: Map.get(info, :steps, 0)})
+
     socket =
       case info do
         %{unchecked: [_ | _] = paths} ->
