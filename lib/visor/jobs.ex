@@ -446,9 +446,29 @@ defmodule Visor.Jobs do
     File.chmod!(job.log, 0o600)
     Process.put(:job_tail, "")
     Process.put(:job_flushed, now())
+    Process.put(:job_logged, 0)
+    max = Limits.job_log_bytes()
 
     on_data = fn data ->
-      IO.binwrite(file, data)
+      # The file stops at its limit, once saying so; the tail goes on.
+      case Process.get(:job_logged) do
+        logged when logged + byte_size(data) <= max ->
+          IO.binwrite(file, data)
+          Process.put(:job_logged, logged + byte_size(data))
+
+        logged when logged <= max ->
+          IO.binwrite(file, [
+            binary_part(data, 0, max - logged),
+            "\n[Visor: the log stops here, at #{Format.number(max)} bytes. The job goes on; " <>
+              "the end of its output is in V.job(\"#{job.id}\").]\n"
+          ])
+
+          Process.put(:job_logged, max + 1)
+
+        _past_the_limit ->
+          :ok
+      end
+
       tail = keep_tail(Process.get(:job_tail) <> data)
       Process.put(:job_tail, tail)
 

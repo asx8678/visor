@@ -148,6 +148,26 @@ defmodule Visor.JobsTest do
     assert notices =~ "[Visor supervisor: go on]"
   end
 
+  # The log took every byte a job printed, so one that prints without end
+  # (`yes`) filled the disk until its hour was up. pi-fabric stops at 8 MiB.
+  test "stops a job's log at its limit, and keeps the end of its output", %{id: id} do
+    Application.put_env(:visor, :job_log_bytes, 1_000)
+    on_exit(fn -> Application.delete_env(:visor, :job_log_bytes) end)
+
+    run(id, ~S[V.sh("head -c 5000 /dev/zero | tr '\\0' x; echo; echo the-end", background: true)])
+    assert_receive {:agent, {:job_end, %{id: "j1", status: :exited} = job}}, 5_000
+
+    log = File.read!(job.log)
+
+    assert String.starts_with?(
+             log,
+             String.duplicate("x", 1_000) <> "\n[Visor: the log stops here"
+           )
+
+    assert byte_size(log) < 1_200
+    assert job.tail =~ ~r/x+\nthe-end\n\z/
+  end
+
   test "lists a started job in the script's result, and reads its whole output", %{id: id} do
     text = run(id, ~S|V.sh("printf 'a\\nb\\nc\\n'", background: true); :ok|)
     assert text =~ "started: j1, printf 'a\\nb\\nc\\n' (in the background)"

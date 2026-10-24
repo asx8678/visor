@@ -57,6 +57,13 @@ defmodule Visor.Limits do
   def job_tail_bytes, do: 8_000
 
   @doc """
+  The most of a job's output its log file keeps, as pi-fabric's 8 MiB, so
+  a job that prints without end can't fill the disk (shorter in the
+  tests, `config :visor, job_log_bytes: n`).
+  """
+  def job_log_bytes, do: Application.get_env(:visor, :job_log_bytes, 8_000_000)
+
+  @doc """
   Times jobs ending may start the agent on their own (a wake) between two
   prompts from the user.
   """
