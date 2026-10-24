@@ -314,8 +314,11 @@ defmodule Visor.AgentTest do
     # The finished call keeps its result; the running one is answered.
     assert_receive {:agent, {:repair, %{reason: :restart, answered: 2, dropped: 0}}}
 
-    assert [_user, _calls, %{"content" => ^listing}, %{"content" => "Not run: " <> _}] =
+    # Its command goes on after the restart, so it isn't said not to have run.
+    assert [_user, _calls, %{"content" => ^listing}, %{"content" => restarted}] =
              :sys.get_state(agent(id)).messages
+
+    assert restarted =~ "No result: the agent restarted before this call finished. It may"
 
     # The demo model refuses unanswered calls, as DeepSeek does.
     assert :ok = Agent.prompt(id, "list the files")
@@ -513,6 +516,8 @@ defmodule Visor.AgentTest do
 
     lines = [
       %{event: "start", session: "old111"},
+      # A call from before the log's last compaction: not in its requests.
+      %{event: "tool_end", id: "c0", status: "ok", result: "ok: 1 call\n=> the old listing"},
       %{event: "request", turn: 1, messages_from: 0, messages: first, params: %{}, tools: []},
       %{event: "tool_end", id: "c1", status: "ok"},
       %{event: "code_call", call_id: "c1", n: 1, name: "ls", text: "ls()", status: "ok"},
@@ -532,6 +537,11 @@ defmodule Visor.AgentTest do
     assert List.last(state.messages) == %{"role" => "assistant", "content" => "Here they are."}
     assert state.carry == ["keep the old API"]
     assert %{"c1" => %{status: :ok, calls: [%{name: :ls}]}} = state.facts
+
+    # The summary it starts with names calls whose results are only in the
+    # log; recall found none of them.
+    assert {:ok, "ok: 1 call\n=> the old listing"} = Agent.recall(id, "c0")
+    assert {:ok, "ok: 1 call"} = Agent.recall(id, "c1")
 
     # The demo model refuses a conversation out of order, as DeepSeek does.
     ask(id, "list the files")

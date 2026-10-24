@@ -226,13 +226,28 @@ defmodule Visor.Agent do
   def recall(nil, _call_id), do: {:error, "No conversation is kept outside a session."}
 
   def recall(id, call_id) do
-    with store when store != nil <- Session.store(id),
-         [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation),
-         %{"content" => content} <-
-           Enum.find(messages, &(&1["role"] == "tool" and &1["tool_call_id"] == call_id)) do
-      {:ok, content}
-    else
+    store = Session.store(id)
+
+    case store && (kept_result(store, call_id) || resumed_result(store, call_id)) do
+      content when is_binary(content) -> {:ok, content}
       _ -> {:error, "There is no tool result #{call_id} in this conversation."}
+    end
+  end
+
+  defp kept_result(store, call_id) do
+    with [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation),
+         %{"content" => content} <-
+           Enum.find(messages, &(&1["role"] == "tool" and &1["tool_call_id"] == call_id)),
+         do: content,
+         else: (_ -> nil)
+  end
+
+  # A resumed conversation starts with the summary its log's last request
+  # had, whose calls' results are in that log, not in the messages.
+  defp resumed_result(store, call_id) do
+    case :ets.lookup(store, :resumed_results) do
+      [{:resumed_results, results}] -> results[call_id]
+      [] -> nil
     end
   end
 
@@ -257,7 +272,10 @@ defmodule Visor.Agent do
     {:ok, restore(state)}
   end
 
-  @restarted "Not run: the agent restarted before this call finished."
+  # The call may have run: its task outlives the agent, so a command it
+  # started can finish after the restart (pi-fabric says "aborted").
+  @restarted "No result: the agent restarted before this call finished. It may not have " <>
+               "run, or run in part or in full: check before running it again."
   @missing "No result: this call's result was missing from the conversation."
 
   @impl true
@@ -319,6 +337,7 @@ defmodule Visor.Agent do
 
   def handle_call(:reset, _from, %{status: :idle} = state) do
     broadcast(state, {:context, 0})
+    if state.store, do: :ets.delete(state.store, :resumed_results)
 
     state =
       state
@@ -390,6 +409,7 @@ defmodule Visor.Agent do
         })
         |> put_messages(messages)
 
+      if state.store, do: :ets.insert(state.store, {:resumed_results, logged_results(events)})
       broadcast(state, {:context, length(messages)})
       broadcast(state, {:resumed, %{from: from, messages: length(messages)}})
       {:reply, {:ok, length(messages)}, state}
@@ -1232,6 +1252,14 @@ defmodule Visor.Agent do
 
   # What a log's scripts did, as the facts compaction sums up, by tool
   # call id: each call's status, and its V calls as they ended.
+  # Each call's result as the model saw it, for V.recall/1 after a resume.
+  defp logged_results(events) do
+    for %{"event" => "tool_end", "id" => id, "result" => result} <- events,
+        is_binary(result),
+        into: %{},
+        do: {id, result}
+  end
+
   defp logged_facts(events) do
     statuses =
       for %{"event" => "tool_end", "id" => id, "status" => s} <- events, into: %{}, do: {id, s}
@@ -1402,7 +1430,7 @@ defmodule Visor.Agent do
 
   # A restarted agent carries on with the conversation its last run kept.
   # A batch it was running when it went down is answered: with the
-  # results that had come in, and the rest as not run.
+  # results that had come in, and the rest as having none (@restarted).
   defp restore(%{store: nil} = state), do: state
 
   defp restore(state) do

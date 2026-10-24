@@ -14,8 +14,9 @@ live supervision tree beside it. There is no database.
   that it stops.
   The conversation lives in a table the session supervisor owns, so a crash
   of the agent or the collector doesn't lose it. A batch the agent was
-  running keeps the results that came in, and the rest are answered as not
-  run (`Visor.Agent.Repair`, which also checks every request's order).
+  running keeps the results that came in, and the rest are answered as
+  having no result, since a call's command can go on and finish after the
+  restart (`Visor.Agent.Repair`, which also checks every request's order).
 - Past its threshold (`DEEPSEEK_COMPACT_TOKENS`, by default
   `Visor.Limits.compact_tokens/0` kept under the window) the agent compacts
   the conversation deterministically, after pi-fabric (`Visor.Compaction`):
