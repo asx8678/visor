@@ -69,7 +69,10 @@ defmodule Visor.Feedback.Script do
 
     cond do
       failed ->
-        "failed at call #{failed.n}: V.#{failed.text}\n" <> indent(failed.error)
+        hint = Hint.for_call(failed.name, failed.error)
+
+        "failed at call #{failed.n}: V.#{failed.text}\n" <>
+          indent(failed.error) <> if(hint, do: "\nhint: " <> hint, else: "")
 
       stop && match?(%{status: :running}, last) ->
         "#{stop} while call #{last.n} was running: V.#{last.text}"

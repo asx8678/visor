@@ -40,9 +40,32 @@ defmodule Visor.Feedback.Hint do
 
       match = Regex.run(~r/no function clause matching in V\.([\w?!]+)\/\d+/, message) ->
         [_, name] = match
+        signatures = signatures(name)
 
-        "the arguments don't fit #{signatures(name)}: paths, patterns, commands and " <>
-          "contents are strings."
+        # V.wait("j2", 180) for timeout: 180, in a live run.
+        options =
+          if signatures =~ "opts", do: ", and options are keywords, such as timeout: 60", else: ""
+
+        "the arguments don't fit #{signatures}: paths, patterns, commands and contents are " <>
+          "strings#{options}."
+
+      # A project's own module, called as if the script ran in its app.
+      match =
+          Regex.run(
+            ~r/function ((?:[A-Z]\w*\.)*[A-Z]\w*)\.[\w?!]+\/\d+ is undefined \(module \1 is not available\)/,
+            message
+          ) ->
+        [_, module] = match
+
+        if module != "V" do
+          "#{module} isn't loaded in a script's sandbox, which runs apart from the project: " <>
+            ~s|run the project's code with V.sh("mix run -e '...'"), or in its running app | <>
+            ~s|with V.tidewave("project_eval", %{code: "..."}).|
+        end
+
+      message =~ "not a valid pattern" ->
+        "String.contains?/2, starts_with?/2 and ends_with?/2 take a string or a list of " <>
+          "strings, not a ~r//: for a regex, use =~ or Regex.match?/2."
 
       match = Regex.run(~r/undefined variable "(\w+)"/, message) ->
         [_, name] = match
@@ -62,6 +85,29 @@ defmodule Visor.Feedback.Hint do
         nil
     end
   end
+
+  @doc """
+  The hint for a `V` call that failed, from its name and its error, or
+  nil: a write outside the project (scripts reached for /tmp in both live
+  runs), and a `V.history` ref given to `V.recall`.
+  """
+  @spec for_call(atom(), String.t()) :: String.t() | nil
+  def for_call(name, error) when is_binary(error) do
+    cond do
+      name in [:write, :edit] and error =~ "is outside the project folder" ->
+        "V writes only inside the project: put a scratch file there, such as tmp/probe.exs, " <>
+          "and remove it when done."
+
+      name == :recall and error =~ ~r/There is no tool result \w+:\d+ / ->
+        "a SESSION:LINE ref comes from V.history and is read with V.history_entry(ref); " <>
+          "V.recall takes a tool call's id from a summary."
+
+      true ->
+        nil
+    end
+  end
+
+  def for_call(_name, _error), do: nil
 
   @doc """
   The hint for a script that failed before its first V call, from its
@@ -95,6 +141,12 @@ defmodule Visor.Feedback.Hint do
       quoted?(code) ->
         ~s|the script came as one quoted string, its quotes escaped (\\"): send the code | <>
           "itself, with its quotes as they are."
+
+      # V.agent(:x) rescue _ -> :skip, in a live run.
+      type == :parsing and message =~ "syntax error before: rescue" ->
+        "Elixir has no `expression rescue value`, and scripts can't use try: a failing V " <>
+          "call stops the script with its error, so check first instead, such as " <>
+          "V.exists?(path)."
 
       # A heredoc sigil (~S\"""...) can't end on its delimiter's character.
       type == :parsing and code =~ ~r/~[a-zA-Z]+(?:[|\/(\[{<]|"(?!"")|'(?!''))/ ->

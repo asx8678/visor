@@ -186,6 +186,16 @@ defmodule Visor.CodeTest do
     refute text =~ "hint:"
   end
 
+  test "hints at a V call that failed where another call would have worked" do
+    assert {:error, text} = Code.run(~S|V.write("/tmp/visor-hint.txt", "x")|, %{})
+    assert text =~ "outside the project folder.\nhint: V writes only inside the project"
+
+    error = "There is no tool result 9b9290:87 in this conversation."
+    assert Visor.Feedback.Hint.for_call(:recall, error) =~ "read with V.history_entry(ref)"
+    # Reading outside the project needs no more than its error.
+    assert Visor.Feedback.Hint.for_call(:read, "/etc/x is outside the project folder.") == nil
+  end
+
   # The 3D watch's live session lost 5 of its first prompt's 24 calls to
   # these, writing JavaScript into scripts; each is cut from its script.
   test "hints at the ways a script gets a file's text wrong" do
@@ -228,7 +238,12 @@ defmodule Visor.CodeTest do
       ~S|System.cmd("ls", [])| => "use V.sh(command).",
       ~S|File.stat("x")| => "only through V, which has ",
       ~S|import Enum; map([1], & &1)| => "write a module's full name",
-      ~S|try do 1 rescue _ -> 2 end| => "check first, such as V.exists?(path)"
+      ~S|try do 1 rescue _ -> 2 end| => "check first, such as V.exists?(path)",
+      # From the scenario run's live sessions:
+      ~S|x = V.read("a.txt") rescue nil| => "Elixir has no `expression rescue value`",
+      ~S|Ledger.new()| => "Ledger isn't loaded in a script's sandbox",
+      ~S|V.wait("j1", 180)| => "options are keywords, such as timeout: 60",
+      ~S|String.contains?("abc", ~r/b/)| => "for a regex, use =~ or Regex.match?/2"
     }
 
     for {script, hint} <- hints do
