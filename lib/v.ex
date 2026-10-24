@@ -294,6 +294,29 @@ defmodule V do
   end
 
   @doc """
+  Calls a tool of the project's running app through Tidewave (`plug
+  Tidewave` in its Phoenix endpoint): `V.tidewave("project_eval", %{code:
+  "MyApp.Repo.aggregate(MyApp.User, :count)"})` evaluates in the app,
+  `"get_logs"` (`%{tail: 50}`) reads its log, and `V.tidewave()` lists
+  the tools. The code runs in the app, not here (`Visor.Tidewave`).
+  Returns the tool's text.
+  """
+  def tidewave do
+    track(:tidewave, [], fn ->
+      with :ok <- not_read_only("V.tidewave"), do: Visor.Tidewave.tools()
+    end)
+  end
+
+  def tidewave(tool, arguments \\ %{}) when is_binary(tool) and is_map(arguments) do
+    track(:tidewave, [tool, arguments], fn ->
+      timeout = max(min(Code.time_left() || 60_000, 60_000) - 1_000, 1_000)
+
+      with :ok <- not_read_only("V.tidewave"),
+           do: Visor.Tidewave.call(tool, arguments, timeout)
+    end)
+  end
+
+  @doc """
   Sets a timer: in `seconds` (up to a day) you hear `note` back, as you
   hear of a job that ends, and an idle agent wakes for it. Returns
   `%{job: id}` at once; `V.stop(id)` cancels it. For something to look at

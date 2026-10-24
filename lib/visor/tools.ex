@@ -63,6 +63,9 @@ defmodule Visor.Tools do
                                           project (V.memories(), V.forget(note))
             V.goal()                      the supervisor's goal, if the user set one; V.goal(:done)
                                           asks it to review now
+            V.tidewave(tool, args)        the running Phoenix app's Tidewave tools: "project_eval"
+                                          (%{code: ...}, runs in the app), "get_logs" (%{tail: n}),
+                                          "execute_sql_query"; V.tidewave() lists them
             V.agent(task, seed: :snippet, role: text)
                                           start a sub-agent with a fresh context on a task, as a
                                           job; you hear its answer when it is done

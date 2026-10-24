@@ -86,6 +86,9 @@ live supervision tree beside it. There is no database.
 - `V.save`/`V.run` keep and rerun scripts in the project's `.visor/scripts/`
   (`Visor.Scripts`), checked against their SHA-256; tools can't write
   `.visor/` and walks skip it. `/run name` runs one without the model.
+- `V.tidewave(tool, args)` calls the running Phoenix app's Tidewave tools
+  (`project_eval`, `get_logs`, ...) over its `/tidewave/mcp` endpoint
+  (`VISOR_TIDEWAVE_URL`): the code runs in the app, never in Visor's VM.
 - A message's content may be a list of parts when it carries pictures
   (`Visor.Content`; read and extend content through it): `V.image(path)`
   sends one with the next model call, counted as `Visor.Limits.image_tokens/0`.
