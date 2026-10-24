@@ -261,7 +261,6 @@ defmodule Visor.Code.Allowlist do
       :jobs,
       :stop,
       :wait,
-      :schedule,
       :remember,
       :memories,
       :forget,

@@ -54,9 +54,7 @@ defmodule Visor.Tools do
             V.sh(command, background: true)
                                           start a command as a background job (a long build, a
                                           server); returns %{job: id, log: path} at once. You hear
-                                          when it ends, so don't poll it; wake_on: "text" also
-                                          tells you of the first line with it (server ready)
-            V.schedule(seconds, note)     hear note back in seconds, to look at something later
+                                          when it ends, so don't poll it
             V.image(path)                 look at a picture in the project (PNG, JPEG, GIF, WebP):
                                           it comes with your next model call
             V.remember(note)              keep a short note for every later session on this

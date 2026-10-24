@@ -167,18 +167,12 @@ defmodule V do
 
     timeout =
       opts
-      |> asked_timeout(Limits.job_timeout_ms(), [:timeout, :background, :wake_on])
+      |> asked_timeout(Limits.job_timeout_ms(), [:timeout, :background])
       |> min(Limits.max_job_timeout_ms())
-
-    wake_on = Keyword.get(opts, :wake_on)
-
-    unless is_nil(wake_on) or (is_binary(wake_on) and wake_on != "") or is_struct(wake_on, Regex) do
-      raise Error, "wake_on: is the text (or a ~r// regex) of a line to wake you at."
-    end
 
     track(:sh, [command, opts], fn ->
       with :ok <- not_read_only("V.sh"),
-           {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout, wake_on)) do
+           {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout)) do
         {:ok, %{job: job.id, log: job.log}, %{started: job.id}}
       end
     end)
@@ -313,21 +307,6 @@ defmodule V do
 
       with :ok <- not_read_only("V.tidewave"),
            do: Visor.Tidewave.call(tool, arguments, timeout)
-    end)
-  end
-
-  @doc """
-  Sets a timer: in `seconds` (up to a day) you hear `note` back, as you
-  hear of a job that ends, and an idle agent wakes for it. Returns
-  `%{job: id}` at once; `V.stop(id)` cancels it. For something to look at
-  again later, such as a deploy or a CI run, rather than waiting on it.
-  """
-  def schedule(seconds, note)
-      when is_number(seconds) and seconds > 0 and seconds <= 86_400 and is_binary(note) do
-    track(:schedule, [seconds, note], fn ->
-      with {:ok, job} <- with_jobs(&Jobs.start_timer(&1, round(seconds * 1000), note)) do
-        {:ok, %{job: job.id}, %{started: job.id}}
-      end
     end)
   end
 
@@ -1042,7 +1021,6 @@ defmodule V do
   end
 
   defp option_text(:timeout), do: "timeout: (seconds)"
-  defp option_text(:wake_on), do: "wake_on: \"text\""
   defp option_text(name), do: "#{name}: true"
 
   defp job_session do

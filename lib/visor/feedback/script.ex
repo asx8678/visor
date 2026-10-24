@@ -142,13 +142,8 @@ defmodule Visor.Feedback.Script do
 
   defp started(calls) do
     for %{status: :ok, started: job} = call <- calls do
-      case call do
-        %{name: :schedule, args: [seconds, note | _]} ->
-          "started: #{job}, a timer for #{seconds} s: #{one_line(note)}"
-
-        %{args: [command | _]} ->
-          "started: #{job}, #{one_line(command)} (in the background)"
-      end
+      [command | _] = call.args
+      "started: #{job}, #{one_line(command)} (in the background)"
     end
   end
 
