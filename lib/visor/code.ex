@@ -236,6 +236,7 @@ defmodule Visor.Code.Allowlist do
       :grep,
       :docs,
       :source,
+      :calls,
       :write,
       :edit,
       :sh,

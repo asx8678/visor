@@ -37,6 +37,9 @@ defmodule Visor.Tools do
                                           the project's compiled code (the versions it uses)
             V.source("Mod.fun")           where it is defined, %{file, line}; "dep:name" for
                                           a dependency's folder
+            V.calls("Mod.fun/2", path \\\\ "lib")
+                                          where it is called, from the parsed code: aliases,
+                                          imports, pipes and captures count; %{file, line, text}
             V.write(path, contents)       write a file, creating folders; returns :ok
             V.edit(path, old, new)        replace the one occurrence of old; returns :ok
             V.sh(command, timeout: s)     run a shell command (timeout optional, default

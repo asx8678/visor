@@ -64,6 +64,15 @@ defmodule V do
     do: track(:source, [ref], fn -> Visor.Docs.source(ref) end)
 
   @doc """
+  Where a function is called (`"Visor.Agent.prompt/2"`, `"Mod.fun"` for
+  any arity) in the Elixir files under `path`: `%{file, line, text}`,
+  found in the parsed code, so aliases, imports, pipes and captures
+  count and comments and strings don't.
+  """
+  def calls(ref, path \\ "lib") when is_binary(ref) and is_binary(path),
+    do: track(:calls, [ref, path], fn -> Visor.Calls.find(ref, path) end)
+
+  @doc """
   Lines matching a regular expression, given as a string or a `~r` regex,
   as `%{file: path, line: n, text: line}`.
   """
@@ -508,7 +517,7 @@ defmodule V do
     track(:history_entry, [ref], fn -> Visor.History.entry(ref) end)
   end
 
-  @parallel ~w(ls glob exists? read grep docs source sh output recall job jobs history history_entry)a
+  @parallel ~w(ls glob exists? read grep docs source calls sh output recall job jobs history history_entry)a
 
   @doc """
   Runs several read-only calls at once, given as data: `V.all([{:sh,

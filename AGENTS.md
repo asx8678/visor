@@ -85,7 +85,9 @@ live supervision tree beside it. There is no database.
   `.visor/` and walks skip it. `/run name` runs one without the model.
 - The rest of `V` a script has, each in `lib/v.ex`: `V.docs`/`V.source`
   (docs, signatures and file:line read from the project's compiled `.beam`
-  files, never loaded; `Visor.Docs`), `V.all` (read-only calls at once), `V.carry`/`V.compact`/`V.context` (what every summary
+  files, never loaded; `Visor.Docs`), `V.calls` (call sites from the parsed
+  code, aliases and imports followed; `Visor.Calls`), `V.all` (read-only
+  calls at once), `V.carry`/`V.compact`/`V.context` (what every summary
   keeps, a compaction of what came before once the prompt has ended, how
   full the context is),
   `V.think` (the model's own effort for the rest of a prompt), `V.note`
