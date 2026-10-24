@@ -133,7 +133,7 @@ defmodule Visor.Limits do
   @doc "Identical scripts in a row from which each result carries a warning."
   def repeat_warn, do: 3
 
-  @doc "Identical scripts in a row at which the next one isn't run."
+  @doc "Identical scripts in a row at which the last of them isn't run: the 6th is refused."
   def repeat_block, do: 6
 
   ## How the conversation is compacted (see `Visor.Compaction`)
