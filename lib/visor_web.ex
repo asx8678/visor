@@ -50,9 +50,6 @@ defmodule VisorWeb do
 
   defp html_helpers do
     quote do
-      # Translation
-      use Gettext, backend: VisorWeb.Gettext
-
       # HTML escaping functionality
       import Phoenix.HTML
       # How numbers, counts and times read

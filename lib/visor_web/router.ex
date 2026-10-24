@@ -17,15 +17,4 @@ defmodule VisorWeb.Router do
       live "/", HarnessLive
     end
   end
-
-  # Enable LiveDashboard in development
-  if Application.compile_env(:visor, :dev_routes) do
-    import Phoenix.LiveDashboard.Router
-
-    scope "/dev" do
-      pipe_through :browser
-
-      live_dashboard "/dashboard", metrics: VisorWeb.Telemetry
-    end
-  end
 end

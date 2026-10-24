@@ -19,6 +19,16 @@ config :visor, VisorWeb.Endpoint,
     tailwind: {Tailwind, :install_and_run, [:visor, ~w(--watch)]}
   ]
 
+# Live reload, and with it hot-loading, needs file events. Linux gets them
+# from inotify-tools; without it, poll the folders the live reload watches
+# (see config/runtime.exs), as many of them as exist yet.
+if :os.type() == {:unix, :linux} and System.find_executable("inotifywait") == nil do
+  config :phoenix_live_reload,
+    backend: :fs_poll,
+    backend_opts: [interval: 500],
+    dirs: Enum.filter(["lib", "priv/static/assets"], &File.dir?/1)
+end
+
 # ## SSL Support
 #
 # In order to use HTTPS in development, a self-signed
@@ -41,9 +51,6 @@ config :visor, VisorWeb.Endpoint,
 # If desired, both `http:` and `https:` keys can be
 # configured to run both http and https servers on
 # different ports.
-
-# Enable dev routes for the dashboard
-config :visor, dev_routes: true
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

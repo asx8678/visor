@@ -30,7 +30,7 @@ if config_env() == :dev do
       web_console_logger: true,
       # Changed Elixir code is compiled and hot-loaded into the running VM,
       # and open LiveViews re-render in place with their state.
-      notify: [live_view: [~r"lib/.*\.(ex|heex)$"E, ~r"priv/gettext/.*\.po$"E]],
+      notify: [live_view: [~r"lib/.*\.(ex|heex)$"E]],
       # Visor's own stylesheet is swapped in place. New JavaScript waits
       # for the next page load.
       patterns: [~r"priv/static/assets/.*\.css$"E]

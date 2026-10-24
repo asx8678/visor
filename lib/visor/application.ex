@@ -11,7 +11,6 @@ defmodule Visor.Application do
     Visor.ServerLog.install()
 
     children = [
-      VisorWeb.Telemetry,
       {Phoenix.PubSub, name: Visor.PubSub},
       # Session logs outlive their sessions' last moments, so they stop last.
       {DynamicSupervisor, name: Visor.SessionLogs, strategy: :one_for_one},
