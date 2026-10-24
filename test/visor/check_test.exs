@@ -323,6 +323,15 @@ defmodule Visor.CheckTest do
              fixed: "adds" (DemoTest)
              => :ok\
              """
+
+      # The passing check of the whole project covered the change; a check
+      # of a test path covers only the files under it.
+      assert Feedback.unverified(context.session, ["lib/demo.ex"]) == []
+      assert {:ok, _} = Code.run(~S|V.edit("lib/demo.ex", "a + b", "b + a")|, context)
+      assert Feedback.unverified(context.session, ["lib/demo.ex"]) == ["lib/demo.ex"]
+      assert {:ok, scoped} = Code.run(~S|V.check("test/demo_test.exs").status|, context)
+      assert scoped =~ "=> :ok"
+      assert Feedback.unverified(context.session, ["lib/demo.ex"]) == ["lib/demo.ex"]
     end
   end
 

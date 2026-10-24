@@ -1048,7 +1048,20 @@ defmodule VisorWeb.HarnessLive do
     end
   end
 
-  defp agent_event({:prompt_end, %{reason: reason}}, socket) do
+  defp agent_event({:prompt_end, %{reason: reason} = info}, socket) do
+    socket =
+      case info do
+        %{unchecked: [_ | _] = paths} ->
+          note(
+            socket,
+            :info,
+            "No passing check covered #{Enum.join(paths, ", ")} after this prompt's changes."
+          )
+
+        _checked ->
+          socket
+      end
+
     status =
       case reason do
         :answered -> :done

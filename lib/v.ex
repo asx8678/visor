@@ -184,9 +184,11 @@ defmodule V do
         # What mix test saw of the changed files (see change/2).
         Feedback.saw(session, stats)
         previous = Feedback.record_check(session, path, check)
-        # An attempt that puts its files back puts this record back too.
+        # An attempt that puts its files back puts this record back too,
+        # and a check passes on its files only if the attempt keeps them.
         if Process.get(:visor_attempt_check),
-          do: Process.put(:visor_attempt_check, {path, previous})
+          do: Process.put(:visor_attempt_check, {path, previous}),
+          else: if(check.status == :ok, do: Feedback.verified(session, path))
 
         ref = if check.status != :ok, do: Feedback.keep(session, output)
         summary = Check.render(check, previous, changed, ref)
@@ -615,6 +617,7 @@ defmodule V do
       case checked do
         {:ok, %{status: :ok} = check} ->
           Process.delete(:visor_attempt_check)
+          Feedback.verified(session(), path)
           {:ok, %{status: :kept, check: check, files: files}}
 
         {:ok, check} ->

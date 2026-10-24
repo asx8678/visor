@@ -33,7 +33,10 @@ defmodule Visor.Agent.Event do
       call and the result the model saw. A batch's calls run one at a
       time; one cancelled before its turn starts with a nil `pid` and
       ends straight away
-    * `{:prompt_end, %{reason, steps}}`: the prompt ended and why
+    * `{:prompt_end, %{reason, steps}}`: the prompt ended and why; when it
+      answered or ran out of steps with Elixir files it changed that no
+      passing check has covered since, also `unchecked`, their paths (the
+      model is reminded once before it answers, see `Visor.Feedback`)
     * `{:compaction, %{turn, reason, summarized, kept, tokens_before,
       tokens_after, summary_bytes, messages_before, messages_after}}`: the
       first `summarized` messages became a summary (see
@@ -131,7 +134,12 @@ defmodule Visor.Agent.Event do
              }}
           | {:tool_start, tool_call()}
           | {:tool_end, tool_call()}
-          | {:prompt_end, %{reason: reason(), steps: non_neg_integer()}}
+          | {:prompt_end,
+             %{
+               required(:reason) => reason(),
+               required(:steps) => non_neg_integer(),
+               optional(:unchecked) => [String.t()]
+             }}
           | {:compaction,
              %{
                required(:reason) => :threshold | :manual | :overflow | :requested,

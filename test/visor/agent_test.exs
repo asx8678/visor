@@ -555,6 +555,39 @@ defmodule Visor.AgentTest do
     assert {:error, "There is no session log for nope."} = Agent.resume(id, "nope")
   end
 
+  # BeamAgent's verifier catches a run that claims success without the
+  # tools it needed; here, an answer after a change no check passed on.
+  @tag :tmp_dir
+  test "reminds the model once to check what it changed, then marks the answer unchecked",
+       %{id: id, tmp_dir: dir} do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+    File.write!(Path.join(dir, "mix.exs"), "")
+
+    assert :ok = Agent.prompt(id, ~S|> V.write("lib/a.ex", "defmodule A do\nend\n")|)
+
+    assert_receive {:agent,
+                    {:note, :info, "Visor asked the model to check lib/a.ex before it answers."}},
+                   5_000
+
+    assert_receive {:agent, {:prompt_end, %{reason: :answered, unchecked: ["lib/a.ex"]}}}, 5_000
+
+    reminders =
+      for %{"role" => "user", "content" => text} <- :sys.get_state(agent(id)).messages,
+          text =~ "[Visor: lib/a.ex changed in this prompt",
+          do: text
+
+    assert length(reminders) == 1
+
+    # A doc's change needs no check, and a prompt that changed nothing gets
+    # no reminder for an earlier one's.
+    assert :ok = Agent.prompt(id, ~S|> V.write("NOTES.md", "x")|)
+    assert_receive {:agent, {:prompt_end, info}}, 5_000
+    refute Map.has_key?(info, :unchecked)
+    refute_received {:agent, {:note, :info, "Visor asked the model" <> _}}
+  end
+
   # The model never saw the project's own instructions.
   @tag :tmp_dir
   test "carries the project's AGENTS.md or CLAUDE.md in the system prompt, cut to a size",

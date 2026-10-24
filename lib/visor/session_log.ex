@@ -39,7 +39,8 @@ defmodule Visor.SessionLog do
       the value it returned (`returned`); `script_note`: a progress note a
       script showed (`V.note/1`); `script_end`: the script's whole
       output and value before they were cut for the model;
-    * `prompt_end`: how a prompt ended (`reason`) and what it used: model
+    * `prompt_end`: how a prompt ended (`reason`, and `unchecked`, the
+      files it changed that no passing check covered) and what it used: model
       calls, tool and `V` calls, errors, tokens, time; `summary`: the same
       for the whole session, before its last line;
     * `compaction`: the conversation's first `summarized` messages became
@@ -324,11 +325,14 @@ defmodule Visor.SessionLog do
   end
 
   # Writes the running prompt's totals and how it ended.
-  defp end_prompt(%{prompt: nil} = state, _reason, _steps), do: state
+  defp end_prompt(state, reason, steps, unchecked \\ nil)
 
-  defp end_prompt(state, reason, steps) do
+  defp end_prompt(%{prompt: nil} = state, _reason, _steps, _unchecked), do: state
+
+  defp end_prompt(state, reason, steps, unchecked) do
     %{n: n, started: started, totals: totals} = state.prompt
     fields = %{prompt: n, reason: reason, steps: steps, ms: now() - started}
+    fields = if unchecked, do: Map.put(fields, :unchecked, unchecked), else: fields
     write(state, "prompt_end", Map.merge(Totals.to_map(totals), fields))
     %{state | prompt: nil, endings: Map.update(state.endings, to_string(reason), 1, &(&1 + 1))}
   end
@@ -485,7 +489,7 @@ defmodule Visor.SessionLog do
     do: logged(state, "script_end", Map.put(info, :call_id, call_id))
 
   defp record({:prompt_end, info}, state),
-    do: end_prompt(state, info.reason, Map.get(info, :steps))
+    do: end_prompt(state, info.reason, Map.get(info, :steps), Map.get(info, :unchecked))
 
   defp record(event, state), do: logged(state, "event", %{term: event})
 

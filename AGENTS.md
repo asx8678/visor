@@ -76,6 +76,11 @@ live supervision tree beside it. There is no database.
   (a progress note for the user only), `V.history` (earlier sessions on
   this project, from their logs), and `timeout:` on the tool, `V.sh` and
   `V.check`. The console adds `/prewalk`, `/resume ID` and `/jobs`.
+- When the model answers with Elixir files the prompt changed that no
+  passing check has covered since (`Visor.Feedback.unverified/2`: a whole
+  project's check covers every file, a test path's only its own), it is
+  reminded once to run `V.check`; otherwise `prompt_end` lists them as
+  `unchecked`.
 - The agent refuses the 6th identical script in a row and warns from the
   3rd; a failed script's error ends with a hint when the mistake is known
   (`Visor.Feedback.Hint`); `mix visor.log stats` counts V calls scripts

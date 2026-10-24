@@ -379,7 +379,16 @@ defmodule Mix.Tasks.Visor.Log do
   end
 
   defp describe(%{"event" => "prompt_end"} = e, _opts) do
-    ["done    prompt #{e["prompt"]} #{reason(e)} after #{seconds(e["ms"])}", totals(e)]
+    unchecked =
+      case e["unchecked"] do
+        [_ | _] = paths -> ", unchecked: #{Enum.join(paths, ", ")}"
+        _ -> ""
+      end
+
+    [
+      "done    prompt #{e["prompt"]} #{reason(e)} after #{seconds(e["ms"])}#{unchecked}",
+      totals(e)
+    ]
   end
 
   defp describe(%{"event" => "summary"} = e, _opts) do

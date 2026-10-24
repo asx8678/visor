@@ -10,6 +10,8 @@ defmodule Visor.Feedback do
       a change Mix would miss can be made visible (see `V`)
     * the last check for each scope, so the next one can say what it
       fixed and what it broke
+    * what a passing check covered, so the agent can tell which changed
+      files no check has passed on since (`unverified/2`)
 
   It is deterministic: the same text always gets the same ref, and
   nothing depends on timing. Every function also works without a session
@@ -56,6 +58,19 @@ defmodule Visor.Feedback do
   whole project) and returns the previous check for that scope.
   """
   def record_check(session, scope, check), do: call(session, {:check, scope, check}, nil)
+
+  @doc """
+  Records that a check of `scope` passed on the files it covers, as Mix
+  saw them at the check: a whole project's check (nil) covers every file
+  the session changed, a test path's only the files under it.
+  """
+  def verified(session, scope), do: call(session, {:verified, scope}, :ok)
+
+  @doc """
+  Of the project `paths`, those no passing check has covered since they
+  last changed; a file that is gone counts as covered.
+  """
+  def unverified(session, paths), do: call(session, {:unverified, paths}, [])
 
   defp call(nil, _message, default), do: default
 
@@ -119,9 +134,40 @@ defmodule Visor.Feedback do
     {:reply, state.checks[scope], put_in(state.checks[scope], check)}
   end
 
+  def handle_call({:verified, scope}, _from, state) do
+    covered =
+      for path <- state.changed, covers?(scope, path), into: %{}, do: {path, state.seen[path]}
+
+    {:reply, :ok, Map.put(state, :verified, Map.merge(Map.get(state, :verified, %{}), covered))}
+  end
+
+  def handle_call({:unverified, paths}, _from, state) do
+    verified = Map.get(state, :verified, %{})
+    root = Visor.Workspace.root()
+
+    unverified =
+      Enum.reject(paths, fn path ->
+        case File.stat(Path.join(root, path), time: :posix) do
+          {:ok, %{mtime: mtime, size: size}} -> verified[path] == {mtime, size}
+          {:error, _gone} -> true
+        end
+      end)
+
+    {:reply, unverified, state}
+  end
+
   @impl true
   def handle_cast({:saw, stats}, state) do
     {:noreply, %{state | seen: Map.merge(state.seen, stats)}}
+  end
+
+  # A test path such as "test/a_test.exs:12" or "test/visor" covers the
+  # files under it; the whole project's check covers all.
+  defp covers?(nil, _path), do: true
+
+  defp covers?(scope, path) do
+    scope = String.replace(scope, ~r/:\d+\z/, "")
+    path == scope or String.starts_with?(path, String.trim_trailing(scope, "/") <> "/")
   end
 
   defp put_ref(state, ref, hash, text) do

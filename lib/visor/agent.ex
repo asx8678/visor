@@ -634,7 +634,9 @@ defmodule Visor.Agent do
       repeat: nil,
       wakes: 0,
       wakes_held: false,
-      prewalk_armed: Map.get(state, :prewalk, false)
+      prewalk_armed: Map.get(state, :prewalk, false),
+      prompt_changed: MapSet.new(),
+      nudged: false
     })
     |> start_turn()
   end
@@ -651,7 +653,9 @@ defmodule Visor.Agent do
       steps: 0,
       overflowed: false,
       repeat: nil,
-      wakes: Map.get(state, :wakes, 0) + 1
+      wakes: Map.get(state, :wakes, 0) + 1,
+      prompt_changed: MapSet.new(),
+      nudged: false
     })
     |> start_turn()
   end
@@ -792,7 +796,7 @@ defmodule Visor.Agent do
           state |> append(result.message) |> finish(:step_limit)
 
         {"stop", _calls} ->
-          state |> append(result.message) |> finish(:answered)
+          state |> append(result.message) |> answered()
 
         {"length", _calls} ->
           note(
@@ -1181,10 +1185,16 @@ defmodule Visor.Agent do
     script_facts = facts[tool.call.id].calls
     reverted = for %{reverted: paths} <- script_facts, path <- paths, do: path
 
-    changed? =
-      Enum.any?(script_facts, &(Map.has_key?(&1, :changed) and &1.changed not in reverted))
+    changed = for %{changed: path} <- script_facts, path not in reverted, do: path
+    state = if changed != [], do: prewalk(state), else: state
 
-    state = if changed?, do: prewalk(state), else: state
+    state =
+      Map.update(
+        state,
+        :prompt_changed,
+        MapSet.new(changed),
+        &MapSet.union(&1, MapSet.new(changed))
+      )
 
     cond do
       Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
@@ -1536,8 +1546,64 @@ defmodule Visor.Agent do
   # sent while it ran and the model never saw is the next prompt, unless
   # the user stopped this one or the model call failed, which the next
   # would likely do too.
+  # The model answered. Files the prompt changed that no passing check
+  # has covered since get it one reminder while two calls are left (one
+  # to check, one to answer), as BeamAgent's verifier catches a run that
+  # claims success without the tools it needed; otherwise the prompt ends
+  # with them as `unchecked`.
+  defp answered(state) do
+    unchecked = unchecked(state)
+
+    if unchecked != [] and not Map.get(state, :nudged, false) and
+         state.steps <= max_steps(state) - 2 do
+      note(
+        state,
+        :info,
+        "Visor asked the model to check #{paths_text(unchecked)} before it answers."
+      )
+
+      state
+      |> Map.put(:nudged, true)
+      |> push_user(
+        "[Visor: #{paths_text(unchecked)} changed in this prompt, and no passing check has " <>
+          "covered #{if length(unchecked) == 1, do: "it", else: "them"} since. Run V.check() " <>
+          "before you answer, or say in a line why it isn't needed.]"
+      )
+      |> start_turn()
+    else
+      finish(state, :answered)
+    end
+  end
+
+  # Elixir files this prompt changed that no passing check has covered
+  # since (see Visor.Feedback.unverified/2), in a project V.check can check.
+  defp unchecked(state) do
+    changed =
+      state
+      |> Map.get(:prompt_changed, MapSet.new())
+      |> Enum.filter(&(Path.extname(&1) in ~w(.ex .exs .heex .eex .leex)))
+
+    if changed != [] and match?({:ok, true}, Tools.exists("mix.exs")),
+      do: Visor.Feedback.unverified(state.id, Enum.sort(changed)),
+      else: []
+  end
+
+  defp paths_text(paths) do
+    {shown, rest} = Enum.split(paths, 4)
+    more = if rest == [], do: "", else: " and #{length(rest)} more"
+    Enum.join(shown, ", ") <> more
+  end
+
   defp finish(state, reason) do
-    broadcast(state, {:prompt_end, %{reason: reason, steps: state.steps}})
+    info = %{reason: reason, steps: state.steps}
+
+    info =
+      case reason in [:answered, :step_limit] and unchecked(state) do
+        [_ | _] = unchecked -> Map.put(info, :unchecked, unchecked)
+        _checked -> info
+      end
+
+    broadcast(state, {:prompt_end, info})
     state = set_status(state, :idle)
 
     # The model's own effort and thinking last no longer than its prompt.
