@@ -60,10 +60,21 @@ defmodule Visor.Workspace do
     end
   end
 
-  # What Visor keeps in the project, such as saved scripts (Visor.Scripts).
+  # What Visor keeps in the project, such as saved scripts (Visor.Scripts):
+  # under its own name or where a link leads.
   defp visor_file?(full) do
-    visor = Path.join(Path.expand(root()), ".visor")
-    full == visor or String.starts_with?(full, visor <> "/")
+    root = Path.expand(root())
+
+    under_visor?(full, root) or
+      case {real(root), real(full)} do
+        {{:ok, real_root}, {:ok, real}} -> under_visor?(real, real_root)
+        _loop -> false
+      end
+  end
+
+  defp under_visor?(path, root) do
+    visor = Path.join(root, ".visor")
+    path == visor or String.starts_with?(path, visor <> "/")
   end
 
   @doc "Whether `full` is a secrets file, under its own name or the one a link leads to."
