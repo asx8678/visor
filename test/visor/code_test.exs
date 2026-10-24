@@ -112,6 +112,35 @@ defmodule Visor.CodeTest do
     assert Code.timeout_ms("300") == 120_000
   end
 
+  test "saves a script and runs it again with its input", %{tmp_dir: tmp_dir} do
+    save = ~S|V.save("count-defs", "length(V.grep(\"def \", input))", "defs under a path")|
+    assert {:ok, text} = Code.run(save, %{})
+    assert text =~ ~s(name: "count-defs")
+
+    assert {:ok, text} = Code.run(~S|V.run("count-defs", "lib")|, %{})
+    assert text =~ "=> 2"
+    assert {:ok, text} = Code.run(~S|Enum.map(V.scripts(), & &1.name)|, %{})
+    assert text =~ ~s(=> ["count-defs"])
+
+    # Not run from inside a saved script, and not if changed by hand.
+    Code.run(~S|V.save("again", "V.run(\"count-defs\", \"lib\")")|, %{})
+    assert {:error, text} = Code.run(~S|V.run("again")|, %{})
+    assert text =~ "Saved script again can't run another."
+
+    file = Path.join(tmp_dir, ".visor/scripts/count-defs.json")
+    File.write!(file, String.replace(File.read!(file), "def ", "defp "))
+    assert {:error, text} = Code.run(~S|V.run("count-defs", "lib")|, %{})
+    assert text =~ "doesn't match its digest"
+
+    # Scripts reach the folder only through V.save.
+    assert {:error, text} = Code.run(~S|V.write(".visor/scripts/x.json", "{}")|, %{})
+    assert text =~ "is in Visor's own folder"
+    assert {:ok, text} = Code.run(~S|V.glob("**/*.json")|, %{})
+    assert text =~ "=> []"
+    assert {:error, text} = Code.run(~S|V.save("Bad Name", "1")|, %{})
+    assert text =~ "A script's name is 1 to 64 lowercase"
+  end
+
   test "runs read-only calls at once, each reported as its own call" do
     script = ~S"""
     V.all([{:sh, "sleep 1; echo a"}, {:sh, "sleep 1; echo b"}, {:sh, ["sleep 1; echo c"]}])

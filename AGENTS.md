@@ -43,6 +43,9 @@ live supervision tree beside it. There is no database.
 - `V.attempt(fn -> edits end, check: path)` keeps edits only if the check
   passes, and otherwise puts every file back through the same locked write
   path; attempts don't nest and can't start background jobs.
+- `V.save`/`V.run` keep and rerun scripts in the project's `.visor/scripts/`
+  (`Visor.Scripts`), checked against their SHA-256; tools can't write
+  `.visor/` and walks skip it. `/run name` runs one without the model.
 - Several pages may work on one project. `Visor.Lock` makes a file's
   writes and edits, and the project's checks, run one at a time across
   sessions.

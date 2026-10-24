@@ -13,7 +13,7 @@ defmodule Visor.Tools do
 
   alias Visor.{Format, Limits, Workspace}
 
-  @skip_dirs ~w(.git _build deps node_modules .elixir_ls)
+  @skip_dirs ~w(.git _build deps node_modules .elixir_ls .visor)
   @skip_paths ~w(priv/static/assets)
 
   @doc "Tool definitions in OpenAI function format."
@@ -67,6 +67,10 @@ defmodule Visor.Tools do
                                           make the edits, check (the tests at path, or all), and
                                           put every file back if the check fails; returns
                                           %{status: :kept | :reverted, check: result, files: [...]}
+            V.save(name, code, description)
+                                          keep a script to run again; V.run(name, input) runs
+                                          it, with `input` bound, and returns its value;
+                                          V.scripts() lists them
             V.note(text)                  a progress note for the user, under this step; you
                                           don't see it in the result
             V.think(:off | :low | :high | :max, turns: n)

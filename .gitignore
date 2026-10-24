@@ -40,3 +40,6 @@ npm-debug.log
 
 # Session logs (see Visor.SessionLog); they hold whatever the agent read.
 /log/
+
+# What Visor keeps in a project it works on, such as saved scripts.
+/.visor/

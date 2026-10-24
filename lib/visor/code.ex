@@ -53,6 +53,17 @@ defmodule Visor.Code do
   `context[:timeout_ms]` is the script's time limit (see `timeout_ms/1`).
   """
   def execute(code, context) do
+    {result, calls} = evaluate(code, context)
+    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
+    {status, text, calls}
+  end
+
+  @doc """
+  Runs a script and returns Dune's result and the script's V calls, for a
+  caller that wants the value itself (`V.run/2`). It sets the context in
+  the calling process, so a caller that has its own puts it back.
+  """
+  def evaluate(code, context) do
     timeout = Map.get(context, :timeout_ms) || Visor.Limits.script_timeout_ms()
     # The script records its V calls here rather than in this process's
     # mailbox, which Dune waits in: a script can make thousands. Its
@@ -62,9 +73,7 @@ defmodule Visor.Code do
     Process.put(__MODULE__, Map.merge(context, %{calls: table, deadline: deadline}))
     result = Dune.eval_string(@begin <> code, Keyword.put(@opts, :timeout, timeout))
     log_script(context, result)
-    calls = calls(table)
-    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
-    {status, text, calls}
+    {result, calls(table)}
   end
 
   @doc """
@@ -205,6 +214,9 @@ defmodule Visor.Code.Allowlist do
       :attempt,
       :all,
       :note,
+      :save,
+      :run,
+      :scripts,
       :beam_stats
     ]
 

@@ -231,6 +231,66 @@ defmodule V do
     :ok
   end
 
+  @doc """
+  Saves `code` as a script named `name` (lowercase letters, digits, dots,
+  dashes and underscores), to run again with `run/2` or the console's
+  `/run name`. Saving the same name again replaces it.
+  """
+  def save(name, code, description \\ "")
+      when is_binary(name) and is_binary(code) and is_binary(description) do
+    track(:save, [name], fn ->
+      with {:ok, script} <- Visor.Scripts.save(name, code, description) do
+        {:ok, %{name: script.name, digest: String.slice(script.digest, 0, 12)}}
+      end
+    end)
+  end
+
+  @doc "The saved scripts: their names, descriptions and digests."
+  def scripts do
+    track(:scripts, [], fn ->
+      {:ok, for(s <- Visor.Scripts.list(), do: Map.take(s, [:name, :description, :digest]))}
+    end)
+  end
+
+  @doc """
+  Runs saved script `name`, with `input` bound to the variable `input`,
+  and returns its value. It runs within this script's time, and its V
+  calls count as its own; a saved script can't run another.
+  """
+  def run(name, input \\ nil) when is_binary(name) do
+    track(:run, [name | if(input == nil, do: [], else: [input])], fn ->
+      context = Process.get(Code)
+
+      with :ok <- not_nested(context),
+           {:ok, script} <- Visor.Scripts.get(name) do
+        left = Code.time_left() || Limits.script_timeout_ms()
+
+        inner =
+          Map.merge(context || %{}, %{
+            saved: name,
+            call_id: "#{context[:call_id]}/#{name}",
+            timeout_ms: max(left - 2_000, 1_000)
+          })
+
+        code =
+          "input = #{inspect(input, limit: :infinity, printable_limit: :infinity)}\n" <>
+            script.code
+
+        {result, _calls} = Code.evaluate(code, inner)
+        # Code.evaluate/2 set its own context here.
+        Process.put(Code, context)
+
+        case result do
+          %Dune.Success{value: value} -> {:ok, value, %{ran_script: name}}
+          failure -> {:error, "Saved script #{name} failed: " <> failure.message}
+        end
+      end
+    end)
+  end
+
+  defp not_nested(%{saved: outer}), do: {:error, "Saved script #{outer} can't run another."}
+  defp not_nested(_context), do: :ok
+
   @parallel ~w(ls glob exists? read grep sh output recall job jobs)a
 
   @doc """

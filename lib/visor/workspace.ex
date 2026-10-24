@@ -48,9 +48,22 @@ defmodule Visor.Workspace do
 
   @doc "`:ok` if a tool may change `full`, which the model named `path`."
   def writable(full, path) do
-    if secret_file?(full),
-      do: {:error, "#{path} holds secrets and can't be changed."},
-      else: :ok
+    cond do
+      secret_file?(full) ->
+        {:error, "#{path} holds secrets and can't be changed."}
+
+      visor_file?(full) ->
+        {:error, "#{path} is in Visor's own folder, .visor; save a script with V.save."}
+
+      true ->
+        :ok
+    end
+  end
+
+  # What Visor keeps in the project, such as saved scripts (Visor.Scripts).
+  defp visor_file?(full) do
+    visor = Path.join(Path.expand(root()), ".visor")
+    full == visor or String.starts_with?(full, visor <> "/")
   end
 
   @doc "Whether `full` is a secrets file, under its own name or the one a link leads to."

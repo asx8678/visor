@@ -602,6 +602,35 @@ defmodule VisorWeb.HarnessLive do
     end
   end
 
+  defp run_command(socket, "scripts", _args) do
+    case Visor.Scripts.list() do
+      [] ->
+        note(socket, :info, "No saved scripts yet. A script saves one with V.save(name, code).")
+
+      scripts ->
+        lines = Enum.map_join(scripts, "\n", &"#{&1.name}  #{&1.description}")
+        note(socket, :info, "Saved scripts (run one with /run name):\n" <> lines)
+    end
+  end
+
+  # A saved script runs without the model, as a script of its own under
+  # the session; its result comes back as a note.
+  defp run_command(socket, "run", [name | _]) do
+    id = socket.assigns.session_id
+    context = %{session: id, call_id: "run-#{System.unique_integer([:positive])}"}
+
+    Harness.async(Harness.via({id, :tasks}), "run #{name}", fn ->
+      {status, text, _calls} = Visor.Code.execute("V.run(#{inspect(name)})", context)
+      {:script_run, name, status, text}
+    end)
+
+    note(socket, :info, "Running saved script #{name}…")
+  end
+
+  defp run_command(socket, "run", []) do
+    note(socket, :error, "/run needs a saved script's name. /scripts lists them.")
+  end
+
   defp run_command(socket, "jobs", []) do
     case Jobs.list(socket.assigns.session_id) do
       [] ->
@@ -671,6 +700,14 @@ defmodule VisorWeb.HarnessLive do
       events -> {:noreply, stream(socket, :events, events, limit: -@log_limit)}
     end
   end
+
+  def handle_info({ref, {:script_run, name, status, text}}, socket) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    level = if status == :ok, do: :info, else: :error
+    {:noreply, note(socket, level, "Saved script #{name}:\n" <> text)}
+  end
+
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:noreply, socket}
 
   def handle_info({:agent, event}, socket),
     do: {:noreply, socket |> tally(event) |> show_log() |> then(&agent_event(event, &1))}
