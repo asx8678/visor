@@ -144,10 +144,7 @@ defmodule Visor.Observer do
     # Trace anything in the tree not traced yet (processes started before
     # the observer, or after a restart of the tree).
     live = MapSet.new(live_nodes, & &1.pid)
-
-    for pid <- MapSet.difference(live, state.traced) do
-      :trace.process(state.session, pid, true, [:procs, :set_on_spawn])
-    end
+    trace(state.session, MapSet.difference(live, state.traced))
 
     # A process's age runs from its spawn. One that started before the
     # observer, or under a supervisor it doesn't trace, has none.
@@ -232,6 +229,21 @@ defmodule Visor.Observer do
     end)
   catch
     :exit, _ -> []
+  end
+
+  @doc false
+  # Traces processes the walk found. One that ended since (a V.all task, a
+  # sandbox) can't be traced, and is a ghost by the next sample.
+  def trace(session, pids) do
+    for pid <- pids do
+      try do
+        :trace.process(session, pid, true, [:procs, :set_on_spawn])
+      rescue
+        ArgumentError -> 0
+      end
+    end
+
+    :ok
   end
 
   @doc false
