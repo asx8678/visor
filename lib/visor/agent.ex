@@ -139,6 +139,13 @@ defmodule Visor.Agent do
   def job_ended(id, job_id), do: GenServer.cast(via(id), {:job_ended, job_id})
 
   @doc """
+  Gives session `id`'s agent a running job's notice (a line its output
+  matched): the model gets it as it gets a job's end, and an idle agent
+  wakes for it when jobs may wake it.
+  """
+  def job_notice(id, text), do: GenServer.cast(via(id), {:job_notice, text})
+
+  @doc """
   Gives session `id`'s agent a reviewer's message (`Visor.Reviewer`): the
   model gets it after the running tool calls or with the next prompt.
   With `wake: true` it may also start a prompt when the agent is idle,
@@ -556,6 +563,15 @@ defmodule Visor.Agent do
 
   def handle_cast({:spent, cost, tokens}, state), do: {:noreply, spend(state, cost, tokens)}
 
+  def handle_cast({:job_notice, text}, state) do
+    state =
+      state
+      |> Map.update(:pending_texts, [text], &(&1 ++ [text]))
+      |> Map.put(:job_texts, true)
+
+    {:noreply, schedule_wake(state)}
+  end
+
   def handle_cast({:job_ended, job_id}, state) do
     pending = Map.get(state, :pending_jobs, [])
     pending = if job_id in pending, do: pending, else: pending ++ [job_id]
@@ -710,7 +726,7 @@ defmodule Visor.Agent do
 
     texts = Map.get(state, :pending_texts, [])
 
-    {Map.merge(state, %{pending_jobs: [], pending_texts: [], wake_texts: false}),
+    {Map.merge(state, %{pending_jobs: [], pending_texts: [], wake_texts: false, job_texts: false}),
      notices ++ texts}
   end
 
@@ -725,7 +741,9 @@ defmodule Visor.Agent do
 
   # Jobs that end close together wake the agent once.
   defp schedule_wake(state) do
-    waiting? = Map.get(state, :pending_jobs, []) != [] or Map.get(state, :wake_texts, false)
+    waiting? =
+      Map.get(state, :pending_jobs, []) != [] or Map.get(state, :job_texts, false) or
+        Map.get(state, :wake_texts, false)
 
     if state.status == :idle and waiting? and can_wake?(state) and
          Map.get(state, :wake_timer) == nil do

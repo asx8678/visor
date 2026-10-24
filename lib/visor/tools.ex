@@ -54,7 +54,9 @@ defmodule Visor.Tools do
             V.sh(command, background: true)
                                           start a command as a background job (a long build, a
                                           server); returns %{job: id, log: path} at once. You hear
-                                          when it ends, so don't poll it
+                                          when it ends, so don't poll it; wake_on: "text" also
+                                          tells you of the first line with it (server ready)
+            V.schedule(seconds, note)     hear note back in seconds, to look at something later
             V.agent(task, seed: :snippet, role: text)
                                           start a sub-agent with a fresh context on a task, as a
                                           job; you hear its answer when it is done

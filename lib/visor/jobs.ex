@@ -49,8 +49,17 @@ defmodule Visor.Jobs do
   end
 
   @doc "Starts `command` as a job of session `session`. Returns `{:ok, job}`."
-  def start_shell(session, command, timeout_ms) do
-    GenServer.call(Harness.via({session, :jobs}), {:start, :shell, command, timeout_ms})
+  def start_shell(session, command, timeout_ms, wake_on \\ nil) do
+    GenServer.call(Harness.via({session, :jobs}), {:start, :shell, command, timeout_ms, wake_on})
+  end
+
+  @doc """
+  Starts a timer (see `V.schedule/2`): a job that ends after `ms` with
+  `note` as its output, whose notice wakes the agent as any job's does,
+  after Jido's scheduled signals. Returns `{:ok, job}` or `{:error, message}`.
+  """
+  def start_timer(session, ms, note) do
+    GenServer.call(Harness.via({session, :jobs}), {:start, :timer, ms, note})
   end
 
   @doc """
@@ -153,6 +162,11 @@ defmodule Visor.Jobs do
       ~s|V.output("#{job.id}") has its whole answer.]|
   end
 
+  def notice(%{kind: :timer} = job) do
+    how = if job.status == :exited, do: "went off", else: "#{job.status}"
+    "[Visor: timer #{job.id} (#{label(job)}) #{how} after #{Format.duration(job.ms)}.]"
+  end
+
   def notice(job) do
     how =
       case job.status do
@@ -250,8 +264,22 @@ defmodule Visor.Jobs do
     end
   end
 
-  def handle_call({:start, :shell, command, timeout_ms}, from, state) do
-    start(state, from, :shell, command, timeout_ms, &run_shell/2)
+  def handle_call({:start, :shell, command, timeout_ms, wake_on}, from, state) do
+    start(
+      state,
+      from,
+      :shell,
+      command,
+      timeout_ms,
+      &run_shell(&1, Map.put(&2, :wake_on, wake_on))
+    )
+  end
+
+  def handle_call({:start, :timer, ms, note}, from, state) do
+    # The timer goes off before its job's own time limit would stop it.
+    start(state, from, :timer, note, ms + 60_000, fn session, job ->
+      run_timer(session, job, ms)
+    end)
   end
 
   def handle_call({:stop, job_id}, _from, state), do: stop_job(state, job_id)
@@ -455,6 +483,8 @@ defmodule Visor.Jobs do
     Process.put(:job_logged, 0)
     max = Limits.job_log_bytes()
 
+    Process.put(:job_watching, Map.get(job, :wake_on))
+
     on_data = fn data ->
       # The file stops at its limit, once saying so; the tail goes on.
       case Process.get(:job_logged) do
@@ -477,6 +507,7 @@ defmodule Visor.Jobs do
 
       tail = keep_tail(Process.get(:job_tail) <> data)
       Process.put(:job_tail, tail)
+      watch(session, job, tail)
 
       # The record's tail follows, a few times a second at most.
       if now() - Process.get(:job_flushed) >= 250 do
@@ -505,6 +536,50 @@ defmodule Visor.Jobs do
           ms: now() - record.started,
           tail: Process.get(:job_tail)
       }
+    end)
+
+    GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
+  end
+
+  # The first line of a job's output that matches its wake_on, after
+  # Jido's sensors: the agent hears of it while the job runs on.
+  defp watch(session, job, tail) do
+    with pattern when pattern != nil <- Process.get(:job_watching),
+         line when is_binary(line) <- matching_line(tail, pattern) do
+      Process.put(:job_watching, nil)
+      update(session, job.id, &Map.put(&1, :matched, line))
+
+      Visor.Agent.job_notice(
+        session,
+        "[Visor: background job #{job.id} (#{label(job)}) printed a line matching " <>
+          "#{inspect(pattern_text(pattern))}: #{String.slice(line, 0, 300)}. It is still " <>
+          "running; V.job(\"#{job.id}\") shows the end of its output.]"
+      )
+    end
+  end
+
+  defp matching_line(tail, pattern) do
+    tail
+    |> String.split("\n")
+    |> Enum.find(fn line ->
+      if is_binary(pattern),
+        do: String.contains?(line, pattern),
+        else: Regex.match?(pattern, line)
+    end)
+  end
+
+  defp pattern_text(%Regex{source: source}), do: "~r/" <> source <> "/"
+  defp pattern_text(text), do: text
+
+  defp run_timer(session, job, ms) do
+    Process.set_label("job #{job.id}")
+    Process.sleep(ms)
+    File.mkdir_p!(Path.dirname(job.log))
+    File.write!(job.log, job.label)
+    File.chmod!(job.log, 0o600)
+
+    update(session, job.id, fn record ->
+      Map.merge(record, %{status: :exited, exit: 0, ms: now() - record.started, tail: job.label})
     end)
 
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})

@@ -148,6 +148,33 @@ defmodule Visor.JobsTest do
     assert notices =~ "[Visor supervisor: go on]"
   end
 
+  # Jido's sensors turn outside events into signals: here a job's output
+  # wakes the agent as it comes, not only when the job ends.
+  test "wakes the agent at the first line that matches wake_on, while the job runs", %{id: id} do
+    script = ~S"""
+    V.sh("echo starting; sleep 0.2; echo READY on 4000; sleep 5", background: true, wake_on: "READY")
+    """
+
+    assert run(id, script) =~ ~s(=> %{job: "j1")
+    assert_receive {:agent, {:wake, notice}}, 5_000
+    assert notice =~ ~s(printed a line matching "READY": READY on 4000. It is still running)
+    assert %{status: :running, matched: "READY on 4000"} = Jobs.get(id, "j1")
+    assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
+
+    assert run(id, ~S|V.sh("true", background: true, wake_on: 3)|) =~
+             "wake_on: is the text (or a ~r// regex) of a line to wake you at."
+  end
+
+  # Jido's Schedule and Cron directives: a note back later, not a poll.
+  test "sets a timer whose note comes back as a wake", %{id: id} do
+    assert run(id, ~S|V.schedule(0.2, "look at the deploy")|) =~ ~s(=> %{job: "j1"})
+    assert_receive {:agent, {:wake, notice}}, 5_000
+    assert notice =~ "[Visor: timer j1 (look at the deploy) went off after"
+
+    assert run(id, ~S|V.schedule(60, "later")|) =~ ~s(=> %{job: "j2"})
+    assert run(id, ~S|V.stop("j2").status|) =~ "=> :killed"
+  end
+
   # The log took every byte a job printed, so one that prints without end
   # (`yes`) filled the disk until its hour was up. pi-fabric stops at 8 MiB.
   test "stops a job's log at its limit, and keeps the end of its output", %{id: id} do
