@@ -19,9 +19,10 @@ defmodule Visor.ObserverTest do
     session = :trace.session_create(:observer_test, self(), [])
     on_exit(fn -> :trace.session_destroy(session) end)
 
+    # Gone, whether it ended before the monitor came (:noproc) or after.
     ended = spawn(fn -> :ok end)
     ref = Process.monitor(ended)
-    assert_receive {:DOWN, ^ref, :process, ^ended, :normal}
+    assert_receive {:DOWN, ^ref, :process, ^ended, _reason}
     running = spawn(fn -> receive(do: (:stop -> :ok)) end)
 
     assert Observer.trace(session, [ended, running]) == :ok

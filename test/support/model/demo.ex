@@ -68,6 +68,16 @@ defmodule Visor.Model.Demo do
   defp answer(request, emit) do
     started = now()
 
+    # A prompt that says SLOWREPLY takes 5 s to answer, whatever the
+    # demo's delay, so a test can stop the agent mid-call.
+    case List.last(request.messages) do
+      %{"role" => "user", "content" => text} when is_binary(text) ->
+        if text =~ "SLOWREPLY", do: Process.sleep(5_000)
+
+      _other ->
+        :ok
+    end
+
     {reasoning, content, calls} =
       if String.starts_with?(Map.get(request, :system, ""), "[Visor review]"),
         do: review(request),

@@ -214,6 +214,14 @@ defmodule Visor.JobsTest do
       end
     end
 
+    defp await_turn(child) do
+      Agent.subscribe(child)
+
+      unless Agent.settings(child).status == :streaming do
+        assert_receive {:agent, {:turn_start, _info}}, 5_000
+      end
+    end
+
     defp session_pid(child) do
       [{pid, _store}] = Registry.lookup(Visor.Harness.Registry, {child, :store})
       pid
@@ -281,12 +289,12 @@ defmodule Visor.JobsTest do
     end
 
     test "stops its members when it is stopped", %{id: id} do
-      run(id, ~S|V.council("$ sleep 5", roles: ["a", "b"], synthesize: false)|)
+      # Members only read, so they are stopped in a model call, not a command.
+      run(id, ~S|V.council("SLOWREPLY list the files", roles: ["a", "b"], synthesize: false)|)
       assert_receive {:agent, {:job_start, %{id: "j2", child: first}}}, 5_000
       assert_receive {:agent, {:job_start, %{id: "j3", child: second}}}, 5_000
-      # Stopped once their commands run: one stopped as it starts never runs.
-      await_tool(first)
-      await_tool(second)
+      await_turn(first)
+      await_turn(second)
 
       assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
       assert_receive {:agent, {:job_end, %{id: "j2", status: :killed}}}, 5_000
