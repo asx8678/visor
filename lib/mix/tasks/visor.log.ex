@@ -425,6 +425,15 @@ defmodule Mix.Tasks.Visor.Log do
   defp describe(%{"event" => "context", "messages" => 0}, _opts), do: ["conversation cleared"]
   defp describe(%{"event" => "context"}, _opts), do: []
 
+  defp describe(%{"event" => "steer"} = e, _opts), do: ["steer   #{e["text"]}"]
+
+  defp describe(%{"event" => "compaction"} = e, _opts) do
+    [
+      "compact  #{count(e["summarized"], "message")} summarized (#{e["reason"]}), " <>
+        "about #{number(e["tokens_before"])} → #{number(e["tokens_after"])} tokens"
+    ]
+  end
+
   defp describe(%{"event" => "owner_down"} = e, _opts) do
     running = if e["running"] not in [nil, []], do: [running(e["running"])], else: []
     ["PAGE    #{e["text"]} (#{e["reason"]})" | running]

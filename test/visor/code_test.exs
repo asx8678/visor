@@ -141,7 +141,8 @@ defmodule Visor.CodeTest do
             "ok: 2 calls\nran: echo fine (exit 0)\nran: echo broken; exit 3 (exit 3, output r1)\n=> 3"} =
              Code.run(script, context)
 
-    assert {:ok, ~s(ok: 1 call\n=> "broken\\n")} = Code.run(~S|V.output("r1")|, context)
+    assert {:ok, "ok: 1 call\n=> text, 7 bytes:\nbroken\n"} =
+             Code.run(~S|V.output("r1")|, context)
   end
 
   test "cuts a long value and keeps all of it for V.output" do
@@ -149,11 +150,15 @@ defmodule Visor.CodeTest do
     script = ~S|Enum.map_join(1..5000, "\n", &"line #{&1}")|
 
     assert {:ok, result} = Code.run(script, context)
-    assert result =~ ~r/\Aok: 0 calls\n=> "line 1\\nline 2/
+    # Text reads as itself, line by line, rather than as one escaped string.
+    assert result =~ ~r/\Aok: 0 calls\n=> text, 48,892 bytes:\nline 1\nline 2\n/
     assert String.ends_with?(result, "\n[cut at 24 KB; the whole output is r1]")
 
-    assert {:ok, ~s(ok: 1 call\n=> "line 2\\nline 3")} =
+    assert {:ok, "ok: 1 call\n=> text, 13 bytes:\nline 2\nline 3"} =
              Code.run(~S|V.output("r1", 2..3)|, context)
+
+    # A one-line string still reads as a value.
+    assert {:ok, ~s(ok: 0 calls\n=> "one line")} = Code.run(~S|"one line"|, context)
 
     assert {:error, message} = Code.run(~S|V.output("r1", 6000..6001)|, context)
     assert message =~ "r1 has only 5000 lines."
@@ -217,7 +222,7 @@ defmodule Visor.CodeTest do
     assert stdio == String.duplicate("z", 10_000) <> "\n"
     assert value =~ "defmodule App do"
     # The model still sees the value, and the printed output cut.
-    assert summary =~ ~s|=> "defmodule App do|
+    assert summary =~ ~r/=> text, [\d,]+ bytes:\ndefmodule App do/
     assert summary =~ "[cut at"
 
     assert {:error, _message} = Code.run(~S|V.ls("lib"); {:ok, _} = :error|, context)

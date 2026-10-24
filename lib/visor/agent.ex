@@ -4,14 +4,22 @@ defmodule Visor.Agent do
 
   Each model call and each tool call runs as its own task under the
   session's task supervisor. That keeps the loop responsive (it can be
-  interrupted mid-stream) and puts every step in the process view.
+  interrupted mid-stream) and puts every step in the process view. Each
+  task has a deadline (`Visor.Limits`), past which the agent stops it.
+
+  The conversation is kept in the session's table (see
+  `Visor.Harness.Session`), so the agent picks it up again after a crash.
+  Once it grows past its threshold, the agent compacts it at the next
+  settled step: a new prompt, or a batch's results all in (see
+  `Visor.Compaction`).
 
   It publishes what it does as events; see `Visor.Agent.Event`.
   """
   use GenServer
 
-  alias Visor.{Harness, Model, Tools, Usage}
+  alias Visor.{Compaction, Harness, Limits, Model, Tools, Usage}
   alias Visor.Agent.Event
+  alias Visor.Harness.Session
 
   # Model calls allowed for one prompt. The last runs without tools, so the
   # model reports where it got to instead of stopping mid-task.
@@ -47,6 +55,8 @@ defmodule Visor.Agent do
     :owner_ref,
     :tasks,
     :model_task,
+    # The session's table, where the conversation outlives this process.
+    :store,
     messages: [],
     status: :idle,
     turn: 0,
@@ -59,7 +69,23 @@ defmodule Visor.Agent do
     tools: %{},
     # Prompt tokens the last request sent, to notice when the next one
     # misses the provider's cache.
-    last_prompt_tokens: nil
+    last_prompt_tokens: nil,
+    # What the model sees in place of the messages before `from`, as
+    # %{from, summary}, or nil (see Visor.Compaction).
+    compaction: nil,
+    # What each tool call's script did, by tool call id, as %{status,
+    # calls}, for compaction.
+    facts: %{},
+    # The last request's estimated size, and provider tokens per estimated
+    # token as the provider counted it.
+    last_estimate: nil,
+    token_scale: 1.0,
+    # Whether this prompt has compacted already after the provider
+    # rejected a request as too long.
+    overflowed: false,
+    # What the user sent while a prompt ran, oldest first: it goes to the
+    # model after the running tool calls, or starts the next prompt.
+    queued: []
   ]
 
   def start_link(opts) do
@@ -69,7 +95,11 @@ defmodule Visor.Agent do
   defdelegate subscribe(id), to: Event
   def efforts, do: @efforts
 
-  @doc "Sends a user prompt. Returns `{:error, :busy}` while a prompt is running."
+  @doc """
+  Sends a user prompt. While one is running it steers that one instead and
+  returns `:queued`: the text reaches the model after the running tool
+  calls, or starts the next prompt if the model answers first.
+  """
   def prompt(id, text), do: GenServer.call(via(id), {:prompt, text})
 
   @doc "Interrupts the running model call or tools."
@@ -78,10 +108,35 @@ defmodule Visor.Agent do
   @doc "Forgets the conversation."
   def reset(id), do: GenServer.call(via(id), :reset)
 
+  @doc """
+  Compacts the conversation now, under the threshold or not (`/compact`).
+  Returns `{:ok, info}`, `{:error, :nothing}` when there is nothing to
+  compact or no summary would fit, or `{:error, :busy}` while a prompt runs.
+  """
+  def compact(id), do: GenServer.call(via(id), :compact)
+
   @doc "Changes `:effort` or `:thinking`."
   def configure(id, settings), do: GenServer.call(via(id), {:configure, settings})
 
   def settings(id), do: GenServer.call(via(id), :settings)
+
+  @doc """
+  A tool result as the model first saw it, from session `id`'s table. It
+  reads the table, not the agent, so a running script can call it (see
+  `V.recall/1`).
+  """
+  def recall(nil, _call_id), do: {:error, "No conversation is kept outside a session."}
+
+  def recall(id, call_id) do
+    with store when store != nil <- Session.store(id),
+         [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation),
+         %{"content" => content} <-
+           Enum.find(messages, &(&1["role"] == "tool" and &1["tool_call_id"] == call_id)) do
+      {:ok, content}
+    else
+      _ -> {:error, "There is no tool result #{call_id} in this conversation."}
+    end
+  end
 
   defp via(id), do: Harness.via({id, :agent})
 
@@ -90,17 +145,26 @@ defmodule Visor.Agent do
     id = Keyword.fetch!(opts, :id)
     Process.set_label("agent #{id}")
     owner_ref = Process.monitor(Keyword.fetch!(opts, :owner))
-    {:ok, %__MODULE__{id: id, owner_ref: owner_ref, tasks: Keyword.fetch!(opts, :tasks)}}
+
+    state = %__MODULE__{
+      id: id,
+      owner_ref: owner_ref,
+      tasks: Keyword.fetch!(opts, :tasks),
+      store: Keyword.get(opts, :store)
+    }
+
+    {:ok, restore(state)}
   end
 
   @impl true
   def handle_call({:prompt, text}, _from, %{status: :idle} = state) do
-    broadcast(state, {:user, text})
-    state = %{push_user(state, text) | steps: 0}
-    {:reply, :ok, start_turn(state)}
+    {:reply, :ok, start_prompt(state, text)}
   end
 
-  def handle_call({:prompt, _text}, _from, state), do: {:reply, {:error, :busy}, state}
+  def handle_call({:prompt, text}, _from, state) do
+    broadcast(state, {:steer, text})
+    {:reply, :queued, save(Map.put(state, :queued, Map.get(state, :queued, []) ++ [text]))}
+  end
 
   def handle_call(:interrupt, _from, %{model_task: %Task{} = task} = state) do
     Task.shutdown(task, :brutal_kill)
@@ -136,7 +200,13 @@ defmodule Visor.Agent do
           finished
       end)
 
-    state = append_tool_results(%{state | tools: tools})
+    # A cancelled call failed, as far as a later summary goes.
+    cancelled =
+      for {_ref, %{result: nil} = tool} <- state.tools,
+          into: Map.get(state, :facts, %{}),
+          do: {tool.call.id, %{status: :error, calls: []}}
+
+    state = append_tool_results(%{state | tools: tools} |> Map.put(:facts, cancelled))
     note(state, :info, "Stopped. The running tools were cancelled.")
     {:reply, :ok, finish(state, :interrupted)}
   end
@@ -145,10 +215,25 @@ defmodule Visor.Agent do
 
   def handle_call(:reset, _from, %{status: :idle} = state) do
     broadcast(state, {:context, 0})
-    {:reply, :ok, %{state | messages: [], last_prompt_tokens: nil}}
+
+    state =
+      state
+      |> Map.merge(%{compaction: nil, facts: %{}, last_prompt_tokens: nil, last_estimate: nil})
+      |> put_messages([])
+
+    {:reply, :ok, state}
   end
 
   def handle_call(:reset, _from, state), do: {:reply, {:error, :busy}, state}
+
+  def handle_call(:compact, _from, %{status: :idle} = state) do
+    case compact_messages(state, :manual) do
+      {:ok, state, info} -> {:reply, {:ok, info}, state}
+      :keep -> {:reply, {:error, :nothing}, state}
+    end
+  end
+
+  def handle_call(:compact, _from, state), do: {:reply, {:error, :busy}, state}
 
   def handle_call({:configure, settings}, _from, state) do
     case apply_settings(state, settings) do
@@ -186,23 +271,67 @@ defmodule Visor.Agent do
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state)
       when is_map_key(state.tools, ref) do
-    {:noreply,
-     finish_tool(state, ref, {:error, "The tool crashed: #{Exception.format_exit(reason)}"})}
+    {:noreply, finish_tool(state, ref, {:error, "The tool crashed: #{exit_text(reason)}", []})}
+  end
+
+  # A task still running at its deadline is stopped. One that finished
+  # just before has its result used; any other deadline is stale.
+  def handle_info({:deadline, ref}, %{model_task: %Task{ref: ref} = task} = state) do
+    case Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        {:noreply, handle_model_result(result, %{state | model_task: nil})}
+
+      _stopped ->
+        minutes = div(Limits.model_deadline_ms(), 60_000)
+        broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "timeout"}})
+
+        note(
+          state,
+          :error,
+          "The model call was still running after #{minutes} min, so it was stopped."
+        )
+
+        {:noreply, finish(%{state | model_task: nil}, :model_error)}
+    end
+  end
+
+  # A shutdown rather than a kill, as for an interrupt, so Dune's sandbox
+  # exits quietly.
+  def handle_info({:deadline, ref}, state) when is_map_key(state.tools, ref) do
+    result =
+      case Task.shutdown(state.tools[ref].task) do
+        {:ok, result} ->
+          result
+
+        _stopped ->
+          seconds = div(Limits.tool_deadline_ms(), 1000)
+          {:error, "Stopped: the script was still running after #{seconds} s.", []}
+      end
+
+    {:noreply, finish_tool(state, ref, result)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  defp start_prompt(state, text) do
+    broadcast(state, {:user, text})
+    state = state |> push_user(text) |> Map.merge(%{steps: 0, overflowed: false})
+    start_turn(state)
+  end
+
   defp start_turn(state) do
+    state = maybe_compact(state)
     provider = Model.current()
     info = provider.info()
     turn = state.turn + 1
     id = state.id
+    messages = surface(state)
 
     # The last call keeps the tools in the request, so the provider's cache
     # still covers it, but may not call them.
     request = %{
       system: @system,
-      messages: state.messages,
+      messages: messages,
       tools: Tools.definitions(),
       tool_choice: if(last_step?(state.steps + 1), do: "none", else: "auto"),
       effort: state.effort,
@@ -220,6 +349,8 @@ defmodule Visor.Agent do
     task =
       Harness.async(state.tasks, "model turn #{turn}", fn -> provider.stream(request, emit) end)
 
+    Process.send_after(self(), {:deadline, task.ref}, Limits.model_deadline_ms())
+
     broadcast(
       state,
       {:turn_start,
@@ -230,12 +361,13 @@ defmodule Visor.Agent do
          provider: info,
          effort: state.effort,
          thinking: state.thinking,
-         messages: length(state.messages),
+         messages: length(messages),
          pid: task.pid
        }}
     )
 
     broadcast(state, {:request, turn, request_preview(request, info)})
+    state = Map.put(state, :last_estimate, fixed_estimate() + estimate(messages))
     set_status(%{state | turn: turn, steps: state.steps + 1, model_task: task}, :streaming)
   end
 
@@ -262,7 +394,9 @@ defmodule Visor.Agent do
     if warning = cache_warning(state.last_prompt_tokens, result.usage),
       do: note(state, :info, warning)
 
-    state = %{state | last_prompt_tokens: prompt_tokens(result.usage, state.last_prompt_tokens)}
+    state =
+      %{state | last_prompt_tokens: prompt_tokens(result.usage, state.last_prompt_tokens)}
+      |> calibrate(result.usage)
 
     state =
       case {result.finish_reason, result.tool_calls} do
@@ -299,8 +433,34 @@ defmodule Visor.Agent do
       end
 
     # The reply, when kept, is now part of the conversation.
-    broadcast(state, {:context, length(state.messages)})
+    broadcast(state, {:context, length(surface(state))})
     state
+  end
+
+  # The provider rejected the request as longer than its window: the
+  # window is smaller than that request, so compact under it and try once
+  # more.
+  defp handle_model_result({:error, :context_overflow, message}, state) do
+    broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "error"}})
+    sent = round(Map.get(state, :last_estimate, 0) * Map.get(state, :token_scale, 1.0))
+    window = max(floor(sent * 0.9), 1)
+
+    with false <- Map.get(state, :overflowed, false),
+         {:ok, state, _info} <-
+           compact_messages(Map.put(state, :overflowed, true), :overflow, window) do
+      note(
+        state,
+        :info,
+        "The request was longer than the model's window, so the conversation was compacted " <>
+          "and the call made again."
+      )
+
+      start_turn(state)
+    else
+      _ ->
+        note(state, :error, message)
+        finish(state, :model_error)
+    end
   end
 
   defp handle_model_result({:error, message}, state) do
@@ -335,6 +495,90 @@ defmodule Visor.Agent do
     end
   end
 
+  # How many provider tokens an estimated token is, from the request just
+  # answered. Estimates come from term sizes, which undercount tokens.
+  defp calibrate(state, usage) do
+    with %Usage{prompt: tokens} when is_integer(tokens) <- Usage.from(usage),
+         estimate when is_integer(estimate) and estimate > 0 <- Map.get(state, :last_estimate) do
+      Map.put(state, :token_scale, max(tokens / estimate, 1.0))
+    else
+      _unknown -> state
+    end
+  end
+
+  ## Compaction
+
+  defp maybe_compact(state) do
+    case compact_messages(state, :threshold) do
+      {:ok, state, _info} -> state
+      :keep -> state
+    end
+  end
+
+  # Compacts the conversation: past the threshold (`:threshold`), or now
+  # (`:manual`, `:overflow`). The cache misses once after a compaction, so
+  # the next request is not compared with the last.
+  defp compact_messages(state, reason, window \\ nil) do
+    provider = Model.current().info()
+    current = Map.get(state, :compaction)
+
+    result =
+      Compaction.compact(state.messages,
+        compaction: current,
+        facts: Map.get(state, :facts, %{}),
+        fixed: fixed_estimate(),
+        scale: Map.get(state, :token_scale, 1.0),
+        threshold: threshold(provider),
+        window: window || provider[:context_window],
+        force: reason != :threshold
+      )
+
+    case result do
+      {:ok, compaction, compacted} ->
+        before = length(surface(state))
+        state = state |> Map.merge(%{compaction: compaction, last_prompt_tokens: nil}) |> save()
+        left = length(surface(state))
+
+        info =
+          Map.merge(compacted, %{
+            turn: state.turn,
+            reason: reason,
+            messages_before: before,
+            messages_after: left
+          })
+
+        broadcast(state, {:compaction, info})
+        broadcast(state, {:context, left})
+        {:ok, state, info}
+
+      :keep ->
+        :keep
+    end
+  end
+
+  # The context size that compacts: the provider's own setting, or
+  # Visor.Limits.compact_tokens/0 kept under the window less its reserve.
+  defp threshold(info) do
+    case info do
+      %{compact_tokens: tokens} when is_integer(tokens) ->
+        tokens
+
+      %{context_window: window} when is_integer(window) ->
+        min(window - Limits.reserve_tokens(), Limits.compact_tokens())
+
+      _unknown ->
+        Limits.compact_tokens()
+    end
+  end
+
+  defp surface(state), do: Compaction.surface(state.messages, Map.get(state, :compaction))
+
+  defp fixed_estimate, do: Compaction.estimate(@system) + Compaction.estimate(Tools.definitions())
+
+  defp estimate(messages), do: messages |> Enum.map(&Compaction.estimate/1) |> Enum.sum()
+
+  ## Tools
+
   # A batch's calls run one at a time, in order: two scripts editing the
   # same file at once would each write over the other's change.
   defp run_tools(state, calls) do
@@ -360,16 +604,21 @@ defmodule Visor.Agent do
 
         task =
           Harness.async(state.tasks, "tool #{call.name}", fn ->
-            Tools.run(call.name, call.arguments, context)
+            Tools.execute(call.name, call.arguments, context)
           end)
 
+        Process.send_after(self(), {:deadline, task.ref}, Limits.tool_deadline_ms())
         broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
         tool = %{tool | task: task, started: now()}
         %{state | tools: state.tools |> Map.delete(ref) |> Map.put(task.ref, tool)}
     end
   end
 
-  defp finish_tool(state, ref, {status, output}) do
+  # A task started before a hot reload still returns {status, output}.
+  defp finish_tool(state, ref, {status, output}),
+    do: finish_tool(state, ref, {status, output, []})
+
+  defp finish_tool(state, ref, {status, output, facts}) do
     tool = state.tools[ref]
 
     broadcast(
@@ -379,6 +628,8 @@ defmodule Visor.Agent do
     )
 
     state = put_in(state.tools[ref].result, output)
+    facts = Map.put(Map.get(state, :facts, %{}), tool.call.id, %{status: status, calls: facts})
+    state = Map.put(state, :facts, facts)
 
     cond do
       Enum.any?(Map.values(state.tools), &is_nil(&1.result)) ->
@@ -394,9 +645,29 @@ defmodule Visor.Agent do
           )
         end
 
-        state |> append_tool_results(steps_left(state)) |> start_turn()
+        state |> append_tool_results(steps_left(state)) |> steer() |> start_turn()
     end
   end
+
+  # What the user sent while the batch ran reaches the model now, after its
+  # results, as one user message.
+  defp steer(state) do
+    case Map.get(state, :queued, []) do
+      [] ->
+        state
+
+      texts ->
+        message = %{"role" => "user", "content" => Enum.join(texts, "\n\n")}
+        state |> Map.put(:queued, []) |> append(message)
+    end
+  end
+
+  # What a crashed task's exit says, without its stack frames: they are
+  # the harness's, not the script's.
+  defp exit_text({exception, stack}) when is_exception(exception) and is_list(stack),
+    do: Exception.format_banner(:error, exception, stack)
+
+  defp exit_text(reason), do: Exception.format_exit(reason)
 
   defp last_step?(step), do: step >= @max_steps
 
@@ -419,6 +690,8 @@ defmodule Visor.Agent do
     end
   end
 
+  ## The conversation
+
   defp append_tool_results(state, footer \\ nil) do
     tools = state.tools |> Map.values() |> Enum.sort_by(& &1.index)
     last = length(tools) - 1
@@ -431,29 +704,58 @@ defmodule Visor.Agent do
         %{"role" => "tool", "tool_call_id" => tool.call.id, "content" => content}
       end
 
-    %{state | messages: state.messages ++ messages, tools: %{}}
+    put_messages(%{state | tools: %{}}, state.messages ++ messages)
   end
 
   # After an interrupted model call the last message is an unanswered user
   # prompt; fold the new prompt into it instead of sending two in a row.
+  # Not into one a compaction summarized, which the model no longer sees.
   defp push_user(%{messages: messages} = state, text) do
+    from =
+      case Map.get(state, :compaction) do
+        %{from: from} -> from
+        nil -> 0
+      end
+
     case List.last(messages) do
-      %{"role" => "user", "content" => previous} ->
-        %{
-          state
-          | messages:
-              List.replace_at(messages, -1, %{
-                "role" => "user",
-                "content" => previous <> "\n\n" <> text
-              })
-        }
+      %{"role" => "user", "content" => previous} when length(messages) > from ->
+        message = %{"role" => "user", "content" => previous <> "\n\n" <> text}
+        put_messages(state, List.replace_at(messages, -1, message))
 
       _ ->
         append(state, %{"role" => "user", "content" => text})
     end
   end
 
-  defp append(state, message), do: %{state | messages: state.messages ++ [message]}
+  defp append(state, message), do: put_messages(state, state.messages ++ [message])
+
+  defp put_messages(state, messages), do: save(%{state | messages: messages})
+
+  # Keeps the conversation in the session's table, so a restart keeps it.
+  defp save(state) do
+    if store = Map.get(state, :store) do
+      conversation = %{
+        messages: state.messages,
+        compaction: Map.get(state, :compaction),
+        facts: Map.get(state, :facts, %{}),
+        queued: Map.get(state, :queued, [])
+      }
+
+      :ets.insert(store, {:conversation, conversation})
+    end
+
+    state
+  end
+
+  # A restarted agent carries on with the conversation its last run kept.
+  defp restore(%{store: nil} = state), do: state
+
+  defp restore(state) do
+    case :ets.lookup(state.store, :conversation) do
+      [{:conversation, conversation}] -> struct(state, conversation)
+      [] -> state
+    end
+  end
 
   defp apply_settings(state, settings) do
     Enum.reduce_while(settings, {:ok, state}, fn
@@ -473,15 +775,31 @@ defmodule Visor.Agent do
       effort: state.effort,
       thinking: state.thinking,
       status: state.status,
-      messages: length(state.messages),
+      messages: length(surface(state)),
       provider: Model.current().info()
     }
   end
 
-  # Ends the running prompt: the reply came, or why it didn't.
+  # Ends the running prompt: the reply came, or why it didn't. What the user
+  # sent while it ran and the model never saw is the next prompt, unless
+  # the user stopped this one or the model call failed, which the next
+  # would likely do too.
   defp finish(state, reason) do
     broadcast(state, {:prompt_end, %{reason: reason, steps: state.steps}})
-    set_status(state, :idle)
+    state = set_status(state, :idle)
+
+    case {Map.get(state, :queued, []), reason} do
+      {[], _reason} ->
+        state
+
+      {texts, reason} when reason in [:interrupted, :model_error, :model_crashed] ->
+        why = if reason == :interrupted, do: "was stopped", else: "failed"
+        note(state, :info, "Not sent, since the prompt #{why}: " <> Enum.join(texts, "\n\n"))
+        save(Map.put(state, :queued, []))
+
+      {texts, _reason} ->
+        start_prompt(Map.put(state, :queued, []), Enum.join(texts, "\n\n"))
+    end
   end
 
   defp set_status(state, status) do
@@ -495,7 +813,8 @@ defmodule Visor.Agent do
 
   defp broadcast(id, event), do: Event.broadcast(id, event)
 
-  # What the request looks like on the wire, shortened for display.
+  # What the request looks like on the wire, shortened for display. A map:
+  # the console turns it into JSON, so nothing here can fail to encode.
   defp request_preview(request, info) do
     %{
       "provider" => info.provider,
@@ -506,7 +825,6 @@ defmodule Visor.Agent do
       "message_count" => length(request.messages) + 1,
       "last_messages" => request.messages |> Enum.take(-3) |> Enum.map(&shorten/1)
     }
-    |> Jason.encode!(pretty: true)
   end
 
   defp shorten(message) when is_map(message),

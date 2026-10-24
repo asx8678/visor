@@ -9,6 +9,16 @@ live supervision tree beside it. There is no database.
 - `Visor.Harness` supervises one `Visor.Harness.Session` per console page:
   the agent, a task supervisor for its model and tool calls, and its
   `Visor.Feedback` collector. Closing or reloading the page stops the session.
+  The conversation lives in a table the session supervisor owns, so a crash
+  of the agent or the collector doesn't lose it.
+- Past its threshold (`DEEPSEEK_COMPACT_TOKENS`, by default
+  `Visor.Limits.compact_tokens/0` kept under the window) the agent compacts
+  the conversation deterministically, after pi-fabric (`Visor.Compaction`):
+  no model call, a summary rebuilt from the original messages and the
+  scripts' V-call facts, and the recent part kept as it was. `V.recall/1`
+  reads a summarized tool result back.
+- A prompt sent while one runs steers it: the model gets it after the
+  running tool calls' results, or as the next prompt if it answers first.
 - The agent's events are documented in `Visor.Agent.Event`. The console,
   `Visor.SessionLog` and `mix visor.log` all read them; change the event
   shapes there and keep the session log's JSON keys stable, since

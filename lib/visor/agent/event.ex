@@ -9,9 +9,14 @@ defmodule Visor.Agent.Event do
   From `Visor.Agent`, for each prompt:
 
     * `{:user, text}`: a prompt the user sent
+    * `{:steer, text}`: a message the user sent while a prompt ran. It
+      reaches the model as a user message after the running tool calls'
+      results, or, when the model answers first, comes back as the next
+      prompt's `{:user, text}`; a stopped prompt drops it
     * `{:turn_start, %{turn, step, max_steps, provider, effort, thinking,
       messages, pid}}`: a model call started, in task `pid`
-    * `{:request, turn, preview}`: the request, shortened for the console
+    * `{:request, turn, preview}`: the request, shortened for the console,
+      as a map the console turns into JSON
     * `{:wire_request, turn, %{url, body}}` and `{:wire_response, turn,
       %{status, headers} | %{error}}`: the request as sent and what came
       back, for the session log
@@ -26,6 +31,12 @@ defmodule Visor.Agent.Event do
       time; one cancelled before its turn starts with a nil `pid` and
       ends straight away
     * `{:prompt_end, %{reason, steps}}`: the prompt ended and why
+    * `{:compaction, %{turn, reason, summarized, kept, tokens_before,
+      tokens_after, summary_bytes, messages_before, messages_after}}`: the
+      first `summarized` messages became a summary (see
+      `Visor.Compaction`), because the context passed its threshold
+      (`:threshold`), the user asked (`:manual`) or the provider rejected a
+      request as too long (`:overflow`). Tokens are estimates
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
 
@@ -64,6 +75,7 @@ defmodule Visor.Agent.Event do
 
   @type t ::
           {:user, String.t()}
+          | {:steer, String.t()}
           | {:turn_start, map()}
           | {:request, turn(), map()}
           | {:wire_request, turn(), %{url: String.t(), body: term()}}
@@ -78,6 +90,8 @@ defmodule Visor.Agent.Event do
           | {:tool_start, tool_call()}
           | {:tool_end, tool_call()}
           | {:prompt_end, %{reason: reason(), steps: non_neg_integer()}}
+          | {:compaction,
+             %{required(:reason) => :threshold | :manual | :overflow, optional(atom()) => term()}}
           | {:status, :idle | :streaming | :tools}
           | {:note, :info | :error, String.t()}
           | {:settings, map()}

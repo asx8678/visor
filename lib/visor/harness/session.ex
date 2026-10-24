@@ -4,13 +4,28 @@ defmodule Visor.Harness.Session do
   its model calls and tool runs execute under, and the feedback collector
   its tools report to.
 
+  The conversation lives in a table this supervisor owns (see
+  `store/1`), so a crash of the agent or of the feedback collector costs
+  neither the conversation: each child restarts on its own and the agent
+  picks up where it was.
+
   The agent is a significant child, so when it stops normally (its owner
   went away) the whole session shuts down with it.
   """
   use Supervisor, restart: :temporary
 
+  alias Visor.Harness
+
   def start_link(opts) do
     Supervisor.start_link(__MODULE__, opts)
+  end
+
+  @doc "The table session `id` keeps its conversation in, or nil."
+  def store(id) do
+    case Registry.lookup(Harness.Registry, {id, :store}) do
+      [{_supervisor, store}] -> store
+      [] -> nil
+    end
   end
 
   @impl true
@@ -18,17 +33,19 @@ defmodule Visor.Harness.Session do
     id = Keyword.fetch!(opts, :id)
     Process.set_label("session #{id}")
 
-    tasks = Visor.Harness.via({id, :tasks})
+    tasks = Harness.via({id, :tasks})
+    store = :ets.new(:visor_session, [:public, read_concurrency: true])
+    {:ok, _owner} = Registry.register(Harness.Registry, {id, :store}, store)
 
     children = [
       {Task.Supervisor, name: tasks},
       {Visor.Feedback, id: id},
-      Supervisor.child_spec({Visor.Agent, Keyword.put(opts, :tasks, tasks)},
+      Supervisor.child_spec({Visor.Agent, Keyword.merge(opts, tasks: tasks, store: store)},
         restart: :transient,
         significant: true
       )
     ]
 
-    Supervisor.init(children, strategy: :one_for_all, auto_shutdown: :any_significant)
+    Supervisor.init(children, strategy: :one_for_one, auto_shutdown: :any_significant)
   end
 end

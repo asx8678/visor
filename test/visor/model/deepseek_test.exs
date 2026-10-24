@@ -188,5 +188,20 @@ defmodule Visor.Model.DeepSeekTest do
 
     assert_received {:emitted,
                      {:response, %{status: 400, body: ~s|{"error":{"message":"bad request"}}|}}}
+
+    # A request over the model's window is told apart, so the agent can
+    # compact the conversation and try again.
+    Req.Test.stub(DeepSeek, fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.send_resp(
+        400,
+        ~s|{"error":{"message":"This model's maximum context length is 131072 tokens. | <>
+          ~s|However, you requested 140000 tokens."}}|
+      )
+    end)
+
+    assert {:error, :context_overflow, "DeepSeek returned HTTP 400. This model's maximum" <> _} =
+             DeepSeek.stream(request, emit)
   end
 end

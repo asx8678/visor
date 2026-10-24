@@ -2,14 +2,32 @@ defmodule Visor.AgentTest do
   # Uses the scripted demo model (see config/test.exs).
   use ExUnit.Case, async: false
 
-  alias Visor.Agent
+  alias Visor.{Agent, Harness}
+
+  # The demo model, with a context threshold a few big results pass.
+  defmodule SmallThreshold do
+    def info, do: Map.put(Visor.Model.Demo.info(), :compact_tokens, 30_000)
+    def stream(request, emit), do: Visor.Model.Demo.stream(request, emit)
+  end
 
   setup do
     id = "t#{System.unique_integer([:positive])}"
-    start_supervised!({Visor.Harness.Session, id: id, owner: self()})
+    session = start_supervised!({Visor.Harness.Session, id: id, owner: self()})
     Agent.subscribe(id)
-    %{id: id}
+    %{id: id, session: session}
   end
+
+  # A script whose value is 30 KB of text, cut to 24 KB for the model.
+  @big ~S|> String.duplicate("line\n", 6_000)|
+
+  defp ask(id, text) do
+    assert :ok = Agent.prompt(id, text)
+    assert_receive {:agent, {:tool_end, %{id: call_id}}}, 5_000
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+    call_id
+  end
+
+  defp agent(id), do: GenServer.whereis(Harness.via({id, :agent}))
 
   test "runs the tool loop until the model answers", %{id: id} do
     assert :ok = Agent.prompt(id, "list the files")
@@ -43,6 +61,9 @@ defmodule Visor.AgentTest do
     # user, assistant with tool call, the cancelled call's result
     assert %{status: :idle, messages: 3} = Agent.settings(id)
     assert {:error, :idle} = Agent.interrupt(id)
+
+    # A later summary counts the cancelled call as failed.
+    assert [%{status: :error, calls: []}] = Map.values(:sys.get_state(agent(id)).facts)
   end
 
   @tag :tmp_dir
@@ -142,10 +163,48 @@ defmodule Visor.AgentTest do
     assert %{status: :idle, messages: 48} = Agent.settings(id)
   end
 
-  test "rejects a prompt while one is running", %{id: id} do
-    assert :ok = Agent.prompt(id, "show BEAM stats")
-    assert {:error, :busy} = Agent.prompt(id, "again")
-    assert_receive {:agent, {:status, :idle}}
+  test "steers a running prompt: the model gets the message after the running tools", %{id: id} do
+    assert :ok = Agent.prompt(id, "$ sleep 1")
+    assert_receive {:agent, {:tool_start, %{status: :running}}}, 1_000
+
+    assert :queued = Agent.prompt(id, "list the files")
+    assert_receive {:agent, {:steer, "list the files"}}
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    # The steer follows the batch's result, and the model acted on it.
+    roles =
+      for %{"role" => role} = message <- :sys.get_state(agent(id)).messages,
+          do: {role, message["content"]}
+
+    assert [_user, _call, {"tool", _}, {"user", "list the files"} | _] = roles
+    refute_received {:agent, {:user, "list the files"}}
+  end
+
+  test "makes a message sent while the model answers the next prompt", %{id: id} do
+    previous = Application.get_env(:visor, :demo_delay_ms)
+    Application.put_env(:visor, :demo_delay_ms, 20)
+    on_exit(fn -> Application.put_env(:visor, :demo_delay_ms, previous) end)
+
+    assert :ok = Agent.prompt(id, "hello")
+    assert_receive {:agent, {:turn_start, %{turn: 1}}}
+    assert :queued = Agent.prompt(id, "list the files")
+
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+    assert_receive {:agent, {:user, "list the files"}}
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+  end
+
+  test "drops what was sent to a prompt the user stopped", %{id: id} do
+    assert :ok = Agent.prompt(id, "$ sleep 5")
+    assert_receive {:agent, {:tool_start, %{status: :running}}}, 1_000
+    assert :queued = Agent.prompt(id, "and then this")
+
+    assert :ok = Agent.interrupt(id)
+
+    assert_receive {:agent,
+                    {:note, :info, "Not sent, since the prompt was stopped: and then this"}}
+
+    assert %{status: :idle} = Agent.settings(id)
   end
 
   test "validates settings", %{id: id} do
@@ -182,5 +241,83 @@ defmodule Visor.AgentTest do
     assert Agent.cache_warning(nil, usage.(0)) == nil
     assert Agent.cache_warning(2_000, usage.(0)) == nil
     assert Agent.cache_warning(25_000, nil) == nil
+  end
+
+  test "keeps the conversation when the feedback collector crashes", %{id: id} do
+    ask(id, "list the files")
+    %{messages: before} = Agent.settings(id)
+    agent = agent(id)
+
+    feedback = GenServer.whereis(Harness.via({id, :feedback}))
+    ref = Process.monitor(feedback)
+    Process.exit(feedback, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^feedback, :killed}
+
+    assert agent(id) == agent
+    assert %{messages: ^before} = Agent.settings(id)
+  end
+
+  test "carries on with the conversation after the agent crashes", %{id: id, session: session} do
+    ask(id, "list the files")
+    %{messages: before} = Agent.settings(id)
+
+    agent = agent(id)
+    ref = Process.monitor(agent)
+    Process.exit(agent, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^agent, :killed}
+
+    # The session restarts the agent before it handles anything else.
+    _ = :sys.get_state(session)
+    assert agent(id) != agent
+    assert %{messages: ^before} = Agent.settings(id)
+  end
+
+  test "compacts the conversation on request and still recalls what it summarized", %{id: id} do
+    first = ask(id, @big)
+    ask(id, @big)
+    %{messages: before} = Agent.settings(id)
+
+    assert {:ok, %{reason: :manual, summarized: summarized}} = Agent.compact(id)
+    assert_receive {:agent, {:compaction, %{reason: :manual, messages_after: left}}}
+    assert summarized > 0 and left < before
+    assert %{messages: ^left} = Agent.settings(id)
+
+    # The summary goes first, and the summarized result is still there.
+    assert :ok = Agent.prompt(id, ~s|> V.recall("#{first}")|)
+    assert_receive {:agent, {:request, _turn, %{"last_messages" => _}}}
+    assert_receive {:agent, {:tool_end, %{status: :ok, result: recalled}}}, 5_000
+    assert recalled =~ "line\nline"
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    %{compaction: %{summary: summary}} = :sys.get_state(agent(id))
+    assert summary =~ "[Visor compaction] Messages 1-#{summarized} of this conversation"
+  end
+
+  test "has nothing to compact before the conversation starts", %{id: id} do
+    assert {:error, :nothing} = Agent.compact(id)
+  end
+
+  test "compacts on its own once the context passes its threshold", %{id: id} do
+    previous = Application.get_env(:visor, :model_provider)
+    Application.put_env(:visor, :model_provider, SmallThreshold)
+    on_exit(fn -> Application.put_env(:visor, :model_provider, previous) end)
+
+    for _ <- 1..5, do: ask(id, @big)
+
+    assert_received {:agent, {:compaction, %{reason: :threshold, kept: kept}}}
+    assert kept > 0
+  end
+
+  test "stops a tool still running at its deadline and goes on", %{id: id} do
+    assert :ok = Agent.prompt(id, "$ sleep 5")
+    assert_receive {:agent, {:tool_start, %{status: :running}}}, 1_000
+
+    [ref] = Map.keys(:sys.get_state(agent(id)).tools)
+    send(agent(id), {:deadline, ref})
+
+    assert_receive {:agent,
+                    {:tool_end, %{status: :error, result: "Stopped: the script was" <> _}}}
+
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
   end
 end

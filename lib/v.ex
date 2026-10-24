@@ -123,6 +123,14 @@ defmodule V do
     end)
   end
 
+  @doc """
+  A tool result as the model first saw it, by its tool call id: how a
+  script reads back a step that a compaction summarized (see
+  `Visor.Compaction`).
+  """
+  def recall(call_id) when is_binary(call_id),
+    do: track(:recall, [call_id], fn -> Visor.Agent.recall(session(), call_id) end)
+
   @doc "Live statistics about the BEAM runtime."
   def beam_stats, do: track(:beam_stats, [], fn -> {:ok, Observer.beam_stats()} end)
 

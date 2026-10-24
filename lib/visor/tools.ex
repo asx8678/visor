@@ -24,8 +24,7 @@ defmodule Visor.Tools do
         function: %{
           name: "elixir",
           description: """
-          Run an Elixir script in one sandboxed BEAM process. Do all the reads, searches, edits \
-          and commands a step needs in one script, and return only what you need to see.
+          Run an Elixir script in one sandboxed BEAM process.
 
           Call the project through V (paths are relative to the project root):
             V.ls(path \\\\ ".")            names in a folder; folders end in /
@@ -39,9 +38,12 @@ defmodule Visor.Tools do
             V.sh(command)                 run a shell command; returns %{status: code, output: text}
             V.check(path \\\\ nil)          compile and run the tests (or those at a path such as
                                           "test/app_test.exs:12") in a Mix project; returns
-                                          %{status: :ok | :failed | :compile_error, failures: [...]}
+                                          %{status: :ok | :failed | :compile_error | :timeout | :error,
+                                            tests: n, failed: n, failures: [...], errors: [...]}
             V.output(ref, first..last)    an output that was cut, kept as ref such as "r3";
                                           all of it, or only its lines first..last
+            V.recall(id)                  a tool result from before a compaction, by the tool
+                                          call id the summary gives
             V.beam_stats()                runtime statistics as a map
 
           The result starts with ok, or with the call that failed and its error. Then come the \
@@ -49,7 +51,7 @@ defmodule Visor.Tools do
           it printed and its value (=> ...). Output too long to show is cut and kept as a ref.
 
           Kernel, Enum, String, Map, List, Keyword, Integer, Regex and Path.join/basename/dirname/\
-          extname are available. import, alias, try/rescue, processes, File and System are not. \
+          extname/rootname/split are available. import, alias, try/rescue, processes, File and System are not. \
           A failing V call raises and stops the script; its error comes back to you, so check \
           with V.exists? before reading a file that may be missing. A script may make up to \
           #{Format.number(Limits.v_calls())} V calls: grep a folder once rather than each file. \
@@ -74,22 +76,32 @@ defmodule Visor.Tools do
   `context` names the session and tool call, so a script can report its
   calls to the console.
   """
-  def run(name, arguments, context \\ %{})
+  def run(name, arguments, context \\ %{}) do
+    {status, text, _facts} = execute(name, arguments, context)
+    {status, text}
+  end
 
-  def run("elixir", arguments, context) do
+  @doc """
+  Like `run/3`, and also returns what each of the script's V calls did
+  (`Visor.Code.facts/1`), which the agent keeps for compaction.
+  """
+  def execute(name, arguments, context \\ %{})
+
+  def execute("elixir", arguments, context) do
     case Jason.decode(arguments) do
       {:ok, %{"code" => code}} when is_binary(code) and code != "" ->
-        Visor.Code.run(code, context)
+        {status, text, calls} = Visor.Code.execute(code, context)
+        {status, text, Visor.Code.facts(calls)}
 
       {:ok, %{}} ->
-        {:error, "The elixir tool needs code, the script to run, as a non-empty string."}
+        {:error, "The elixir tool needs code, the script to run, as a non-empty string.", []}
 
       _ ->
-        {:error, Jason.encode!(%{"INVALID_JSON" => arguments})}
+        {:error, Jason.encode!(%{"INVALID_JSON" => arguments}), []}
     end
   end
 
-  def run(name, _arguments, _context), do: {:error, "Unknown tool #{name}. Use elixir."}
+  def execute(name, _arguments, _context), do: {:error, "Unknown tool #{name}. Use elixir.", []}
 
   ## Operations, called by scripts through V
 
@@ -232,13 +244,25 @@ defmodule Visor.Tools do
     end
   end
 
+  # Kills every process whose VISOR_RUN tag is this command's or nests
+  # under it, except the shell running this. A process that leaves the
+  # command's process group, with setsid or as a child BEAM's port, keeps
+  # its environment and so its tag. Linux only (/proc); elsewhere nothing
+  # matches and the process group kill still applies.
+  @kill_tagged ~S"""
+  read -r self _ < /proc/self/stat 2>/dev/null; tag=${VISOR_RUN##*:}
+  for p in $(grep -lsz "^VISOR_RUN=.*:$tag\(:.*\)\{0,1\}$" /proc/[0-9]*/environ | cut -d/ -f3); do
+    [ "$p" = "$self" ] || kill -KILL "$p" 2>/dev/null
+  done
+  """
+
   # Runs before each command. A background `cat` holds the port's stdin,
   # which closes when the command ends, its caller dies or the VM exits,
-  # and then kills the command's process group. The command itself reads
-  # from /dev/null.
+  # and then kills what carries the command's tag and its process group.
+  # The command itself reads from /dev/null.
   @watchdog """
   exec 3<&0
-  (cat <&3 >/dev/null 2>&1; kill -KILL 0) >/dev/null 2>&1 &
+  (cat <&3 >/dev/null 2>&1; #{@kill_tagged}kill -KILL 0) >/dev/null 2>&1 &
   exec 3<&- </dev/null
   """
 
@@ -255,6 +279,10 @@ defmodule Visor.Tools do
   def shell(command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, Limits.shell_timeout_ms())
     extra_env = for {name, value} <- Keyword.get(opts, :env, []), do: {~c"#{name}", ~c"#{value}"}
+    # Unique to this command and this VM. A command run by a Visor that is
+    # itself under a command (its tests, say) adds to the tag it inherited,
+    # so the outer command's kill reaches it too.
+    tag = "#{System.get_env("VISOR_RUN")}:#{System.pid()}-#{System.unique_integer([:positive])}"
 
     port =
       Port.open({:spawn_executable, "/bin/sh"}, [
@@ -268,7 +296,8 @@ defmodule Visor.Tools do
           {~c"DEEPSEEK_API_KEY", false},
           {~c"PAGER", ~c"cat"},
           {~c"GIT_PAGER", ~c"cat"},
-          {~c"TERM", ~c"dumb"} | extra_env
+          {~c"TERM", ~c"dumb"},
+          {~c"VISOR_RUN", String.to_charlist(tag)} | extra_env
         ]
       ])
 
@@ -277,16 +306,17 @@ defmodule Visor.Tools do
     os_pid = with {:os_pid, os_pid} <- Port.info(port, :os_pid), do: os_pid
     limit = Keyword.get(opts, :max_bytes, Limits.result_bytes())
     deadline = System.monotonic_time(:millisecond) + timeout
-    shell_output(port, %{os_pid: os_pid, deadline: deadline, limit: limit}, [], 0)
+    run = %{os_pid: os_pid, tag: tag, deadline: deadline, limit: limit}
+    shell_output(port, run, [], 0)
   end
 
-  # The port's process leads a process group of its own (erl_child_setup
-  # starts each in a new session), so killing the group also stops what
-  # the command started, such as the mix test under a `mix test` shell.
-  defp kill_group(nil), do: :ok
-
-  defp kill_group(os_pid) do
-    System.cmd("kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
+  # What carries the command's tag, then its process group. The port's
+  # process leads a process group of its own (erl_child_setup starts each
+  # in a new session), so killing the group also stops what the command
+  # started, such as the mix test under a `mix test` shell.
+  defp kill(%{os_pid: os_pid, tag: tag}) do
+    System.cmd("sh", ["-c", @kill_tagged], env: [{"VISOR_RUN", tag}], stderr_to_stdout: true)
+    if os_pid, do: System.cmd("kill", ["-KILL", "--", "-#{os_pid}"], stderr_to_stdout: true)
   end
 
   @doc "Cuts text for a tool result to `Visor.Limits.result_bytes/0`."
@@ -311,7 +341,7 @@ defmodule Visor.Tools do
         {status, shell_text(acc, size, run.limit)}
     after
       max(run.deadline - System.monotonic_time(:millisecond), 0) ->
-        kill_group(run.os_pid)
+        kill(run)
         {:timeout, shell_text(acc, size, run.limit)}
     end
   end

@@ -13,6 +13,9 @@ defmodule Visor.Model.DeepSeek do
       which DeepSeek's default applies
     * `DEEPSEEK_CONTEXT_WINDOW`, the most tokens a request may hold, which
       the inspector measures the conversation against
+    * `DEEPSEEK_COMPACT_TOKENS`, the context size that compacts the
+      conversation, without which `Visor.Limits.compact_tokens/0` applies,
+      kept under the window (see `Visor.Compaction`)
 
   They are looked up on every request, so changing them doesn't need a
   restart. `mix visor.import_deepseek` copies them from pi or opencode.
@@ -39,6 +42,7 @@ defmodule Visor.Model.DeepSeek do
       endpoint: base_url(),
       max_tokens: max_tokens(),
       context_window: count("DEEPSEEK_CONTEXT_WINDOW", :context_window),
+      compact_tokens: count("DEEPSEEK_COMPACT_TOKENS", :compact_tokens),
       key: key_source()
     }
   end
@@ -91,7 +95,11 @@ defmodule Visor.Model.DeepSeek do
          }}
 
       {:ok, %Req.Response{status: status} = resp} ->
-        {:error, api_error(status, Req.Response.get_private(resp, :error_body, ""))}
+        message = api_error(status, Req.Response.get_private(resp, :error_body, ""))
+
+        if overflow?(status, message),
+          do: {:error, :context_overflow, message},
+          else: {:error, message}
 
       {:error, exception} ->
         {:error, "The request to DeepSeek failed: " <> Exception.message(exception)}
@@ -168,6 +176,13 @@ defmodule Visor.Model.DeepSeek do
       429 -> "DeepSeek is rate limiting requests (429). Try again shortly. #{detail}"
       _ -> "DeepSeek returned HTTP #{status}. #{detail}"
     end
+  end
+
+  # A request the API rejected for holding more tokens than the model's
+  # window, such as "This model's maximum context length is 131072 tokens".
+  defp overflow?(status, message) do
+    status in [400, 413] and
+      message =~ ~r/context (length|window)|maximum.{0,40}tokens|too many tokens/i
   end
 
   @doc "The API key, or nil when none is configured."

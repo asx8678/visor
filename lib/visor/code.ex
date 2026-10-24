@@ -45,10 +45,55 @@ defmodule Visor.Code do
   feedback collector.
   """
   def run(code, context) do
-    Process.put(__MODULE__, Map.put(context, :runner, self()))
+    {status, text, _calls} = execute(code, context)
+    {status, text}
+  end
+
+  @doc "Like `run/2`, and also returns the script's V calls (see `facts/1`)."
+  def execute(code, context) do
+    # The script records its V calls here rather than in this process's
+    # mailbox, which Dune waits in: a script can make thousands.
+    table = :ets.new(:visor_calls, [:public])
+    Process.put(__MODULE__, Map.put(context, :calls, table))
     result = Dune.eval_string(@begin <> code, @opts)
     log_script(context, result)
-    Feedback.Script.render(result, calls(), &Feedback.keep(context[:session], &1))
+    calls = calls(table)
+    {status, text} = Feedback.Script.render(result, calls, &Feedback.keep(context[:session], &1))
+    {status, text, calls}
+  end
+
+  @doc """
+  What each of a script's V calls did, small enough to keep for the whole
+  session: its call text, whether it worked, and the file, command or check
+  it touched. `Visor.Compaction` sums up old steps from these.
+  """
+  def facts(calls), do: Enum.map(calls, &fact/1)
+
+  defp fact(call) do
+    %{
+      name: call.name,
+      text: call.text,
+      status: call.status,
+      path: path(call.name, call.args),
+      error: call[:error] && first_line(call.error, 300),
+      changed: call[:changed],
+      ran: call[:ran] && first_line(call.ran, 200),
+      exit: call[:exit],
+      check: call[:value][:status],
+      summary: call[:check] && first_line(call.check, 200)
+    }
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp path(name, [path | _]) when name in [:ls, :read, :exists?, :write, :edit, :glob, :check],
+    do: path
+
+  defp path(:grep, [_pattern, path]), do: path
+  defp path(:grep, [_pattern]), do: "."
+  defp path(_name, _args), do: nil
+
+  defp first_line(text, max_bytes) do
+    text |> String.split("\n", parts: 2) |> hd() |> Visor.Tools.truncate(max_bytes)
   end
 
   # The script's whole output and value, before the summary for the model
@@ -71,14 +116,12 @@ defmodule Visor.Code do
     %{status: :error, type: failure.type, message: failure.message, stdio: failure.stdio}
   end
 
-  # The script's V calls, each as its last report. The script sent them
-  # before it ended, so they are all here once Dune returns.
-  defp calls(calls \\ %{}) do
-    receive do
-      {__MODULE__, :call, call} -> calls(Map.put(calls, call.n, call))
-    after
-      0 -> calls |> Map.values() |> Enum.sort_by(& &1.n)
-    end
+  # The script's V calls, each as its last report, including the one a
+  # script stopped at its time limit was making.
+  defp calls(table) do
+    calls = table |> :ets.tab2list() |> Enum.map(&elem(&1, 1)) |> Enum.sort_by(& &1.n)
+    :ets.delete(table)
+    calls
   end
 
   @doc false
@@ -93,9 +136,10 @@ defmodule Visor.Code do
   end
 
   @doc false
-  # Sends one of a script's V calls to its runner and the console.
+  # Records one of a script's V calls for its runner, and sends it to the
+  # console. A later report of the same call replaces the earlier.
   def report(context, call) do
-    with %{runner: runner} <- context, do: send(runner, {__MODULE__, :call, call})
+    with %{calls: table} <- context, do: :ets.insert(table, {call.n, call})
 
     with %{session: session, call_id: call_id} <- context do
       Event.broadcast(session, {:code_call, call_id, call})
@@ -122,6 +166,7 @@ defmodule Visor.Code.Allowlist do
       :sh,
       :check,
       :output,
+      :recall,
       :beam_stats
     ]
 

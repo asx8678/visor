@@ -12,7 +12,8 @@ defmodule Visor.SessionLog do
   started (`elapsed_ms`) and the `event`. Nothing is cut. The events:
 
     * `start`: the provider, model, endpoint and versions;
-    * `user`: a prompt, numbered;
+    * `user`: a prompt, numbered; `steer`: a message sent while a prompt
+      ran, for the model after the running tool calls;
     * `turn_start`, `turn_end`: each model call, with its step out of the
       prompt's limit, timing, token usage, and the reasoning, reply and
       tool calls in full;
@@ -29,6 +30,9 @@ defmodule Visor.SessionLog do
     * `prompt_end`: how a prompt ended (`reason`) and what it used: model
       calls, tool and `V` calls, errors, tokens, time; `summary`: the same
       for the whole session, before its last line;
+    * `compaction`: the conversation's first `summarized` messages became
+      a summary (see `Visor.Compaction`), with why and the estimated
+      tokens before and after;
     * `stream` (one line every few seconds per turn), `status`, `note`,
       `settings` and `context`.
 
@@ -387,6 +391,10 @@ defmodule Visor.SessionLog do
 
   defp record({:context, messages}, state),
     do: logged(state, "context", %{messages: messages})
+
+  defp record({:compaction, info}, state), do: logged(state, "compaction", info)
+
+  defp record({:steer, text}, state), do: logged(state, "steer", %{text: text})
 
   # The console's short preview; the request as sent follows.
   defp record({:request, _turn, _preview}, state), do: state

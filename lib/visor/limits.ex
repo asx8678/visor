@@ -31,6 +31,15 @@ defmodule Visor.Limits do
   @doc "When a script is stopped."
   def script_timeout_ms, do: 120_000
 
+  @doc """
+  When the agent stops a tool call that is still running: Dune's own
+  timeout, then time for its sandbox to shut down and the result to render.
+  """
+  def tool_deadline_ms, do: script_timeout_ms() + 15_000
+
+  @doc "When the agent stops a model call that is still streaming."
+  def model_deadline_ms, do: 20 * 60_000
+
   ## What the model sees
 
   @doc "A shell command's output kept, and a script's whole result."
@@ -41,4 +50,22 @@ defmodule Visor.Limits do
 
   @doc "What a script printed, before it is cut and kept behind a ref."
   def printed_bytes, do: 8_000
+
+  ## How the conversation is compacted (see `Visor.Compaction`)
+
+  @doc """
+  The context size that compacts the conversation, unless the provider
+  sets its own (`DEEPSEEK_COMPACT_TOKENS`): this, or the window less
+  `reserve_tokens/0`, whichever is smaller.
+  """
+  def compact_tokens, do: 200_000
+
+  @doc "Room kept free in the context window for the next response."
+  def reserve_tokens, do: 16_384
+
+  @doc "Recent conversation kept as it was after a compaction, in tokens."
+  def keep_recent_tokens, do: 20_000
+
+  @doc "The largest summary a compaction writes."
+  def summary_bytes, do: 32_768
 end

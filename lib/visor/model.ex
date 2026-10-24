@@ -40,18 +40,30 @@ defmodule Visor.Model do
           ms: non_neg_integer()
         }
 
-  @callback info() :: %{
-              provider: String.t(),
-              model: String.t(),
-              endpoint: String.t() | nil,
-              max_tokens: pos_integer() | nil,
-              context_window: pos_integer() | nil,
-              key: atom()
-            }
+  @typedoc """
+  `compact_tokens` is the context size that compacts the conversation,
+  when the provider sets one (see `Visor.Compaction`).
+  """
+  @type info :: %{
+          required(:provider) => String.t(),
+          required(:model) => String.t(),
+          required(:endpoint) => String.t() | nil,
+          required(:max_tokens) => pos_integer() | nil,
+          required(:context_window) => pos_integer() | nil,
+          optional(:compact_tokens) => pos_integer() | nil,
+          required(:key) => atom()
+        }
+
+  @callback info() :: info()
   @type emitted :: snapshot() | {:request, map()} | {:response, map()}
 
+  @doc """
+  `{:error, :context_overflow, message}` is a request the provider
+  rejected as longer than the model's window; the agent compacts the
+  conversation and tries once more.
+  """
   @callback stream(request(), emit :: (emitted() -> any())) ::
-              {:ok, result()} | {:error, String.t()}
+              {:ok, result()} | {:error, String.t()} | {:error, :context_overflow, String.t()}
 
   @doc """
   The provider to use: DeepSeek, unless the config names another one, as

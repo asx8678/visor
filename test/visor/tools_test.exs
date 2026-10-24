@@ -66,6 +66,25 @@ defmodule Visor.ToolsTest do
     assert {0, _} = Tools.shell(gone("orphan"), timeout: 5_000)
   end
 
+  # The processes are found by the command's tag in /proc, so on Linux only.
+  if File.exists?("/proc/self/environ") do
+    test "stops what a command started even when it left the process group" do
+      assert {0, _} =
+               Tools.shell("setsid sleep 30 >/dev/null 2>&1 </dev/null & echo $! > escaped")
+
+      assert {0, _} = Tools.shell(gone("escaped"), timeout: 5_000)
+
+      # A command under it with a tag of its own (a Visor's command in a
+      # check, say) adds to the tag, so stopping the outer one reaches it.
+      nested =
+        ~S|VISOR_RUN="$VISOR_RUN:inner" sh -c 'setsid sleep 30 >/dev/null 2>&1 </dev/null | <>
+          ~S|& echo $! > nested; wait'|
+
+      assert {:timeout, _} = Tools.shell(nested, timeout: 500)
+      assert {0, _} = Tools.shell(gone("nested"), timeout: 5_000)
+    end
+  end
+
   # A command that waits until the process whose pid is in `file` has
   # exited (a zombie counts as exited).
   defp gone(file),

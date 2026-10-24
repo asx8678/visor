@@ -42,7 +42,7 @@ defmodule VisorWeb.ConsoleComponents do
           </span>
         </summary>
         <div :if={@entry.steps != []} class="mt-2 ml-1.5 space-y-3 border-l border-rule pl-4">
-          <.step :for={step <- @entry.steps} :if={step != @live} step={step} />
+          <.step :for={step <- @entry.steps} :if={step != @live} :key={step.id} step={step} />
         </div>
       </details>
 
@@ -102,7 +102,8 @@ defmodule VisorWeb.ConsoleComponents do
       </dl>
       <p class="mt-2 text-ink-dim">
         Anything else goes to the model. Enter sends and Shift+Enter starts a new line.
-        Up and down arrows recall earlier prompts. Escape stops a running prompt.
+        Up and down arrows recall earlier prompts. A message sent while a prompt runs
+        steers it, after the running step. Escape stops a running prompt.
       </p>
       <p class="mt-2 text-ink-dim">
         Each session is logged to log/sessions. Run
@@ -165,7 +166,7 @@ defmodule VisorWeb.ConsoleComponents do
             :if={@step.calls != []}
             class="space-y-1 border-t border-rule px-3 py-2 font-mono text-xs"
           >
-            <li :for={call <- @step.calls} class="flex items-center gap-2">
+            <li :for={call <- @step.calls} :key={call.n} class="flex items-center gap-2">
               <span class={["lamp", tool_lamp(call.status)]} style="--lamp-size: 7px" />
               <span class="min-w-0 flex-1 truncate text-ink/85">V.{call.text}</span>
               <span :if={call.ms} class="flex-none text-ink-dim">{seconds(call.ms)}</span>
@@ -191,6 +192,7 @@ defmodule VisorWeb.ConsoleComponents do
     [
       {"/stop", "Stop the running model call or tools"},
       {"/clear", "Forget the conversation and clear the console"},
+      {"/compact", "Sum up the conversation so far, keeping its recent part as it was"},
       {"/effort low|high|max", "Set the reasoning effort"},
       {"/think on|off", "Turn thinking mode on or off"},
       {"/help", "Show this list"}

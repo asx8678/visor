@@ -131,18 +131,28 @@ defmodule Visor.Feedback.Script do
     end
   end
 
-  # A value a call already showed (a check's result) isn't repeated.
+  # A value a call already showed (a check's result) isn't repeated. Text
+  # with lines in it, such as a file a script read, reads as itself:
+  # inspected into one escaped line it costs 10-14% more tokens and loses
+  # its line breaks.
   defp value(%Dune.Success{value: value} = success, calls, keep) do
     unless Enum.any?(calls, &(Map.has_key?(&1, :value) and &1.value === value)) do
-      inspected = inspected(success)
-      # The whole of a long string is kept as text, so V.output/2 can read
-      # it by lines.
-      whole = if is_binary(value) and String.valid?(value), do: value, else: inspected
-      "=> " <> cut(inspected, whole, Limits.value_bytes(), keep)
+      if text?(value) and String.contains?(value, "\n") do
+        "=> text, #{Format.count(byte_size(value), "byte")}:\n" <>
+          cut(value, value, Limits.value_bytes(), keep)
+      else
+        inspected = inspected(success)
+        # The whole of a long string is kept as text, so V.output/2 can read
+        # it by lines.
+        whole = if text?(value), do: value, else: inspected
+        "=> " <> cut(inspected, whole, Limits.value_bytes(), keep)
+      end
     end
   end
 
   defp value(_failure, _calls, _keep), do: nil
+
+  defp text?(value), do: is_binary(value) and String.valid?(value)
 
   @doc false
   # Dune inspects with Elixir's default limits, which cut strings at 4 KB

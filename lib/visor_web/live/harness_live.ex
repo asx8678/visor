@@ -144,37 +144,41 @@ defmodule VisorWeb.HarnessLive do
 
         <div id="console-scroll" phx-hook=".AutoScroll" class="min-h-0 flex-1 overflow-y-auto">
           <div
-            id="entries"
-            phx-update="stream"
+            id="console-entries"
             phx-hook=".CopyCode"
             class="mx-auto max-w-3xl space-y-5 px-5 py-6 phone:px-4 phone:py-5"
           >
-            <div id="console-empty" class="hidden only:block">
-              <p class="font-display text-2xl font-medium text-ink">
-                Every model call and tool call runs in its own process.
-              </p>
-              <p class="mt-2 max-w-xl text-sm text-ink-dim">
-                Send a prompt and watch them start, work and exit in the process tree.
-                Type /help for commands.
-              </p>
-              <ul class="mt-5 flex flex-wrap gap-2">
-                <li :for={example <- @examples}>
-                  <button
-                    type="button"
-                    phx-click="example"
-                    phx-value-text={example}
-                    class="touch-manipulation border border-rule bg-panel px-3 py-1.5 text-[13px] text-ink transition-colors hover:border-amber hover:text-amber phone:py-2"
-                  >
-                    {example}
-                  </button>
-                </li>
-              </ul>
+            <div id="entries" phx-update="stream" class="space-y-5">
+              <div id="console-empty" class="hidden only:block">
+                <p class="font-display text-2xl font-medium text-ink">
+                  Every model call and tool call runs in its own process.
+                </p>
+                <p class="mt-2 max-w-xl text-sm text-ink-dim">
+                  Send a prompt and watch them start, work and exit in the process tree.
+                  Type /help for commands.
+                </p>
+                <ul class="mt-5 flex flex-wrap gap-2">
+                  <li :for={example <- @examples}>
+                    <button
+                      type="button"
+                      phx-click="example"
+                      phx-value-text={example}
+                      class="touch-manipulation border border-rule bg-panel px-3 py-1.5 text-[13px] text-ink transition-colors hover:border-amber hover:text-amber phone:py-2"
+                    >
+                      {example}
+                    </button>
+                  </li>
+                </ul>
+              </div>
+              <.entry
+                :for={{id, entry} <- @streams.entries}
+                id={id}
+                entry={entry}
+              />
             </div>
-            <.entry
-              :for={{id, entry} <- @streams.entries}
-              id={id}
-              entry={entry}
-            />
+            <%!-- The running prompt's work, outside the stream, so an update sends
+                 only the step that changed; it joins the stream when the prompt ends. --%>
+            <.entry :if={@work} id="work-live" entry={@work} />
           </div>
         </div>
 
@@ -191,7 +195,7 @@ defmodule VisorWeb.HarnessLive do
             >
               &gt;
             </span>
-            <div class="min-w-0 flex-1 [&_.fieldset]:m-0 [&_.fieldset]:p-0">
+            <div class="min-w-0 flex-1 [&_.field]:m-0">
               <.input
                 field={@form[:text]}
                 id="prompt-input"
@@ -525,13 +529,11 @@ defmodule VisorWeb.HarnessLive do
     run_command(socket, command, args)
   end
 
+  # While a prompt runs, the text steers it; the agent's steer event says so.
   defp send_input(socket, text) do
     case Agent.prompt(socket.assigns.session_id, text) do
-      :ok ->
-        socket
-
-      {:error, :busy} ->
-        note(socket, :info, "The agent is still working. Wait for it to finish, or press Stop.")
+      :ok -> socket
+      :queued -> socket
     end
   end
 
@@ -564,6 +566,20 @@ defmodule VisorWeb.HarnessLive do
 
       {:error, :busy} ->
         note(socket, :info, "Stop the running prompt before clearing.")
+    end
+  end
+
+  # The agent's compaction event writes the note when it compacts.
+  defp run_command(socket, "compact", _args) do
+    case Agent.compact(socket.assigns.session_id) do
+      {:ok, _info} ->
+        socket
+
+      {:error, :nothing} ->
+        note(socket, :info, "There is nothing to compact yet.")
+
+      {:error, :busy} ->
+        note(socket, :info, "Stop the running prompt before compacting.")
     end
   end
 
@@ -636,7 +652,10 @@ defmodule VisorWeb.HarnessLive do
     socket
     |> add_entry(%{type: :user, text: text})
     |> assign(work: work, last_work: nil, step: nil)
-    |> stream_insert(:entries, work)
+  end
+
+  defp agent_event({:steer, text}, socket) do
+    note(socket, :info, "Sent to the running prompt, for after its current step: " <> text)
   end
 
   defp agent_event({:turn_start, info}, socket) do
@@ -665,7 +684,15 @@ defmodule VisorWeb.HarnessLive do
     |> put_step(turn)
   end
 
-  defp agent_event({:request, turn, json}, socket) do
+  # This view owns the session, so a request that can't be shown as JSON
+  # is shown another way rather than ending it.
+  defp agent_event({:request, turn, preview}, socket) do
+    json =
+      case Jason.encode(preview, pretty: true) do
+        {:ok, json} -> json
+        {:error, _reason} -> inspect(preview, pretty: true, printable_limit: 4096)
+      end
+
     assign(socket, :last_request, %{turn: turn, json: json})
   end
 
@@ -698,23 +725,22 @@ defmodule VisorWeb.HarnessLive do
         content: content
       })
 
-    # The reply that ends a prompt is its answer, shown below the work.
+    # The reply that ends a prompt is its answer, shown below the work once
+    # the work joins the stream.
     {turn, answer} =
       if info.finish_reason in ["stop", "length"] and content not in [nil, ""],
         do: {%{turn | content: ""}, %{id: "answer-#{n}", type: :answer, text: content}},
         else: {turn, nil}
 
-    socket =
-      socket
-      |> assign(
-        live_turn: nil,
-        turn_stats: Map.merge(%{chunks: socket.assigns.live_turn.chunks}, info),
-        turn_history: [history_row(info, usage) | Enum.take(socket.assigns.turn_history, 199)],
-        context_tokens: Usage.context(usage) || socket.assigns.context_tokens
-      )
-      |> put_step(turn)
-
-    if answer, do: stream_insert(socket, :entries, answer), else: socket
+    socket
+    |> assign(
+      live_turn: nil,
+      turn_stats: Map.merge(%{chunks: socket.assigns.live_turn.chunks}, info),
+      turn_history: [history_row(info, usage) | Enum.take(socket.assigns.turn_history, 199)],
+      context_tokens: Usage.context(usage) || socket.assigns.context_tokens
+    )
+    |> put_step(turn)
+    |> update_work(&Map.put(&1, :answer, answer || &1[:answer]))
   end
 
   defp agent_event({:turn_end, _info}, socket), do: socket
@@ -771,7 +797,17 @@ defmodule VisorWeb.HarnessLive do
       end
 
     socket = update_work(socket, &%{&1 | status: status, ms: now() - &1.started})
-    assign(socket, work: nil, last_work: socket.assigns.work)
+
+    case socket.assigns.work do
+      nil ->
+        socket
+
+      work ->
+        socket
+        |> stream_insert(:entries, Map.delete(work, :answer))
+        |> then(&if(work[:answer], do: stream_insert(&1, :entries, work.answer), else: &1))
+        |> assign(work: nil, last_work: work)
+    end
   end
 
   defp agent_event({:status, status}, socket) do
@@ -782,6 +818,22 @@ defmodule VisorWeb.HarnessLive do
   defp agent_event({:note, level, text}, socket), do: note(socket, level, text)
 
   defp agent_event({:context, messages}, socket), do: assign(socket, :context_messages, messages)
+
+  defp agent_event({:compaction, info}, socket) do
+    why =
+      case info.reason do
+        :threshold -> "it passed its threshold"
+        :manual -> "you asked"
+        :overflow -> "the model rejected it as too long"
+      end
+
+    note(
+      socket,
+      :info,
+      "Compacted the conversation because #{why}: #{count(info.summarized, "message")} " <>
+        "became a summary, about #{short(info.tokens_before)} → #{short(info.tokens_after)} tokens."
+    )
+  end
 
   defp agent_event({:settings, settings}, socket) do
     assign(socket,
@@ -812,11 +864,7 @@ defmodule VisorWeb.HarnessLive do
 
   # Events outside a prompt, such as after /clear, have no work to go in.
   defp update_work(%{assigns: %{work: nil}} = socket, _fun), do: socket
-
-  defp update_work(socket, fun) do
-    work = fun.(socket.assigns.work)
-    socket |> assign(work: work) |> stream_insert(:entries, work)
-  end
+  defp update_work(socket, fun), do: assign(socket, work: fun.(socket.assigns.work))
 
   defp tool_entry(call) do
     %{
@@ -1006,7 +1054,7 @@ defmodule VisorWeb.HarnessLive do
   defp speed(_tokens, _ms, _ttft), do: "–"
 
   defp placeholder(:idle), do: "Ask the agent, or type /help"
-  defp placeholder(_status), do: "Working. Press Escape or Stop to interrupt."
+  defp placeholder(_status), do: "Working. Type to steer it, or press Escape or Stop."
 
   # The session's log file, relative to the project when it is inside it.
   defp log_path(id) do

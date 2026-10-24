@@ -119,6 +119,18 @@ defmodule VisorWeb.HarnessLiveTest do
     assert has_element?(view, "#session-readings h3", "2 model calls")
   end
 
+  test "compacts the conversation with /compact, or says there is nothing to", %{view: view} do
+    view |> form("#prompt-form", prompt: %{text: "/compact"}) |> render_submit()
+    assert has_element?(view, "#entries", "There is nothing to compact yet.")
+
+    view |> form("#prompt-form", prompt: %{text: "read mix.exs"}) |> render_submit()
+    assert_receive {:agent, {:status, :idle}}, @flow_timeout
+
+    view |> form("#prompt-form", prompt: %{text: "/compact"}) |> render_submit()
+    assert_receive {:agent, {:compaction, %{reason: :manual}}}
+    assert has_element?(view, "#entries", "Compacted the conversation because you asked")
+  end
+
   test "shows the calls an elixir script makes under its tool card", %{view: view} do
     view
     |> form("#prompt-form", prompt: %{text: "Count functions in each file"})
