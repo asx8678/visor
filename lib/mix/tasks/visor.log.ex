@@ -429,6 +429,11 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "wake"} = e, _opts), do: ["wake    #{e["text"]}"]
 
+  defp describe(%{"event" => "carry", "items" => []}, _opts), do: ["carry   (nothing)"]
+
+  defp describe(%{"event" => "carry"} = e, _opts),
+    do: ["carry   " <> Enum.join(e["items"], "; ")]
+
   defp describe(%{"event" => "job_start"} = e, _opts),
     do: ["job     #{e["id"]} started: #{e["label"]}"]
 

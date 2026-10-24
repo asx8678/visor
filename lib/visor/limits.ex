@@ -109,6 +109,10 @@ defmodule Visor.Limits do
   @doc "Recent conversation kept as it was after a compaction, in tokens."
   def keep_recent_tokens, do: 20_000
 
+  @doc "Items the model may ask every summary to carry forward, and their length."
+  def carry_items, do: 16
+  def carry_chars, do: 300
+
   @doc "The largest summary a compaction writes."
   def summary_bytes, do: 32_768
 end

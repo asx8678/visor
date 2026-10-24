@@ -343,6 +343,47 @@ defmodule Visor.AgentTest do
     assert summary =~ "[Visor compaction] Messages 1-#{summarized} of this conversation"
   end
 
+  test "keeps what the model carries in every summary", %{id: id} do
+    ask(id, @big)
+    ask(id, @big)
+
+    assert :ok = Agent.prompt(id, ~S|> V.carry(add: "auth_test.exs:40 still fails")|)
+    assert_receive {:agent, {:carry, ["auth_test.exs:40 still fails"]}}, 5_000
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    assert {:ok, _info} = Agent.compact(id)
+    ask(id, @big)
+    ask(id, @big)
+    assert {:ok, _info} = Agent.compact(id)
+
+    %{compaction: %{summary: summary}} = :sys.get_state(agent(id))
+    assert summary =~ "[Carry forward]\n- auth_test.exs:40 still fails"
+
+    assert {:ok, []} = Agent.carry(id, :clear)
+    assert {:error, "A carried item can't be empty."} = Agent.carry(id, {:add, " "})
+
+    for n <- 1..16, do: assert({:ok, _items} = Agent.carry(id, {:add, "item #{n}"}))
+    assert {:error, "The summary carries at most 16 items." <> _} = Agent.carry(id, {:add, "17"})
+  end
+
+  test "compacts when a script asks, before the next model call", %{id: id} do
+    ask(id, @big)
+    ask(id, @big)
+
+    assert :ok = Agent.prompt(id, ~S|> V.compact("the setup is done")|)
+    assert_receive {:agent, {:tool_end, %{status: :ok}}}, 5_000
+    assert_receive {:agent, {:compaction, %{reason: :requested, request: "the setup is done"}}}
+    assert_receive {:agent, {:turn_start, _info}}
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+  end
+
+  test "tells a script how full the context is", %{id: id} do
+    ask(id, @big)
+    assert :ok = Agent.prompt(id, ~S|> c = V.context(); {c.band, c.tokens > 0, c.threshold}|)
+    assert_receive {:agent, {:tool_end, %{result: result}}}, 5_000
+    assert result =~ "=> {:ok, true, 200000}"
+  end
+
   test "has nothing to compact before the conversation starts", %{id: id} do
     assert {:error, :nothing} = Agent.compact(id)
   end

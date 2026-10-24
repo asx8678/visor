@@ -53,6 +53,12 @@ defmodule Visor.Tools do
                                           job's output by its id; all of it, or lines first..last
             V.recall(id)                  a tool result from before a compaction, by the tool
                                           call id the summary gives
+            V.carry(add: text)            keep text in every compaction summary (remove: text,
+                                          clear: true; V.carry() reads the list)
+            V.compact(reason)             compact the conversation once this script's results
+                                          are in, such as when a task is done
+            V.context()                   %{tokens, threshold, window, share, band}: how full
+                                          the context is
             V.beam_stats()                runtime statistics as a map
 
           The result starts with ok, or with the call that failed and its error. Then come the \

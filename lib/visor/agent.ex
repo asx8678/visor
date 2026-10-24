@@ -97,7 +97,11 @@ defmodule Visor.Agent do
     wakes: 0,
     wakes_held: false,
     jobs_wake: true,
-    wake_timer: nil
+    wake_timer: nil,
+    # What the model asked every summary to keep (V.carry/1), and its
+    # request to compact at the next settled step (V.compact/1).
+    carry: [],
+    compact_request: nil
   ]
 
   def start_link(opts) do
@@ -129,6 +133,25 @@ defmodule Visor.Agent do
   compact or no summary would fit, or `{:error, :busy}` while a prompt runs.
   """
   def compact(id), do: GenServer.call(via(id), :compact)
+
+  @doc """
+  The list of what every compaction summary keeps (`V.carry/1`), after
+  `change`: `{:add, item}`, `{:remove, item}`, `:clear` or `:read`.
+  Returns `{:ok, items}` or `{:error, message}`.
+  """
+  def carry(id, change), do: GenServer.call(via(id), {:carry, change})
+
+  @doc """
+  Asks for the conversation to be compacted at the next settled step,
+  before the next model call (`V.compact/1`).
+  """
+  def request_compaction(id, reason), do: GenServer.call(via(id), {:request_compaction, reason})
+
+  @doc """
+  How full the context is: the last request's tokens, the threshold that
+  compacts and the window (`V.context/0`).
+  """
+  def context(id), do: GenServer.call(via(id), :context)
 
   @doc """
   Changes `:effort`, `:thinking` or `:jobs_wake` (whether a background job
@@ -244,7 +267,8 @@ defmodule Visor.Agent do
         facts: %{},
         last_prompt_tokens: nil,
         last_estimate: nil,
-        pending_jobs: []
+        pending_jobs: [],
+        carry: []
       })
       |> put_messages([])
 
@@ -274,6 +298,58 @@ defmodule Visor.Agent do
   end
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
+
+  def handle_call({:carry, change}, _from, state) do
+    items = Map.get(state, :carry, [])
+
+    result =
+      case change do
+        :read -> {:ok, items}
+        :clear -> {:ok, []}
+        {:remove, item} -> {:ok, List.delete(items, item)}
+        {:add, item} -> add_carry(items, item)
+      end
+
+    case result do
+      {:ok, ^items} ->
+        {:reply, {:ok, items}, state}
+
+      {:ok, new} ->
+        broadcast(state, {:carry, new})
+        {:reply, {:ok, new}, save(Map.put(state, :carry, new))}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:request_compaction, reason}, _from, state) do
+    {:reply, :ok, Map.put(state, :compact_request, reason)}
+  end
+
+  def handle_call(:context, _from, state) do
+    info = Model.current().info()
+    tokens = round(Map.get(state, :last_estimate, 0) * Map.get(state, :token_scale, 1.0))
+    threshold = threshold(info)
+    share = if threshold > 0, do: tokens / threshold, else: 0.0
+
+    band =
+      cond do
+        share >= 0.8 -> :urgent
+        share >= 0.6 -> :warn
+        true -> :ok
+      end
+
+    {:reply,
+     %{
+       tokens: tokens,
+       threshold: threshold,
+       window: info[:context_window],
+       share: Float.round(share, 3),
+       band: band,
+       carry: Map.get(state, :carry, [])
+     }, state}
+  end
 
   @impl true
   def handle_cast({:job_ended, job_id}, state) do
@@ -606,10 +682,39 @@ defmodule Visor.Agent do
 
   ## Compaction
 
+  # A compaction the model asked for is made here, the next settled step;
+  # otherwise only past the threshold.
   defp maybe_compact(state) do
-    case compact_messages(state, :threshold) do
-      {:ok, state, _info} -> state
-      :keep -> state
+    {reason, state} =
+      case Map.get(state, :compact_request) do
+        nil -> {:threshold, state}
+        request -> {:requested, Map.merge(state, %{compact_request: nil, requested: request})}
+      end
+
+    case compact_messages(state, reason) do
+      {:ok, state, _info} -> Map.delete(state, :requested)
+      :keep -> Map.delete(state, :requested)
+    end
+  end
+
+  defp add_carry(items, item) do
+    cond do
+      item in items ->
+        {:ok, items}
+
+      String.trim(item) == "" ->
+        {:error, "A carried item can't be empty."}
+
+      String.length(item) > Limits.carry_chars() ->
+        {:error, "A carried item is at most #{Limits.carry_chars()} characters."}
+
+      length(items) >= Limits.carry_items() ->
+        {:error,
+         "The summary carries at most #{Limits.carry_items()} items. Remove one first, " <>
+           ~s|with V.carry(remove: "...").|}
+
+      true ->
+        {:ok, items ++ [item]}
     end
   end
 
@@ -628,7 +733,8 @@ defmodule Visor.Agent do
         scale: Map.get(state, :token_scale, 1.0),
         threshold: threshold(provider),
         window: window || provider[:context_window],
-        force: reason != :threshold
+        force: reason != :threshold,
+        carry: Map.get(state, :carry, [])
       )
 
     case result do
@@ -644,6 +750,8 @@ defmodule Visor.Agent do
             messages_before: before,
             messages_after: left
           })
+
+        info = if r = Map.get(state, :requested), do: Map.put(info, :request, r), else: info
 
         broadcast(state, {:compaction, info})
         broadcast(state, {:context, left})
@@ -938,6 +1046,7 @@ defmodule Visor.Agent do
         compaction: Map.get(state, :compaction),
         facts: Map.get(state, :facts, %{}),
         queued: Map.get(state, :queued, []),
+        carry: Map.get(state, :carry, []),
         # The running batch's results so far, by call id.
         batch:
           for(

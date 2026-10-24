@@ -62,6 +62,7 @@ defmodule Visor.Compaction do
     * `:threshold` - the context size, in provider tokens, that compacts
     * `:window` - the context window in provider tokens, or nil
     * `:force` - compact even under the threshold
+    * `:carry` - what every summary keeps (`V.carry/1`)
   """
   def compact(messages, opts) do
     current = Keyword.get(opts, :compaction)
@@ -89,7 +90,8 @@ defmodule Visor.Compaction do
       replaced = if current, do: replaced + estimate(current.summary), else: replaced
       limit = min(Limits.summary_bytes(), max(replaced * 2 - 256, 256))
       summarized = Enum.take(messages, from)
-      summary = Summary.compile(summarized, Keyword.get(opts, :facts, %{}), limit)
+      facts = Keyword.get(opts, :facts, %{})
+      summary = Summary.compile(summarized, facts, limit, Keyword.get(opts, :carry, []))
       after_tokens = round(scale * (fixed + estimate(summary) + total(Enum.drop(messages, from))))
 
       if byte_size(summary) <= Limits.summary_bytes() and after_tokens <= target do

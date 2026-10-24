@@ -39,7 +39,10 @@ defmodule Visor.Agent.Event do
       first `summarized` messages became a summary (see
       `Visor.Compaction`), because the context passed its threshold
       (`:threshold`), the user asked (`:manual`) or the provider rejected a
-      request as too long (`:overflow`). Tokens are estimates
+      request as too long (`:overflow`), or the model asked with
+      `V.compact/1` (`:requested`, with its `request`). Tokens are estimates
+    * `{:carry, items}`: what every compaction summary keeps changed
+      (`V.carry/1`)
     * `{:repeat, %{id, count, blocked}}`: tool call `id` runs the same
       script as the `count - 1` before it, back to back. From
       `Visor.Limits.repeat_warn/0` in a row its result says so; at
@@ -110,7 +113,11 @@ defmodule Visor.Agent.Event do
           | {:tool_end, tool_call()}
           | {:prompt_end, %{reason: reason(), steps: non_neg_integer()}}
           | {:compaction,
-             %{required(:reason) => :threshold | :manual | :overflow, optional(atom()) => term()}}
+             %{
+               required(:reason) => :threshold | :manual | :overflow | :requested,
+               optional(atom()) => term()
+             }}
+          | {:carry, [String.t()]}
           | {:repeat, %{id: call_id(), count: pos_integer(), blocked: boolean()}}
           | {:repair,
              %{

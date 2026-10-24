@@ -50,8 +50,10 @@ defmodule Visor.Compaction.Summary do
   @doc """
   The summary of `messages`, at most `limit` bytes. `facts` holds what each
   tool call's script did, by tool call id: `%{status: status, calls: facts}`.
+  `carry` is what the model asked every summary to keep (`V.carry/1`): it
+  comes first, under "[Carry forward]", and is never dropped to fit.
   """
-  def compile(messages, facts, limit) do
+  def compile(messages, facts, limit, carry \\ []) do
     events = events(messages, facts)
 
     sections = %{
@@ -72,6 +74,12 @@ defmodule Visor.Compaction.Summary do
     footer =
       "[A tool result from before this point comes back in full with " <>
         "V.recall(\"<tool call id>\").]"
+
+    header =
+      case carry do
+        [] -> header
+        items -> header <> "\n\n[Carry forward]\n" <> Enum.map_join(items, "\n", &("- " <> &1))
+      end
 
     render(sections, header, footer, limit)
   end

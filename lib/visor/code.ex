@@ -198,6 +198,9 @@ defmodule Visor.Code.Allowlist do
       :jobs,
       :stop,
       :wait,
+      :carry,
+      :compact,
+      :context,
       :beam_stats
     ]
 

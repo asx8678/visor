@@ -36,7 +36,8 @@ defmodule Visor.SessionLog do
       for the whole session, before its last line;
     * `compaction`: the conversation's first `summarized` messages became
       a summary (see `Visor.Compaction`), with why and the estimated
-      tokens before and after; `repair`: tool calls answered (or results
+      tokens before and after; `carry`: what every summary keeps, after a
+      change (`V.carry/1`); `repair`: tool calls answered (or results
       dropped) to put the conversation back in an order the API accepts,
       after a restart mid-batch or before a request; `repeat`: a script run
       again unchanged, from the third time in a row (`blocked` once refused);
@@ -408,6 +409,8 @@ defmodule Visor.SessionLog do
   defp record({:repeat, info}, state), do: logged(state, "repeat", info)
 
   defp record({:wake, text}, state), do: logged(state, "wake", %{text: text})
+
+  defp record({:carry, items}, state), do: logged(state, "carry", %{items: items})
 
   defp record({:job_start, job}, state), do: logged(state, "job_start", job)
 

@@ -146,4 +146,15 @@ defmodule Visor.CompactionTest do
     assert [%{"role" => "user", "content" => "S"}] =
              Compaction.surface(messages, %{from: 4, summary: "S"})
   end
+
+  test "carries what the model asked to keep, ahead of everything and never dropped" do
+    messages = for n <- 1..20, do: user("prompt #{n} " <> String.duplicate("x", 400))
+    carry = ["auth_test.exs:40 still fails", "keep the old API"]
+
+    summary = Compaction.Summary.compile(messages, %{}, 600, carry)
+    assert summary =~ "[Carry forward]\n- auth_test.exs:40 still fails\n- keep the old API"
+    assert byte_size(summary) <= 600
+
+    refute Compaction.Summary.compile(messages, %{}, 600) =~ "[Carry forward]"
+  end
 end

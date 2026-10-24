@@ -203,6 +203,65 @@ defmodule V do
   end
 
   @doc """
+  What every compaction summary keeps, under "[Carry forward]", until it
+  is removed: `V.carry(add: "the failing test is auth_test.exs:40")`,
+  `V.carry(remove: "...")`, `V.carry(clear: true)`. `V.carry()` reads the
+  list. Returns the list.
+  """
+  def carry(opts \\ []) when is_list(opts) do
+    change =
+      case opts do
+        [] -> :read
+        [add: item] when is_binary(item) -> {:add, item}
+        [remove: item] when is_binary(item) -> {:remove, item}
+        [clear: true] -> :clear
+        _other -> :invalid
+      end
+
+    track(:carry, opts_args(opts), fn ->
+      cond do
+        change == :invalid ->
+          {:error, ~s|V.carry takes add: "text", remove: "text" or clear: true, one at a time.|}
+
+        session = session() ->
+          Visor.Agent.carry(session, change)
+
+        true ->
+          {:error, "Carrying needs a console session."}
+      end
+    end)
+  end
+
+  @doc """
+  Asks for the conversation to be compacted when this script's results are
+  in, before the next model call: the messages before the recent part
+  become a summary (see `carry/1` for what it always keeps). `reason`
+  says why, for the console.
+  """
+  def compact(reason) when is_binary(reason) do
+    track(:compact, [reason], fn ->
+      case session() do
+        nil -> {:error, "Compacting needs a console session."}
+        session -> {:ok, Visor.Agent.request_compaction(session, reason)}
+      end
+    end)
+  end
+
+  @doc """
+  How full the context is: `tokens` the last request sent, the `threshold`
+  that compacts it, the `window`, `share` of the threshold and `band`
+  (`:ok`, `:warn` from 0.6, `:urgent` from 0.8), and what is carried.
+  """
+  def context do
+    track(:context, [], fn ->
+      case session() do
+        nil -> {:error, "The context needs a console session."}
+        session -> {:ok, Visor.Agent.context(session)}
+      end
+    end)
+  end
+
+  @doc """
   An output the script's result kept as a ref (such as `"r3"`), or only
   its lines `first..last`, counted from 1.
   """

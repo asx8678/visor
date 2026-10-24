@@ -896,6 +896,7 @@ defmodule VisorWeb.HarnessLive do
         :threshold -> "it passed its threshold"
         :manual -> "you asked"
         :overflow -> "the model rejected it as too long"
+        :requested -> "the model asked (#{info[:request]})"
       end
 
     note(
