@@ -46,6 +46,52 @@ defmodule Visor.Content do
       "image_url" => %{"url" => "data:#{mime};base64," <> Base.encode64(data)}
     }
 
+  @doc """
+  A message with each picture's data replaced by its type and size, for
+  the session log: `"omitted: image/png, 2,345 bytes"`.
+  """
+  def omit_images(%{"content" => [_ | _] = parts} = message) do
+    parts =
+      Enum.map(parts, fn
+        %{"type" => "image_url", "image_url" => %{"url" => "data:" <> data}} = part ->
+          [type, base64] = String.split(data, ";base64,", parts: 2)
+          padding = byte_size(base64) - byte_size(String.trim_trailing(base64, "="))
+          bytes = div(byte_size(base64) * 3, 4) - padding
+
+          put_in(
+            part,
+            ["image_url", "url"],
+            "omitted: #{type}, #{Visor.Format.number(bytes)} bytes"
+          )
+
+        part ->
+          part
+      end)
+
+    %{message | "content" => parts}
+  end
+
+  def omit_images(message), do: message
+
+  @doc """
+  A message read back from a log with each picture it left out as text,
+  `[image left out]`, since the provider can't take an omitted one.
+  """
+  def restore_omitted(%{"content" => [_ | _] = parts} = message) do
+    parts =
+      Enum.map(parts, fn
+        %{"type" => "image_url", "image_url" => %{"url" => "omitted:" <> _}} ->
+          text_part("[image left out]")
+
+        part ->
+          part
+      end)
+
+    %{message | "content" => merge(parts)}
+  end
+
+  def restore_omitted(message), do: message
+
   @doc "A picture's type from its first bytes: PNG, JPEG, GIF or WebP; nil for anything else."
   def mime(<<0x89, "PNG", _::binary>>), do: "image/png"
   def mime(<<0xFF, 0xD8, 0xFF, _::binary>>), do: "image/jpeg"

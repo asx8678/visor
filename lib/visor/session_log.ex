@@ -473,7 +473,9 @@ defmodule Visor.SessionLog do
       params: params,
       messages_total: length(messages),
       messages_from: from,
-      messages: Enum.drop(messages, from),
+      # A picture's bytes stay out of the log: a few would make it too
+      # big for V.history to read (see Visor.Content.omit_images/1).
+      messages: messages |> Enum.drop(from) |> Enum.map(&Visor.Content.omit_images/1),
       tools: if(same_tools?, do: "same as turn #{last.tools_turn}", else: tools)
     })
 

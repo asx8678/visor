@@ -196,6 +196,33 @@ defmodule Visor.SessionLogTest do
     assert %{"result" => ^long} = find(events, "tool_end")
   end
 
+  # A picture's base64 in the log made it too big for V.history to read.
+  test "leaves a picture's bytes out of the log, and a resume puts text in its place",
+       %{tmp_dir: dir} do
+    %{id: id, log: log, path: path} = start_log(dir)
+    picture = Visor.Content.image("image/png", :binary.copy(<<0x89, "PNG">>, 250_000))
+    message = %{"role" => "user", "content" => [%{"type" => "text", "text" => "look"}, picture]}
+
+    body = %{
+      model: "flash",
+      messages: [%{role: "system", content: "Be brief."}, message],
+      tools: []
+    }
+
+    broadcast(id, {:wire_request, 1, %{url: "https://gateway.test", body: body}})
+    sync(log)
+
+    [request] = for %{"event" => "request"} = event <- events(path), do: event
+    [_system, %{"content" => [_text, logged]}] = request["messages"]
+    assert logged["image_url"]["url"] == "omitted: image/png, 1,000,000 bytes"
+    assert File.stat!(path).size < 10_000
+
+    assert %{"content" => [%{"type" => "text", "text" => "look[image left out]"}]} =
+             Visor.Content.restore_omitted(%{
+               "content" => [%{"type" => "text", "text" => "look"}, logged]
+             })
+  end
+
   test "writes each request's new messages, and the response", %{tmp_dir: dir} do
     %{id: id, log: log, path: path} = start_log(dir)
     url = "https://gateway.test/v1/chat/completions"

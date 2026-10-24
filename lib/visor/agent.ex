@@ -483,7 +483,10 @@ defmodule Visor.Agent do
              {:error, "There is no session log for #{from}."},
          events = Visor.SessionLog.Reader.read(file),
          {:ok, body} <- Visor.SessionLog.Reader.request(events, :last) do
-      messages = Enum.reject(body["messages"], &(&1["role"] == "system")) ++ last_answer(events)
+      messages =
+        (Enum.reject(body["messages"], &(&1["role"] == "system")) ++ last_answer(events))
+        |> Enum.map(&Visor.Content.restore_omitted/1)
+
       {messages, _repaired} = Repair.messages(messages, %{}, @missing)
 
       state =
