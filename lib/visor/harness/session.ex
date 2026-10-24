@@ -20,6 +20,16 @@ defmodule Visor.Harness.Session do
     Supervisor.start_link(__MODULE__, opts)
   end
 
+  @doc "How deep under other agents session `id` runs: 0 for a console's own."
+  def depth(id) do
+    with store when store != nil <- store(id),
+         [{:depth, depth}] <- :ets.lookup(store, :depth) do
+      depth
+    else
+      _ -> 0
+    end
+  end
+
   @doc "The table session `id` keeps its conversation in, or nil."
   def store(id) do
     case Registry.lookup(Harness.Registry, {id, :store}) do
@@ -31,11 +41,13 @@ defmodule Visor.Harness.Session do
   @impl true
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
-    Process.set_label("session #{id}")
+    Process.set_label(Keyword.get(opts, :label, "session #{id}"))
 
     tasks = Harness.via({id, :tasks})
     store = :ets.new(:visor_session, [:public, read_concurrency: true])
     {:ok, _owner} = Registry.register(Harness.Registry, {id, :store}, store)
+    # How deep under other agents this session's agent runs.
+    :ets.insert(store, {:depth, Keyword.get(opts, :depth, 0)})
 
     job_tasks = Harness.via({id, :job_tasks})
 

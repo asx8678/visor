@@ -217,6 +217,7 @@ defmodule Visor.Code.Allowlist do
       :save,
       :run,
       :scripts,
+      :agent,
       :beam_stats
     ]
 

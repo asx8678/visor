@@ -68,6 +68,18 @@ defmodule Visor.Limits do
   """
   def job_wake_batch_ms, do: Application.get_env(:visor, :job_wake_batch_ms, 1_000)
 
+  @doc "How deep sub-agents may go: 1 lets a console's agent start them, not theirs."
+  def agent_depth, do: 1
+
+  @doc "Sub-agents one session may run at once."
+  def agents_at_once, do: 3
+
+  @doc "A sub-agent's model calls, unless it asks for fewer."
+  def agent_steps, do: 12
+
+  @doc "When a sub-agent is stopped, unless it asks for longer."
+  def agent_timeout_ms, do: 20 * 60_000
+
   @doc "When the agent stops a model call that is still streaming."
   def model_deadline_ms, do: 20 * 60_000
 

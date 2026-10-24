@@ -40,6 +40,10 @@ live supervision tree beside it. There is no database.
 - Every path a tool touches goes through `Visor.Workspace`, which confines
   it to the project, follows symlinks itself and refuses `.env` files.
   Tool limits live in `Visor.Limits`.
+- `V.agent(task)` starts a sub-agent as a job: a session of its own
+  (`depth` 1, `Visor.Limits.agent_depth/0`) whose owner is the job's task,
+  so stopping the job or the parent's session ends it. Its answer is the
+  job's output, and its tokens count in the parent's totals.
 - `V.attempt(fn -> edits end, check: path)` keeps edits only if the check
   passes, and otherwise puts every file back through the same locked write
   path; attempts don't nest and can't start background jobs.

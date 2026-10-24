@@ -102,6 +102,12 @@ defmodule Visor.Agent do
     # request to compact at the next settled step (V.compact/1).
     carry: [],
     compact_request: nil,
+    # This agent's limit of model calls a prompt, its system prompt, and
+    # how deep under other agents it runs (0 for a console's own; see
+    # V.agent/2).
+    max_steps: @max_steps,
+    system: @system,
+    depth: 0,
     # Effort and thinking the model set for itself (V.think/2), as
     # %{effort, thinking, turns}, until the prompt ends, `turns` model
     # calls have used it, or the user changes either.
@@ -203,7 +209,10 @@ defmodule Visor.Agent do
       id: id,
       owner_ref: owner_ref,
       tasks: Keyword.fetch!(opts, :tasks),
-      store: Keyword.get(opts, :store)
+      store: Keyword.get(opts, :store),
+      max_steps: Keyword.get(opts, :max_steps, @max_steps),
+      system: system_prompt(Keyword.get(opts, :role)),
+      depth: Keyword.get(opts, :depth, 0)
     }
 
     {:ok, restore(state)}
@@ -546,10 +555,10 @@ defmodule Visor.Agent do
     # The last call keeps the tools in the request, so the provider's cache
     # still covers it, but may not call them.
     request = %{
-      system: @system,
+      system: Map.get(state, :system, @system),
       messages: messages,
       tools: Tools.definitions(),
-      tool_choice: if(last_step?(state.steps + 1), do: "none", else: "auto"),
+      tool_choice: if(last_step?(state, state.steps + 1), do: "none", else: "auto"),
       effort: effort,
       thinking: thinking
     }
@@ -573,7 +582,7 @@ defmodule Visor.Agent do
        %{
          turn: turn,
          step: state.steps + 1,
-         max_steps: @max_steps,
+         max_steps: max_steps(state),
          provider: info,
          effort: effort,
          thinking: thinking,
@@ -614,16 +623,18 @@ defmodule Visor.Agent do
       %{state | last_prompt_tokens: prompt_tokens(result.usage, state.last_prompt_tokens)}
       |> calibrate(result.usage)
 
+    max = max_steps(state)
+
     state =
       case {result.finish_reason, result.tool_calls} do
-        {"tool_calls", [_ | _]} when state.steps >= @max_steps ->
-          note(state, :error, "Stopped after #{@max_steps} model calls for one prompt.")
+        {"tool_calls", [_ | _]} when state.steps >= max ->
+          note(state, :error, "Stopped after #{max} model calls for one prompt.")
           state |> append(Map.delete(result.message, "tool_calls")) |> finish(:step_limit)
 
         {"tool_calls", [_ | _] = calls} ->
           state |> append(result.message) |> run_tools(calls)
 
-        {"stop", _calls} when state.steps >= @max_steps ->
+        {"stop", _calls} when state.steps >= max ->
           state |> append(result.message) |> finish(:step_limit)
 
         {"stop", _calls} ->
@@ -977,11 +988,11 @@ defmodule Visor.Agent do
         start_next_tool(state)
 
       true ->
-        if last_step?(state.steps + 1) do
+        if last_step?(state, state.steps + 1) do
           note(
             state,
             :info,
-            "The next model call is the last of #{@max_steps} for this prompt, so it runs " <>
+            "The next model call is the last of #{max_steps(state)} for this prompt, so it runs " <>
               "without tools and reports where the work got to."
           )
         end
@@ -1013,7 +1024,19 @@ defmodule Visor.Agent do
 
   defp exit_text(reason), do: Exception.format_exit(reason)
 
-  defp last_step?(step), do: step >= @max_steps
+  defp last_step?(state, step), do: step >= max_steps(state)
+
+  defp max_steps(state), do: Map.get(state, :max_steps, @max_steps)
+
+  # A sub-agent's system prompt says what it is for (V.agent/2).
+  defp system_prompt(nil), do: @system
+
+  defp system_prompt(role) do
+    @system <>
+      "\nYou are a sub-agent: another Visor agent gave you its task as the user's message, " <>
+      "and only your final answer goes back to it. Do the task, then answer briefly with " <>
+      "what it needs: results, file paths, what failed. Your role: " <> role
+  end
 
   # What goes after a batch's last result: the calls left, and the jobs
   # still running, so the model knows it will hear of them.
@@ -1040,12 +1063,12 @@ defmodule Visor.Agent do
 
   # What the model is told about its remaining calls, after the last tool
   # result. Only new messages carry it, so the cached prefix stays the same.
-  defp steps_left(%{steps: steps}) do
-    case @max_steps - steps do
+  defp steps_left(%{steps: steps} = state) do
+    case max_steps(state) - steps do
       1 ->
         "[Visor: this is the last model call for this prompt, and it can't run tools. " <>
           "Reply to the user: what is done, what isn't, what you suspect is wrong and " <>
-          "what you'd do next. They can say \"continue\" for #{@max_steps} more calls.]"
+          "what you'd do next. They can say \"continue\" for #{max_steps(state)} more calls.]"
 
       left when left <= @warn_steps ->
         "[Visor: #{left} model calls left for this prompt, this one included; the last " <>

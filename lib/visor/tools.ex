@@ -46,6 +46,9 @@ defmodule Visor.Tools do
                                           start a command as a background job (a long build, a
                                           server); returns %{job: id, log: path} at once. You hear
                                           when it ends, so don't poll it
+            V.agent(task, seed: :snippet, role: text)
+                                          start a sub-agent with a fresh context on a task, as a
+                                          job; you hear its answer when it is done
             V.job(id), V.jobs()           a job's status, exit and the end of its output; all jobs
             V.stop(id), V.wait(id, timeout: s)
                                           stop a job; wait for one started earlier

@@ -64,6 +64,20 @@ defmodule Visor.Agent.Totals do
 
   def add(totals, {:note, :error, _text}), do: bump(totals, errors: 1)
   def add(totals, {:job_start, _job}), do: bump(totals, jobs: 1)
+
+  # A sub-agent's model calls are this session's spending too.
+  def add(totals, {:job_end, %{kind: :agent, totals: %{} = child}}) do
+    bump(totals,
+      prompt_tokens: child[:prompt_tokens],
+      cached_tokens: child[:cached_tokens],
+      uncached_tokens: child[:uncached_tokens],
+      unmeasured_tokens: child[:unmeasured_tokens],
+      completion_tokens: child[:completion_tokens],
+      reasoning_tokens: child[:reasoning_tokens],
+      model_ms: child[:model_ms]
+    )
+  end
+
   def add(totals, {:wake, _text}), do: bump(totals, wakes: 1)
   def add(totals, _event), do: totals
 

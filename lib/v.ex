@@ -178,6 +178,87 @@ defmodule V do
     end)
   end
 
+  @doc """
+  Starts a sub-agent on `task` as a background job, and returns
+  `%{job: id}` at once: an agent of its own, with a fresh context, that
+  works on the task and answers. You hear its answer when it is done, as
+  for any job; `V.output(id)` has all of it. Options: `seed: :snippet`
+  passes it the last messages of this conversation as context (by
+  default it gets the task alone), `role:` says what it is for,
+  `max_steps:` (up to #{Limits.agent_steps()} by default) and `timeout:`
+  (seconds). A sub-agent can't start one of its own.
+  """
+  def agent(task, opts \\ []) when is_binary(task) and is_list(opts) do
+    track(:agent, [task | opts_args(opts)], fn ->
+      with {:ok, session} <- job_session(),
+           {:ok, prompt, settings} <- agent_settings(session, task, opts) do
+        with {:ok, job} <- Jobs.start_agent(session, prompt, settings) do
+          {:ok, %{job: job.id}, %{started: job.id}}
+        end
+      end
+    end)
+  end
+
+  defp agent_settings(session, task, opts) do
+    allowed = [:seed, :role, :max_steps, :timeout]
+
+    cond do
+      Keyword.keys(opts) -- allowed != [] ->
+        {:error, "V.agent's options are seed:, role:, max_steps: and timeout:."}
+
+      Keyword.get(opts, :seed, :task) not in [:task, :snippet] ->
+        {:error, "seed: is :task or :snippet."}
+
+      not match?(n when is_integer(n) and n in 1..24, Keyword.get(opts, :max_steps, 1)) ->
+        {:error, "max_steps: is a whole number from 1 to 24."}
+
+      true ->
+        prompt =
+          if Keyword.get(opts, :seed) == :snippet,
+            do: snippet(session) <> "\n\nYour task: " <> task,
+            else: task
+
+        timeout =
+          case Keyword.get(opts, :timeout) do
+            s when is_number(s) and s > 0 -> min(round(s * 1000), Limits.max_job_timeout_ms())
+            _ -> Limits.agent_timeout_ms()
+          end
+
+        {:ok, prompt,
+         %{
+           task: task,
+           role: Keyword.get(opts, :role, "a helper"),
+           max_steps: Keyword.get(opts, :max_steps, Limits.agent_steps()),
+           timeout_ms: timeout
+         }}
+    end
+  end
+
+  # The conversation's last words, text only: what a seeded sub-agent
+  # knows of it.
+  defp snippet(session) do
+    messages =
+      with store when store != nil <- Visor.Harness.Session.store(session),
+           [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation) do
+        messages
+      else
+        _ -> []
+      end
+
+    lines =
+      messages
+      |> Enum.filter(
+        &(&1["role"] in ["user", "assistant"] and is_binary(&1["content"]) and &1["content"] != "")
+      )
+      |> Enum.take(-12)
+      |> Enum.map_join("\n\n", fn message ->
+        text = String.slice(message["content"], 0, 4000)
+        "#{message["role"]}: #{text}"
+      end)
+
+    "<inherited-conversation>\n#{lines}\n</inherited-conversation>"
+  end
+
   @doc "The session's background jobs, without their output."
   def jobs do
     track(:jobs, [], fn ->

@@ -53,6 +53,16 @@ defmodule Visor.Jobs do
     GenServer.call(Harness.via({session, :jobs}), {:start, :shell, command, timeout_ms})
   end
 
+  @doc """
+  Starts a sub-agent as a job of session `session` (see `V.agent/2`): a
+  session of its own, owned by the job's task, given `prompt` as its
+  first message. `opts` has its `:task` (the label), `:max_steps`,
+  `:role` and `:timeout_ms`. Returns `{:ok, job}` or `{:error, message}`.
+  """
+  def start_agent(session, prompt, opts) do
+    GenServer.call(Harness.via({session, :jobs}), {:start, :agent, prompt, opts})
+  end
+
   @doc "Session `session`'s job `id`, or nil."
   def get(session, id) do
     with store when store != nil <- Session.store(session),
@@ -101,6 +111,22 @@ defmodule Visor.Jobs do
   def public(job), do: Map.drop(job, [:pid, :started, :announced])
 
   @doc "What the model is told when job `job` has ended."
+  def notice(%{kind: :agent} = job) do
+    answer = String.trim(job.tail || "")
+
+    how =
+      case {job.status, answer} do
+        {:exited, ""} -> "ended without an answer"
+        {:exited, answer} -> "answered (#{shorten(answer, 300)})"
+        {:timed_out, _} -> "was stopped at its #{Format.duration(job.timeout_ms)} time limit"
+        {:killed, _} -> "was stopped"
+        {_failed, _} -> "failed (#{Map.get(job, :reason, :error)})"
+      end
+
+    "[Visor: sub-agent #{job.id} (#{label(job)}) #{how} after #{Format.duration(job.ms)}. " <>
+      ~s|V.output("#{job.id}") has its whole answer.]|
+  end
+
   def notice(job) do
     how =
       case job.status do
@@ -113,6 +139,10 @@ defmodule Visor.Jobs do
 
     "[Visor: background job #{job.id} (#{label(job)}) #{how} after #{Format.duration(job.ms)}. " <>
       ~s|V.job("#{job.id}") shows the end of its output; V.output("#{job.id}") the whole of it.]|
+  end
+
+  defp shorten(text, chars) do
+    if String.length(text) > chars, do: String.slice(text, 0, chars) <> "…", else: text
   end
 
   @doc "A job's command, cut to one short line."
@@ -149,7 +179,39 @@ defmodule Visor.Jobs do
   end
 
   @impl true
-  def handle_call({:start, :shell, command, timeout_ms}, _from, state) do
+  def handle_call({:start, :agent, prompt, opts}, from, state) do
+    agents = Enum.count(running(state.id), &(&1.kind == :agent))
+
+    cond do
+      Session.depth(state.id) >= Limits.agent_depth() ->
+        {:reply,
+         {:error,
+          "A sub-agent can't start sub-agents of its own (at most " <>
+            "#{Limits.agent_depth()} level). Do the work yourself."}, state}
+
+      agents >= Limits.agents_at_once() ->
+        {:reply,
+         {:error,
+          "#{Limits.agents_at_once()} sub-agents are running already, the most a session may " <>
+            "run. Wait for one to end."}, state}
+
+      true ->
+        start(state, from, :agent, opts.task, opts.timeout_ms, fn session, job ->
+          run_agent(session, job, prompt, opts)
+        end)
+    end
+  end
+
+  def handle_call({:start, :shell, command, timeout_ms}, from, state) do
+    start(state, from, :shell, command, timeout_ms, &run_shell/2)
+  end
+
+  def handle_call({:stop, job_id}, _from, state), do: stop_job(state, job_id)
+
+  def handle_call({:wait, job_id, timeout_ms}, from, state),
+    do: wait_job(state, job_id, timeout_ms, from)
+
+  defp start(state, _from, kind, label, timeout_ms, run) do
     if length(running(state.id)) >= Limits.jobs_at_once() do
       {:reply,
        {:error,
@@ -161,8 +223,8 @@ defmodule Visor.Jobs do
 
       job = %{
         id: job_id,
-        kind: :shell,
-        label: command,
+        kind: kind,
+        label: label,
         status: :running,
         exit: nil,
         started: now(),
@@ -178,7 +240,7 @@ defmodule Visor.Jobs do
       session = state.id
 
       {:ok, pid} =
-        Task.Supervisor.start_child(state.tasks, fn -> run_shell(session, job) end,
+        Task.Supervisor.start_child(state.tasks, fn -> run.(session, job) end,
           restart: :temporary
         )
 
@@ -192,7 +254,7 @@ defmodule Visor.Jobs do
     end
   end
 
-  def handle_call({:stop, job_id}, _from, state) do
+  defp stop_job(state, job_id) do
     case get(state.id, job_id) do
       nil ->
         {:reply, {:error, "There is no job #{job_id}."}, state}
@@ -208,7 +270,7 @@ defmodule Visor.Jobs do
     end
   end
 
-  def handle_call({:wait, job_id, timeout_ms}, from, state) do
+  defp wait_job(state, job_id, timeout_ms, from) do
     case get(state.id, job_id) do
       nil ->
         {:reply, {:error, "There is no job #{job_id}."}, state}
@@ -335,6 +397,77 @@ defmodule Visor.Jobs do
 
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
   end
+
+  # A sub-agent: a session of its own whose owner is this task, so it
+  # ends when the job is stopped or its parent's session ends. The job
+  # ends with the child's first prompt, and its output is the child's
+  # last answer.
+  defp run_agent(session, job, prompt, opts) do
+    Process.set_label("job #{job.id}")
+
+    {:ok, child} =
+      Harness.start_session(self(),
+        depth: Session.depth(session) + 1,
+        max_steps: opts.max_steps,
+        role: opts.role,
+        label: "agent #{job.id} of #{session}"
+      )
+
+    update(session, job.id, &Map.put(&1, :child, child))
+    Visor.Agent.subscribe(child)
+    :ok = Visor.Agent.prompt(child, prompt)
+    {reason, totals} = await_child(job.started + job.timeout_ms, %Visor.Agent.Totals{})
+    answer = child_answer(child)
+
+    File.mkdir_p!(Path.dirname(job.log))
+    File.chmod!(Path.dirname(job.log), 0o700)
+    File.write!(job.log, answer)
+    File.chmod!(job.log, 0o600)
+
+    update(session, job.id, fn record ->
+      record
+      |> Map.merge(%{
+        status: agent_status(reason),
+        ms: now() - record.started,
+        tail: keep_tail(answer),
+        totals: Visor.Agent.Totals.to_map(totals)
+      })
+      |> Map.put(:reason, reason)
+    end)
+
+    GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
+  end
+
+  # The child's events, counted, until its first prompt ends.
+  defp await_child(deadline, totals) do
+    receive do
+      {:agent, {:prompt_end, %{reason: reason}} = event} ->
+        {reason, Visor.Agent.Totals.add(totals, event)}
+
+      {:agent, event} ->
+        await_child(deadline, Visor.Agent.Totals.add(totals, event))
+    after
+      max(deadline - now(), 0) -> {:timeout, totals}
+    end
+  end
+
+  defp child_answer(child) do
+    with store when store != nil <- Session.store(child),
+         [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation),
+         %{"content" => content} when is_binary(content) <-
+           Enum.find(
+             Enum.reverse(messages),
+             &(&1["role"] == "assistant" and &1["content"] not in [nil, ""])
+           ) do
+      content
+    else
+      _ -> ""
+    end
+  end
+
+  defp agent_status(reason) when reason in [:answered, :step_limit, :max_tokens], do: :exited
+  defp agent_status(:timeout), do: :timed_out
+  defp agent_status(_reason), do: :failed
 
   defp status(0), do: :exited
   defp status(:timeout), do: :timed_out
