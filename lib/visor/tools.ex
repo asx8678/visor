@@ -229,8 +229,9 @@ defmodule Visor.Tools do
   # Shapes models give the arguments that have one clear meaning, put
   # right before they are read, after pi-fabric's argument preparation:
   # the script as a list of lines, in a code fence, or under another key
-  # as the only one. Each fix is a `repair` event; anything else is left
-  # for the error it gets.
+  # as the only one, and a heredoc whose text starts on its opening line
+  # (`Visor.Tools.Heredoc`). Each fix is a `repair` event; anything else
+  # is left for the error it gets.
   defp repair_arguments(args, context) do
     {args, fixes} = repaired(args)
 
@@ -247,7 +248,7 @@ defmodule Visor.Tools do
 
   defp repaired(args) do
     Enum.reduce(
-      [&code_under_other_key/1, &code_as_lines/1, &code_in_fence/1],
+      [&code_under_other_key/1, &code_as_lines/1, &code_in_fence/1, &heredoc_text/1],
       {args, []},
       fn fix, {args, fixes} ->
         case fix.(args) do
@@ -286,6 +287,15 @@ defmodule Visor.Tools do
   end
 
   defp code_in_fence(_args), do: :ok
+
+  defp heredoc_text(%{"code" => code} = args) when is_binary(code) do
+    case Visor.Tools.Heredoc.repair(code) do
+      nil -> :ok
+      code -> {:fixed, %{args | "code" => code}, "a heredoc's text began on its opening line"}
+    end
+  end
+
+  defp heredoc_text(_args), do: :ok
 
   ## Operations, called by scripts through V
 

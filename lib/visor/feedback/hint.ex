@@ -81,9 +81,11 @@ defmodule Visor.Feedback.Hint do
   def for_script(type, message, code) do
     cond do
       type == :parsing and message =~ "heredoc allows only whitespace characters" ->
-        ~s|a heredoc's text starts on the line after its opening """ (or ~S"""): put a | <>
-          ~s|newline right after it and the closing """ on a line of its own. For text on | <>
-          "one line, use a plain string."
+        delim = if String.ends_with?(message, "'''"), do: "'''", else: ~s(""")
+
+        "a heredoc's text starts on the line after its opening #{delim} (or ~S#{delim}): " <>
+          "put a newline right after it and the closing #{delim} on a line of its own. " <>
+          "For one line of text, use ~S[...] or ~S{...}, a delimiter it doesn't hold."
 
       type == :parsing and code =~ ~r/^[ \t]*"""[ \t]*[A-Za-z_\[{']/m ->
         ~s|a heredoc ends at the first line that starts with """, so text that holds such | <>

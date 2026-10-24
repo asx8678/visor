@@ -193,6 +193,9 @@ defmodule Visor.CodeTest do
       # Text right after the opening """, as in Python.
       ~s|V.edit("main.js",\n"""for (let i = 0; i < 16; i++) {\n}""",\n"""for (;;) {}""")| =>
         ~s|a heredoc's text starts on the line after its opening """|,
+      # The same with ''', named as written.
+      ~s|V.edit("main.js",\n'''for (;;) {}''', "y")| =>
+        "a heredoc's text starts on the line after its opening '''",
       # A Python docstring in a heredoc's shell command ends the heredoc.
       (~s|r = V.sh(~S"""\npython3 - <<'PYEOF'\ns = s.replace("""watch.add(f(1));""",\n| <>
          ~s|"""function makeStrap(sign) {\n  const p = new THREE.Vector3(x * sign);""")\n| <>

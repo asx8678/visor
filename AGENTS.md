@@ -115,7 +115,9 @@ live supervision tree beside it. There is no database.
   `unchecked`.
 - The agent refuses the 6th identical script in a row and warns from the
   3rd; a failed script's error ends with a hint when the mistake is known
-  (`Visor.Feedback.Hint`); `mix visor.log stats` counts V calls scripts
+  (`Visor.Feedback.Hint`), and a heredoc whose text starts on its opening
+  line, as in Python, is put right before the script runs
+  (`Visor.Tools.Heredoc`); `mix visor.log stats` counts V calls scripts
   got wrong. The demo model refuses requests DeepSeek would refuse, so
   message-order bugs fail the tests.
 - Several pages may work on one project. `Visor.Lock` makes a file's

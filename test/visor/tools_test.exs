@@ -117,6 +117,15 @@ defmodule Visor.ToolsTest do
                      {:repair,
                       %{reason: :arguments, call_id: "c9", fixes: ["code was a list of lines"]}}}
 
+    # A heredoc whose text starts on its opening line, as in Python.
+    heredoc = JSON.encode!(%{code: ~S'x = ~S"""say "hi" """; String.length(x)'})
+    assert {:ok, "ok: 0 calls\n=> 9"} = Tools.run("elixir", heredoc)
+    Tools.run("elixir", heredoc, %{session: id, call_id: "c10"})
+
+    assert_received {:agent,
+                     {:repair,
+                      %{call_id: "c10", fixes: ["a heredoc's text began on its opening line"]}}}
+
     # Anything less clear gets its error.
     assert {:error, "The elixir tool needs code" <> _} =
              Tools.run("elixir", ~s({"script": "1", "source": "2"}))
