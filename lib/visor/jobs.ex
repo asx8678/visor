@@ -517,6 +517,7 @@ defmodule Visor.Jobs do
         max_steps: opts.max_steps,
         role: opts.role,
         read_only: Map.get(opts, :read_only, false),
+        limits: Map.get(opts, :limits),
         label: "agent #{job.id} of #{session}",
         parent: "#{session}/#{job.id}"
       )
@@ -528,6 +529,9 @@ defmodule Visor.Jobs do
 
     {reason, totals} =
       await_child({session, job.id}, job.started + job.timeout_ms, %Visor.Agent.Totals{})
+
+    # What the child spent is its parent's spending too.
+    Visor.Agent.spent(session, totals.cost, totals.prompt_tokens + totals.completion_tokens)
 
     answer = child_answer(child)
 
@@ -642,16 +646,23 @@ defmodule Visor.Jobs do
       else: answers <> "\n\nNo answer from: #{Enum.join(failed, ", ")}."
   end
 
-  # Members and the synthesizer only read, as pi-fabric's council's do.
+  # Members and the synthesizer only read, as pi-fabric's council's do,
+  # and share what the parent's prompt may still spend.
   defp agent_opts(task, role, opts) do
+    shares = length(opts.roles) + 1
+
     %{
       task: task,
       role: role,
       max_steps: opts.max_steps,
       timeout_ms: opts.timeout_ms,
-      read_only: true
+      read_only: true,
+      limits: opts[:limits] && Map.new(opts.limits, fn {k, v} -> {k, share(v, shares)} end)
     }
   end
+
+  defp share(n, shares) when is_integer(n), do: div(n, shares)
+  defp share(n, shares), do: n / shares
 
   defp member_answer(%{log: log, tail: tail}) do
     case File.read(log) do

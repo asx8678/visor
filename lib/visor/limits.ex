@@ -106,6 +106,36 @@ defmodule Visor.Limits do
   """
   def stream_idle_ms, do: 90_000
 
+  ## What the model may spend
+
+  @doc """
+  The most a prompt from the user may spend in dollars, its wakes,
+  reviews and sub-agents included: $1, or `VISOR_PROMPT_LIMIT_USD`. The
+  dearest prompt in the live sessions so far cost $0.009; a full one, 24
+  model calls near the compaction threshold, about $0.40.
+  """
+  def prompt_cost_limit, do: dollars("VISOR_PROMPT_LIMIT_USD", :prompt_cost_limit, 1.0)
+
+  @doc "The most a session may spend in dollars: $5, or `VISOR_SESSION_LIMIT_USD`."
+  def session_cost_limit, do: dollars("VISOR_SESSION_LIMIT_USD", :session_cost_limit, 5.0)
+
+  @doc """
+  The most tokens a prompt may use, in and out: a stop for a runaway
+  prompt, also when the provider reports no cost.
+  """
+  def prompt_token_limit, do: 50_000_000
+
+  defp dollars(env, key, default) do
+    with nil <- Application.get_env(:visor, key),
+         text when is_binary(text) <- System.get_env(env),
+         {n, ""} when n > 0 <- Float.parse(text) do
+      n
+    else
+      n when is_number(n) -> n / 1
+      _unset -> default
+    end
+  end
+
   ## What the model sees
 
   @doc "A shell command's output kept, and a script's whole result."

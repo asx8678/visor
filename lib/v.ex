@@ -296,6 +296,8 @@ defmodule V do
 
   defp agent_settings(session, task, opts) do
     allowed = [:seed, :role, :max_steps, :timeout]
+    # What the parent's prompt may still spend is the sub-agent's to spend.
+    allowance = Visor.Agent.allowance(session)
 
     cond do
       Keyword.keys(opts) -- allowed != [] ->
@@ -306,6 +308,11 @@ defmodule V do
 
       not match?(n when is_integer(n) and n in 1..24, Keyword.get(opts, :max_steps, 1)) ->
         {:error, "max_steps: is a whole number from 1 to 24."}
+
+      not affordable?(allowance) ->
+        {:error,
+         "This prompt has reached its spending limit, so no sub-agent can start (/budget " <>
+           "raises it)."}
 
       true ->
         prompt =
@@ -324,10 +331,14 @@ defmodule V do
            task: task,
            role: Keyword.get(opts, :role, "a helper"),
            max_steps: Keyword.get(opts, :max_steps, Limits.agent_steps()),
-           timeout_ms: timeout
+           timeout_ms: timeout,
+           limits: allowance
          }}
     end
   end
+
+  defp affordable?(%{prompt: prompt, session: session, tokens: tokens}),
+    do: prompt > 0 and session > 0 and tokens > 0
 
   # The conversation's last words, text only: what a seeded sub-agent
   # knows of it.

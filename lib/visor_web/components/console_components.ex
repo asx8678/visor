@@ -264,6 +264,7 @@ defmodule VisorWeb.ConsoleComponents do
       {"/jobs", "List the background jobs"},
       {"/jobs stop ID", "Stop a background job and what it started"},
       {"/jobs wake on|off", "Whether a job that ends may start the agent on its own"},
+      {"/budget [prompt|session N]", "What was spent, and the limits in dollars"},
       {"/effort low|high|max", "Set the reasoning effort"},
       {"/think on|off", "Turn thinking mode on or off"},
       {"/help", "Show this list"}

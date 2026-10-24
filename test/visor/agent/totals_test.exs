@@ -47,6 +47,26 @@ defmodule Visor.Agent.TotalsTest do
            } = totals
   end
 
+  test "adds up the dollars the provider reported, and counts the calls it didn't" do
+    totals =
+      Enum.reduce(
+        [
+          {:turn_end, %{usage: %{"prompt_tokens" => 10, "cost" => 0.25}}},
+          {:turn_end, %{usage: %{"prompt_tokens" => 10}}},
+          {:turn_end, %{finish_reason: "crashed"}},
+          {:review, %{usage: %{"prompt_tokens" => 5, "cost" => 0.5}}},
+          {:job_end, %{kind: :agent, totals: %{cost: 1.0, unpriced: 2}}}
+        ],
+        %Totals{},
+        &Totals.add(&2, &1)
+      )
+
+    assert totals.cost == 1.75
+    # The call without cost figures, and the sub-agent's two: not the one
+    # that crashed before answering.
+    assert totals.unpriced == 3
+  end
+
   test "keeps the prompt tokens without cache figures apart" do
     measured = %{
       "prompt_tokens" => 100,

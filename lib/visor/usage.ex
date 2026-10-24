@@ -9,14 +9,15 @@ defmodule Visor.Usage do
   A field is nil when the provider didn't report it.
   """
 
-  defstruct [:prompt, :cached, :uncached, :completion, :reasoning]
+  defstruct [:prompt, :cached, :uncached, :completion, :reasoning, :cost]
 
   @type t :: %__MODULE__{
           prompt: non_neg_integer() | nil,
           cached: non_neg_integer() | nil,
           uncached: non_neg_integer() | nil,
           completion: non_neg_integer() | nil,
-          reasoning: non_neg_integer() | nil
+          reasoning: non_neg_integer() | nil,
+          cost: float() | nil
         }
 
   @doc "Usage from a provider's usage map (string keys), or nil without one."
@@ -28,7 +29,10 @@ defmodule Visor.Usage do
       cached: whole(usage["prompt_cache_hit_tokens"]),
       uncached: whole(usage["prompt_cache_miss_tokens"]),
       completion: whole(usage["completion_tokens"]),
-      reasoning: if(is_map(details), do: whole(details["reasoning_tokens"]))
+      reasoning: if(is_map(details), do: whole(details["reasoning_tokens"])),
+      # What the call cost in dollars, as a gateway such as zro reports it;
+      # DeepSeek's own API doesn't.
+      cost: if(is_number(usage["cost"]), do: usage["cost"] / 1)
     }
   end
 

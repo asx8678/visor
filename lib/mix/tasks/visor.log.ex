@@ -587,8 +587,19 @@ defmodule Mix.Tasks.Visor.Log do
       "#{failed.(e["tool_errors"])}, #{count(e["v_calls"], "V call")}#{failed.(e["v_errors"])}, " <>
       "#{count(e["errors"], "error")}, #{number(e["prompt_tokens"])} tokens in#{cached}, " <>
       "#{number(e["completion_tokens"])} out#{reasoning}, model #{seconds(e["model_ms"])}, " <>
-      "tools #{seconds(e["tool_ms"])}, #{number(e["request_bytes"])} bytes sent"
+      "tools #{seconds(e["tool_ms"])}, #{number(e["request_bytes"])} bytes sent" <>
+      cost(e)
   end
+
+  # Logs from before costs were counted have none.
+  defp cost(%{"cost" => cost} = e) when is_number(cost) do
+    unpriced =
+      if (e["unpriced"] || 0) > 0, do: " (#{number(e["unpriced"])} calls unpriced)", else: ""
+
+    ", " <> Visor.Format.dollars(cost) <> unpriced
+  end
+
+  defp cost(_e), do: ""
 
   # Tool arguments are a JSON string; a script reads better as its code.
   defp arguments(text) when is_binary(text) do

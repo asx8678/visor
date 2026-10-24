@@ -59,6 +59,12 @@ live supervision tree beside it. There is no database.
   weighs the answers that came back, as one job. A council's sessions only
   read (`Visor.Harness.Session.read_only?/1`): `V` refuses its writes,
   edits, shell commands, checks and saves.
+- Each model call's reported `cost` (zro sends one; `Visor.Usage`) is
+  counted: the agent stops a prompt past `Visor.Limits.prompt_cost_limit/0`
+  ($1, `VISOR_PROMPT_LIMIT_USD`) or a session past `session_cost_limit/0`
+  ($5) before its next model call (`:budget`), its reviews' and
+  sub-agents' spending included; a sub-agent starts with what its parent's
+  prompt has left (`Visor.Agent.allowance/1`). `/budget` shows and sets it.
 - `/advisor` and `/supervise goal` turn on the session's `Visor.Reviewer`:
   a model call of its own when a prompt ends or a tool call fails, whose
   rare message reaches the agent like a job notice (a supervisor's may wake

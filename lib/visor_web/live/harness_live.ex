@@ -821,6 +821,33 @@ defmodule VisorWeb.HarnessLive do
     note(socket, :error, "/jobs takes nothing, stop ID or wake on|off. Type /help for the list.")
   end
 
+  defp run_command(socket, "budget", []) do
+    %{spent: spent, limits: limits} = Agent.settings(socket.assigns.session_id)
+    dollars = &Visor.Format.dollars/1
+
+    note(
+      socket,
+      :info,
+      "This prompt has spent #{dollars.(spent.prompt)} of #{dollars.(limits.prompt)}, the " <>
+        "session #{dollars.(spent.session)} of #{dollars.(limits.session)}. " <>
+        "/budget prompt N or /budget session N sets a limit in dollars."
+    )
+  end
+
+  defp run_command(socket, "budget", [scope, amount | _]) when scope in ~w(prompt session) do
+    case Float.parse(amount) do
+      {dollars, ""} when dollars > 0 ->
+        socket = configure(socket, budget: {String.to_existing_atom(scope), dollars})
+        note(socket, :info, "The #{scope}'s limit is now #{Visor.Format.dollars(dollars)}.")
+
+      _ ->
+        note(socket, :error, "/budget #{scope} takes a number of dollars, such as 2 or 0.5.")
+    end
+  end
+
+  defp run_command(socket, "budget", _args),
+    do: note(socket, :error, "/budget takes nothing, prompt N or session N.")
+
   defp run_command(socket, "effort", [effort | _]), do: configure(socket, effort: effort)
   defp run_command(socket, "think", ["on" | _]), do: configure(socket, thinking: true)
   defp run_command(socket, "think", ["off" | _]), do: configure(socket, thinking: false)
@@ -1364,6 +1391,7 @@ defmodule VisorWeb.HarnessLive do
 
   defp session_rows(totals) do
     [
+      cost_row(totals),
       {"In", short(totals.prompt_tokens)},
       {"Out", short(totals.completion_tokens)},
       {"Reasoning", short(totals.reasoning_tokens)},
@@ -1373,6 +1401,15 @@ defmodule VisorWeb.HarnessLive do
       {"Model time", seconds(totals.model_ms)},
       {"Tool time", seconds(totals.tool_ms)}
     ]
+  end
+
+  # The dollars the provider reported; calls it reported none for are
+  # left out, and said to be.
+  defp cost_row(totals) do
+    case Map.get(totals, :unpriced, 0) do
+      0 -> {"Cost", Visor.Format.dollars(Map.get(totals, :cost, 0.0))}
+      n -> {"Cost", "#{Visor.Format.dollars(Map.get(totals, :cost, 0.0))}, #{number(n)} unpriced"}
+    end
   end
 
   defp failures(label, n, 0), do: {label, number(n)}

@@ -33,7 +33,9 @@ defmodule Visor.Agent.Event do
       call and the result the model saw. A batch's calls run one at a
       time; one cancelled before its turn starts with a nil `pid` and
       ends straight away
-    * `{:prompt_end, %{reason, steps}}`: the prompt ended and why; when it
+    * `{:prompt_end, %{reason, steps}}`: the prompt ended and why (`:budget`:
+      it, or the session, reached its spending limit before a model call;
+      see `Visor.Limits.prompt_cost_limit/0`); when it
       answered or ran out of steps with Elixir files it changed that no
       passing check has covered since, also `unchecked`, their paths (the
       model is reminded once before it answers, see `Visor.Feedback`)
@@ -105,6 +107,7 @@ defmodule Visor.Agent.Event do
           | :model_error
           | :step_limit
           | :unfinished
+          | :budget
 
   @typedoc "A tool call, as `tool_start` and `tool_end` carry it."
   @type tool_call :: %{

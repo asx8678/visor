@@ -314,6 +314,20 @@ defmodule VisorWeb.HarnessLiveTest do
     assert_push_event(view, "prompt_done", %{reason: :answered, steps: 2})
   end
 
+  test "shows and sets the spending limits", %{view: view, id: id} do
+    submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
+
+    submit.("/budget")
+    assert has_element?(view, "#entries", "This prompt has spent $0.0000 of $1.00")
+
+    submit.("/budget prompt 2.5")
+    assert %{limits: %{prompt: 2.5}} = Agent.settings(id)
+    assert has_element?(view, "#entries", "The prompt's limit is now $2.50.")
+
+    submit.("/budget session lots")
+    assert has_element?(view, "#entries", "/budget session takes a number of dollars")
+  end
+
   test "turns the reviewer and prewalk on and off", %{view: view, id: id} do
     submit = fn text -> view |> form("#prompt-form", prompt: %{text: text}) |> render_submit() end
 

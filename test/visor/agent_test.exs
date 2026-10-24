@@ -10,6 +10,19 @@ defmodule Visor.AgentTest do
     def stream(request, emit), do: Visor.Model.Demo.stream(request, emit)
   end
 
+  # The demo model, each call costing $0.40 as a gateway such as zro
+  # reports it.
+  defmodule Costly do
+    def info, do: Visor.Model.Demo.info()
+
+    def stream(request, emit) do
+      with {:ok, result} <- Visor.Model.Demo.stream(request, emit) do
+        {:ok,
+         %{result | usage: %{"prompt_tokens" => 1_000, "completion_tokens" => 10, "cost" => 0.4}}}
+      end
+    end
+  end
+
   setup do
     id = "t#{System.unique_integer([:positive])}"
     session = start_supervised!({Visor.Harness.Session, id: id, owner: self()})
@@ -553,6 +566,40 @@ defmodule Visor.AgentTest do
     # The demo model refuses a conversation out of order, as DeepSeek does.
     ask(id, "list the files")
     assert {:error, "There is no session log for nope."} = Agent.resume(id, "nope")
+  end
+
+  # BeamAgent's guardrails and Vibe's budget: wakes, councils and
+  # sub-agents multiply calls, and nothing stopped one that kept going.
+  test "stops a prompt at its spending limit, and the session at its own", %{id: id} do
+    previous = Application.get_env(:visor, :model_provider)
+    Application.put_env(:visor, :model_provider, Costly)
+    on_exit(fn -> Application.put_env(:visor, :model_provider, previous) end)
+
+    assert {:ok, _} = Agent.configure(id, budget: {:prompt, 1.0})
+
+    assert {:ok, %{limits: %{prompt: 1.0, session: 1.5}}} =
+             Agent.configure(id, budget: {:session, 1.5})
+
+    # A fourth call would pass the prompt's $1.
+    assert :ok = Agent.prompt(id, "keep going")
+
+    assert_receive {:agent,
+                    {:note, :error, "This prompt has spent $1.20, its limit of $1.00" <> _}},
+                   5_000
+
+    assert_receive {:agent, {:prompt_end, %{reason: :budget, steps: 3}}}, 5_000
+
+    assert :ok = Agent.prompt(id, "list the files")
+
+    assert_receive {:agent,
+                    {:note, :error, "This session has spent $1.60, its limit of $1.50" <> _}},
+                   5_000
+
+    assert_receive {:agent, {:prompt_end, %{reason: :budget, steps: 1}}}, 5_000
+
+    # No sub-agent starts on what is left.
+    assert {:error, text} = Visor.Code.run(~S|V.agent("x")|, %{session: id, call_id: "c9"})
+    assert text =~ "reached its spending limit"
   end
 
   # Each script started empty, so a model read a file again in every step

@@ -32,7 +32,11 @@ defmodule Visor.Agent.Totals do
             wakes: 0,
             # The reviewer's model calls, and their tokens in and out.
             reviews: 0,
-            review_tokens: 0
+            review_tokens: 0,
+            # Dollars the provider reported, and the model calls it reported
+            # no cost for, which the dollars leave out.
+            cost: 0.0,
+            unpriced: 0
 
   @type t :: %__MODULE__{}
 
@@ -44,7 +48,8 @@ defmodule Visor.Agent.Totals do
 
     unmeasured = if Usage.hit_share(usage), do: 0, else: usage.prompt
 
-    bump(totals,
+    totals
+    |> bump(
       prompt_tokens: usage.prompt,
       cached_tokens: usage.cached,
       uncached_tokens: usage.uncached,
@@ -53,6 +58,7 @@ defmodule Visor.Agent.Totals do
       reasoning_tokens: usage.reasoning,
       model_ms: Map.get(info, :ms)
     )
+    |> priced(usage.cost, Map.has_key?(info, :usage))
   end
 
   def add(totals, {:tool_start, _call}), do: bump(totals, tool_calls: 1)
@@ -79,13 +85,18 @@ defmodule Visor.Agent.Totals do
       reasoning_tokens: child[:reasoning_tokens],
       model_ms: child[:model_ms]
     )
+    |> priced(child[:cost], false)
+    |> Map.update(:unpriced, child[:unpriced] || 0, &(&1 + (child[:unpriced] || 0)))
   end
 
   def add(totals, {:wake, _text}), do: bump(totals, wakes: 1)
 
   def add(totals, {:review, info}) do
     usage = Usage.from(Map.get(info, :usage)) || %Usage{}
-    bump(totals, reviews: 1, review_tokens: (usage.prompt || 0) + (usage.completion || 0))
+
+    totals
+    |> bump(reviews: 1, review_tokens: (usage.prompt || 0) + (usage.completion || 0))
+    |> priced(usage.cost, true)
   end
 
   def add(totals, _event), do: totals
@@ -100,6 +111,13 @@ defmodule Visor.Agent.Totals do
 
   @doc "The totals as a plain map, for a log line."
   def to_map(totals), do: Map.from_struct(totals)
+
+  # A call's dollars; a call that answered without them counts as unpriced.
+  defp priced(totals, cost, _call?) when is_number(cost),
+    do: Map.update(totals, :cost, cost / 1, &(&1 + cost))
+
+  defp priced(totals, nil, true), do: Map.update(totals, :unpriced, 1, &(&1 + 1))
+  defp priced(totals, _none, _call?), do: totals
 
   defp error(:error), do: 1
   defp error(_status), do: 0

@@ -88,8 +88,9 @@ defmodule Visor.Reviewer do
   def handle_info({:agent, {:user, _text}}, state),
     do: {:noreply, %{state | reviews: 0, tool_reviews: 0}}
 
+  # Stop and a spending limit end a prompt for reasons not to review.
   def handle_info({:agent, {:prompt_end, %{reason: reason}}}, %{mode: mode} = state)
-      when mode != nil and reason != :interrupted do
+      when mode != nil and reason not in [:interrupted, :budget] do
     {:noreply, review(state, :prompt_end, "the prompt ended (#{reason})")}
   end
 
@@ -164,6 +165,9 @@ defmodule Visor.Reviewer do
 
   defp answered(state, {:ok, %{message: message, usage: usage}}) do
     {action, text} = parse(message["content"] || "")
+    # A review is the session's spending too.
+    spent = Visor.Usage.from(usage) || %Visor.Usage{}
+    Visor.Agent.spent(state.id, spent.cost, (spent.prompt || 0) + (spent.completion || 0))
 
     Event.broadcast(
       state.id,

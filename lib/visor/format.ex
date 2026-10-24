@@ -26,6 +26,12 @@ defmodule Visor.Format do
     |> String.trim_trailing(".")
   end
 
+  @doc ~S|Dollars as they read: 0.016412 reads "$0.0164", 1.5 "$1.50", nil "–".|
+  def dollars(nil), do: "–"
+  def dollars(x) when x >= 1, do: "$" <> :erlang.float_to_binary(x / 1, decimals: 2)
+  def dollars(x) when x >= 0.01, do: "$" <> :erlang.float_to_binary(x / 1, decimals: 3)
+  def dollars(x), do: "$" <> :erlang.float_to_binary(x / 1, decimals: 4)
+
   @doc ~S|A count with its noun: "1 turn", "1,200 turns".|
   def count(1, noun), do: "1 #{noun}"
   def count(n, noun), do: "#{number(n)} #{noun}s"

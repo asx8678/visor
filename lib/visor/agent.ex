@@ -122,7 +122,11 @@ defmodule Visor.Agent do
     prewalk: false,
     prewalk_armed: false,
     # While the page that owned the session is gone: when it ends.
-    grace_timer: nil
+    grace_timer: nil,
+    # What the session and its running prompt have spent, and may
+    # (Visor.Limits.prompt_cost_limit/0 and the rest).
+    spent: nil,
+    limits: nil
   ]
 
   def start_link(opts) do
@@ -251,6 +255,18 @@ defmodule Visor.Agent do
     end
   end
 
+  @doc """
+  Adds to session `id`'s spending what a model call of its own reviewer
+  or sub-agents cost: `cost` in dollars (nil when unreported) and `tokens`.
+  """
+  def spent(id, cost, tokens), do: GenServer.cast(via(id), {:spent, cost, tokens})
+
+  @doc """
+  What session `id` may still spend: `%{prompt: dollars, session:
+  dollars, tokens: n}`, for a sub-agent to start with.
+  """
+  def allowance(id), do: GenServer.call(via(id), :allowance)
+
   defp via(id), do: Harness.via({id, :agent})
 
   @impl true
@@ -268,6 +284,8 @@ defmodule Visor.Agent do
       system:
         system_prompt(Keyword.get(opts, :role), Keyword.get(opts, :read_only, false)) <>
           project_rules(),
+      # A sub-agent's are what its parent's prompt had left (allowance/1).
+      limits: Keyword.get(opts, :limits) || default_limits(),
       depth: Keyword.get(opts, :depth, 0)
     }
 
@@ -385,6 +403,18 @@ defmodule Visor.Agent do
   end
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
+
+  def handle_call(:allowance, _from, state) do
+    spent = spent(state)
+    limits = Map.get(state, :limits) || default_limits()
+
+    {:reply,
+     %{
+       prompt: limits.prompt - spent.prompt,
+       session: limits.session - spent.session,
+       tokens: limits.tokens - spent.tokens
+     }, state}
+  end
 
   def handle_call({:resume, from}, _from, %{status: :idle} = state) do
     with dir when is_binary(dir) <- Visor.SessionLog.dir() || {:error, "Session logging is off."},
@@ -524,6 +554,8 @@ defmodule Visor.Agent do
     {:noreply, schedule_wake(state)}
   end
 
+  def handle_cast({:spent, cost, tokens}, state), do: {:noreply, spend(state, cost, tokens)}
+
   def handle_cast({:job_ended, job_id}, state) do
     pending = Map.get(state, :pending_jobs, [])
     pending = if job_id in pending, do: pending, else: pending ++ [job_id]
@@ -637,7 +669,8 @@ defmodule Visor.Agent do
       prewalk_armed: Map.get(state, :prewalk, false),
       prompt_changed: MapSet.new(),
       nudged: false,
-      kept: nil
+      kept: nil,
+      spent: %{spent(state) | prompt: 0.0, tokens: 0}
     })
     |> start_turn()
   end
@@ -699,7 +732,20 @@ defmodule Visor.Agent do
     end
   end
 
+  # Before each model call: a prompt or session past its spending limit
+  # (BeamAgent's guardrails, Vibe's budget) makes no more.
   defp start_turn(state) do
+    case over_budget(state) do
+      nil ->
+        call_model(state)
+
+      text ->
+        note(state, :error, text)
+        finish(state, :budget)
+    end
+  end
+
+  defp call_model(state) do
     state = state |> repair(:request, %{}) |> maybe_compact()
     provider = Model.current()
     info = provider.info()
@@ -782,6 +828,7 @@ defmodule Visor.Agent do
     state =
       %{state | last_prompt_tokens: prompt_tokens(result.usage, state.last_prompt_tokens)}
       |> calibrate(result.usage)
+      |> spend_usage(result.usage)
 
     max = max_steps(state)
 
@@ -1575,6 +1622,14 @@ defmodule Visor.Agent do
 
       {:jobs_wake, wake}, {:ok, state} when is_boolean(wake) ->
         {:cont, {:ok, schedule_wake(Map.put(state, :jobs_wake, wake))}}
+
+      {:budget, {scope, dollars}}, {:ok, state}
+      when scope in [:prompt, :session] and is_number(dollars) and dollars > 0 ->
+        limits = Map.put(Map.get(state, :limits) || default_limits(), scope, dollars / 1)
+        {:cont, {:ok, Map.put(state, :limits, limits)}}
+
+      {:budget, _other}, _ ->
+        {:halt, {:error, "A limit is prompt or session and a number of dollars above 0."}}
     end)
   end
 
@@ -1585,6 +1640,8 @@ defmodule Visor.Agent do
       jobs_wake: Map.get(state, :jobs_wake, true),
       prewalk: Map.get(state, :prewalk, false),
       think: Map.get(state, :think),
+      spent: spent(state),
+      limits: Map.get(state, :limits) || default_limits(),
       status: state.status,
       messages: length(surface(state)),
       provider: Model.current().info()
@@ -1621,6 +1678,60 @@ defmodule Visor.Agent do
       |> start_turn()
     else
       finish(state, :answered)
+    end
+  end
+
+  ## Spending
+
+  defp default_limits do
+    %{
+      prompt: Limits.prompt_cost_limit(),
+      session: Limits.session_cost_limit(),
+      tokens: Limits.prompt_token_limit()
+    }
+  end
+
+  defp spent(state), do: Map.get(state, :spent) || %{prompt: 0.0, session: 0.0, tokens: 0}
+
+  defp spend_usage(state, usage) do
+    case Usage.from(usage) do
+      nil -> state
+      usage -> spend(state, usage.cost, (usage.prompt || 0) + (usage.completion || 0))
+    end
+  end
+
+  defp spend(state, cost, tokens) do
+    spent = spent(state)
+    cost = cost || 0.0
+
+    Map.put(state, :spent, %{
+      spent
+      | prompt: spent.prompt + cost,
+        session: spent.session + cost,
+        tokens: spent.tokens + (tokens || 0)
+    })
+  end
+
+  defp over_budget(state) do
+    spent = spent(state)
+    limits = Map.get(state, :limits) || default_limits()
+    dollars = &Visor.Format.dollars/1
+
+    cond do
+      spent.session >= limits.session ->
+        "This session has spent #{dollars.(spent.session)}, its limit of " <>
+          "#{dollars.(limits.session)}, so no more model calls are made (/budget raises it)."
+
+      spent.prompt >= limits.prompt ->
+        "This prompt has spent #{dollars.(spent.prompt)}, its limit of " <>
+          "#{dollars.(limits.prompt)}, so it stops here (/budget raises it)."
+
+      spent.tokens >= limits.tokens ->
+        "This prompt has used #{Visor.Format.number(spent.tokens)} tokens, its limit, so " <>
+          "it stops here."
+
+      true ->
+        nil
     end
   end
 
@@ -1668,7 +1779,7 @@ defmodule Visor.Agent do
     # After Stop or a failed call, jobs that end wait for the user's next
     # prompt rather than starting one.
     state =
-      if reason in [:interrupted, :model_error, :model_crashed],
+      if reason in [:interrupted, :model_error, :model_crashed, :budget],
         do: Map.put(state, :wakes_held, true),
         else: state
 
@@ -1676,8 +1787,14 @@ defmodule Visor.Agent do
       {[], _reason} ->
         schedule_wake(state)
 
-      {texts, reason} when reason in [:interrupted, :model_error, :model_crashed] ->
-        why = if reason == :interrupted, do: "was stopped", else: "failed"
+      {texts, reason} when reason in [:interrupted, :model_error, :model_crashed, :budget] ->
+        why =
+          case reason do
+            :interrupted -> "was stopped"
+            :budget -> "reached its spending limit"
+            _failed -> "failed"
+          end
+
         note(state, :info, "Not sent, since the prompt #{why}: " <> Enum.join(texts, "\n\n"))
         save(Map.put(state, :queued, []))
 
