@@ -93,6 +93,10 @@ defmodule Visor.Code do
   # process's mailbox, which Dune waits in: a script can make thousands.
   # Its calls read the deadline to fit their own limits under it.
   defp prepare(context) do
+    # Dune renames atoms a script uses that don't exist yet, so an option
+    # only V knows, such as credo:, would reach V renamed unless V is
+    # loaded before the script is parsed.
+    {:module, V} = Code.ensure_loaded(V)
     timeout = Map.get(context, :timeout_ms) || Visor.Limits.script_timeout_ms()
     table = :ets.new(:visor_calls, [:public])
     deadline = System.monotonic_time(:millisecond) + timeout
