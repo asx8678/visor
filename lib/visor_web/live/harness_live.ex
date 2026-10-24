@@ -299,7 +299,11 @@ defmodule VisorWeb.HarnessLive do
           aside={count(@totals.turns, "model call")}
         >
           <.readings cols={2} rows={session_rows(@totals)} />
-          <.cache_bar hit={@totals.cached_tokens} miss={@totals.uncached_tokens} />
+          <.cache_bar
+            hit={@totals.cached_tokens}
+            miss={@totals.uncached_tokens}
+            unmeasured={Map.get(@totals, :unmeasured_tokens, 0)}
+          />
           <.readings :if={@log_path} id="session-log" rows={[{"Log", @log_path}]} />
         </.inspector_section>
 
@@ -1070,6 +1074,13 @@ defmodule VisorWeb.HarnessLive do
     )
   end
 
+  defp cache_hit(usage) do
+    case Usage.hit_share(usage) do
+      nil -> if usage.prompt, do: "unknown", else: "–"
+      share -> "#{share}%"
+    end
+  end
+
   defp turn_rows(stats) do
     usage = Usage.from(stats[:usage]) || %Usage{}
 
@@ -1078,6 +1089,7 @@ defmodule VisorWeb.HarnessLive do
       {"Duration", seconds(stats[:ms])},
       {"In", short(usage.prompt)},
       {"Cached", short(usage.cached)},
+      {"Cache hit", cache_hit(usage)},
       {"Out", short(usage.completion)},
       {"Reasoning", short(usage.reasoning)},
       {"Chunks", number(stats[:chunks])},

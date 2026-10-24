@@ -34,6 +34,18 @@ defmodule Visor.Usage do
 
   def from(_none), do: nil
 
+  @doc """
+  The share of the prompt read from the provider's cache, as a whole
+  percent: nil when the provider didn't report both its cache hits and
+  misses. An unreported figure is unknown, never a 0% hit (pi-fabric's
+  rule); a reported miss is a measured 0.
+  """
+  def hit_share(%__MODULE__{cached: hit, uncached: miss})
+      when is_integer(hit) and is_integer(miss) and hit + miss > 0,
+      do: round(hit * 100 / (hit + miss))
+
+  def hit_share(_usage), do: nil
+
   @doc "The tokens the conversation holds after this call, or nil when unknown."
   def context(%__MODULE__{prompt: prompt, completion: completion})
       when is_integer(prompt) and is_integer(completion),

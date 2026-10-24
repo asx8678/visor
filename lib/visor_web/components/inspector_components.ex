@@ -267,6 +267,7 @@ defmodule VisorWeb.InspectorComponents do
 
   attr :hit, :integer, required: true
   attr :miss, :integer, required: true
+  attr :unmeasured, :integer, default: 0
 
   # Until a call reports its cache use there is nothing to measure, so no
   # share rather than 0%.
@@ -284,9 +285,20 @@ defmodule VisorWeb.InspectorComponents do
       id="cache-bar"
       class="flex items-center gap-3 text-[13px]"
       title={
-        if @share,
-          do: "#{number(@hit)} of #{number(@total)} prompt tokens came from the cache",
-          else: "No cache figures yet"
+        cond do
+          @share && @unmeasured > 0 ->
+            "#{number(@hit)} of #{number(@total)} measured prompt tokens came from the cache; " <>
+              "#{number(@unmeasured)} more had no cache figures"
+
+          @share ->
+            "#{number(@hit)} of #{number(@total)} prompt tokens came from the cache"
+
+          @unmeasured > 0 ->
+            "The provider reported no cache figures for #{number(@unmeasured)} prompt tokens"
+
+          true ->
+            "No cache figures yet"
+        end
       }
     >
       <span class="flex-none text-ink-dim">Prompt cache</span>
@@ -297,7 +309,9 @@ defmodule VisorWeb.InspectorComponents do
         />
       </div>
       <span :if={@share} class="flex-none text-ink tabular-nums">{@share}%</span>
-      <span :if={!@share} class="flex-none text-ink-dim">–</span>
+      <span :if={@share && @unmeasured > 0} class="flex-none text-ink-dim">of measured</span>
+      <span :if={!@share && @unmeasured > 0} class="flex-none text-ink-dim">unknown</span>
+      <span :if={!@share && @unmeasured == 0} class="flex-none text-ink-dim">–</span>
     </div>
     """
   end

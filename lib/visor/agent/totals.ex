@@ -20,6 +20,9 @@ defmodule Visor.Agent.Totals do
             prompt_tokens: 0,
             cached_tokens: 0,
             uncached_tokens: 0,
+            # Prompt tokens of calls whose cache figures weren't reported,
+            # so the hit share is of the rest.
+            unmeasured_tokens: 0,
             completion_tokens: 0,
             reasoning_tokens: 0,
             model_ms: 0,
@@ -36,10 +39,13 @@ defmodule Visor.Agent.Totals do
   def add(totals, {:turn_end, info}) do
     usage = Usage.from(Map.get(info, :usage)) || %Usage{}
 
+    unmeasured = if Usage.hit_share(usage), do: 0, else: usage.prompt
+
     bump(totals,
       prompt_tokens: usage.prompt,
       cached_tokens: usage.cached,
       uncached_tokens: usage.uncached,
+      unmeasured_tokens: unmeasured,
       completion_tokens: usage.completion,
       reasoning_tokens: usage.reasoning,
       model_ms: Map.get(info, :ms)

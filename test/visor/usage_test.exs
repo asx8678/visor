@@ -25,4 +25,18 @@ defmodule Visor.UsageTest do
     assert Usage.context(a) == 120
     assert Usage.context(Usage.from(%{"prompt_tokens" => 1})) == nil
   end
+
+  test "gives the cache's share only when both hits and misses are reported" do
+    assert Usage.hit_share(
+             Usage.from(%{"prompt_cache_hit_tokens" => 60, "prompt_cache_miss_tokens" => 40})
+           ) == 60
+
+    # A measured miss is 0%; no figures is unknown.
+    assert Usage.hit_share(
+             Usage.from(%{"prompt_cache_hit_tokens" => 0, "prompt_cache_miss_tokens" => 9})
+           ) == 0
+
+    assert Usage.hit_share(Usage.from(%{"prompt_tokens" => 7})) == nil
+    assert Usage.hit_share(nil) == nil
+  end
 end

@@ -46,4 +46,22 @@ defmodule Visor.Agent.TotalsTest do
              tool_ms: 50
            } = totals
   end
+
+  test "keeps the prompt tokens without cache figures apart" do
+    measured = %{
+      "prompt_tokens" => 100,
+      "prompt_cache_hit_tokens" => 90,
+      "prompt_cache_miss_tokens" => 10
+    }
+
+    totals =
+      Enum.reduce(
+        [{:turn_end, %{usage: measured}}, {:turn_end, %{usage: %{"prompt_tokens" => 500}}}],
+        %Totals{},
+        &Totals.add(&2, &1)
+      )
+
+    assert %{prompt_tokens: 600, cached_tokens: 90, uncached_tokens: 10, unmeasured_tokens: 500} =
+             totals
+  end
 end
