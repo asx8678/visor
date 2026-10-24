@@ -130,8 +130,12 @@ defmodule Visor.Model.Demo do
   end
 
   # A reviewer's request (Visor.Reviewer): a message when the digest says
-  # PROBLEM, the goal met when it says DONE, and silence otherwise.
+  # PROBLEM, the goal met when it says DONE, and silence otherwise. A
+  # digest that says SLOWREVIEW takes 300 ms, whatever the demo's delay,
+  # so the agent's next events come while the review runs.
   defp review(%{messages: [%{"content" => digest} | _]} = request) do
+    if digest =~ "SLOWREVIEW", do: Process.sleep(300)
+
     json =
       cond do
         digest =~ "PROBLEM" ->

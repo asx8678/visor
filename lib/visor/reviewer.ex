@@ -72,10 +72,11 @@ defmodule Visor.Reviewer do
   @impl true
   def handle_call({:start, mode, text}, _from, state) do
     state = %{state | mode: mode, text: text, reviews: 0, tool_reviews: 0}
-    {:reply, :ok, state}
+    {:reply, :ok, Map.put(state, :pending, nil)}
   end
 
-  def handle_call(:stop, _from, state), do: {:reply, :ok, %{state | mode: nil, text: nil}}
+  def handle_call(:stop, _from, state),
+    do: {:reply, :ok, Map.put(%{state | mode: nil, text: nil}, :pending, nil)}
 
   def handle_call(:status, _from, %{mode: nil} = state), do: {:reply, nil, state}
 
@@ -89,7 +90,7 @@ defmodule Visor.Reviewer do
 
   def handle_info({:agent, {:prompt_end, %{reason: reason}}}, %{mode: mode} = state)
       when mode != nil and reason != :interrupted do
-    {:noreply, review(state, "the prompt ended (#{reason})")}
+    {:noreply, review(state, :prompt_end, "the prompt ended (#{reason})")}
   end
 
   # A call the user cancelled with Stop failed for no reason to review.
@@ -100,7 +101,7 @@ defmodule Visor.Reviewer do
       when mode != nil do
     if state.tool_reviews < 2 do
       state = %{state | tool_reviews: state.tool_reviews + 1}
-      {:noreply, review(state, "a tool call failed: " <> String.slice(result, 0, 400))}
+      {:noreply, review(state, :tool, "a tool call failed: " <> String.slice(result, 0, 400))}
     else
       {:noreply, state}
     end
@@ -108,18 +109,26 @@ defmodule Visor.Reviewer do
 
   def handle_info({ref, result}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    {:noreply, answered(%{state | task: nil}, result)}
+    {:noreply, %{state | task: nil} |> answered(result) |> next()}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{task: %Task{ref: ref}} = state),
-    do: {:noreply, %{state | task: nil}}
+    do: {:noreply, next(%{state | task: nil})}
 
   def handle_info(_message, state), do: {:noreply, state}
 
   # One review at a time, and a bounded number per prompt from the user.
-  defp review(%{task: %Task{}} = state, _why), do: state
+  # What comes while one runs waits for it, as pi-fabric's actors keep
+  # the events that queue while they are busy: the newest, and a prompt's
+  # end over a failed call, whose digest the end's covers.
+  defp review(%{task: %Task{}} = state, kind, why) do
+    case Map.get(state, :pending) do
+      {:prompt_end, _why} when kind == :tool -> state
+      _other -> Map.put(state, :pending, {kind, why})
+    end
+  end
 
-  defp review(state, why) do
+  defp review(state, _kind, why) do
     if state.reviews >= Limits.reviews_per_prompt() do
       state
     else
@@ -136,6 +145,14 @@ defmodule Visor.Reviewer do
       tasks = Harness.via({state.id, :tasks})
       task = Harness.async(tasks, "review", fn -> provider.stream(request, fn _ -> :ok end) end)
       %{state | task: task, reviews: state.reviews + 1}
+    end
+  end
+
+  # The review that waited, if the reviewer is still on.
+  defp next(state) do
+    case Map.get(state, :pending) do
+      {kind, why} when state.mode != nil -> review(Map.put(state, :pending, nil), kind, why)
+      _none -> Map.put(state, :pending, nil)
     end
   end
 

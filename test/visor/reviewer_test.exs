@@ -71,6 +71,21 @@ defmodule Visor.ReviewerTest do
     assert Reviewer.status(id) == nil
   end
 
+  # The prompt's last call fails, and the prompt ends while that failure's
+  # review runs: its end was dropped, so a supervisor never got to review
+  # how the prompt ended.
+  test "reviews a prompt's end that came while another review ran", %{id: id} do
+    :ok = Reviewer.start(id, :advisor, "")
+    assert :ok = Agent.prompt(id, ~S|> V.read("nope.txt") # SLOWREVIEW|)
+    assert_receive {:agent, {:tool_end, %{status: :error}}}, 5_000
+    assert_receive {:agent, {:prompt_end, _}}, 5_000
+    refute_received {:agent, {:review, _}}
+
+    assert_receive {:agent, {:review, %{mode: :advisor}}}, 5_000
+    assert_receive {:agent, {:review, %{mode: :advisor}}}, 5_000
+    refute_receive {:agent, {:review, _}}, 600
+  end
+
   test "doesn't review what the user stopped", %{id: id} do
     :ok = Reviewer.start(id, :advisor, "")
     assert :ok = Agent.prompt(id, "$ sleep 5")
