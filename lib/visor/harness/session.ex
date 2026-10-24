@@ -37,9 +37,15 @@ defmodule Visor.Harness.Session do
     store = :ets.new(:visor_session, [:public, read_concurrency: true])
     {:ok, _owner} = Registry.register(Harness.Registry, {id, :store}, store)
 
+    job_tasks = Harness.via({id, :job_tasks})
+
     children = [
       {Task.Supervisor, name: tasks},
       {Visor.Feedback, id: id},
+      # Stopped after the agent and the jobs server, and with them each
+      # job's command.
+      {Task.Supervisor, name: job_tasks},
+      {Visor.Jobs, id: id, tasks: job_tasks},
       Supervisor.child_spec({Visor.Agent, Keyword.merge(opts, tasks: tasks, store: store)},
         restart: :transient,
         significant: true

@@ -10,6 +10,9 @@ config :visor, VisorWeb.Endpoint,
 # Never call a real model from tests; run the scripted one without delays.
 config :visor, model_provider: Visor.Model.Demo, demo_delay_ms: 0
 
+# Jobs that end within this wake the agent once (see Visor.Limits).
+config :visor, job_wake_batch_ms: 100
+
 # Tests that check session logs pass their own directory.
 config :visor, session_log_dir: false, server_log_dir: false
 

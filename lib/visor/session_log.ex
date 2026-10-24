@@ -13,7 +13,11 @@ defmodule Visor.SessionLog do
 
     * `start`: the provider, model, endpoint and versions;
     * `user`: a prompt, numbered; `steer`: a message sent while a prompt
-      ran, for the model after the running tool calls;
+      ran, for the model after the running tool calls; `wake`: a prompt
+      of the agent's own, the notices of background jobs that ended;
+    * `job_start`, `job_end`: a background job, with its command
+      (`label`), and how it ended (`status`, `exit`, `ms`, the end of its
+      output as `tail`);
     * `turn_start`, `turn_end`: each model call, with its step out of the
       prompt's limit, timing, token usage, and the reasoning, reply and
       tool calls in full;
@@ -402,6 +406,12 @@ defmodule Visor.SessionLog do
   defp record({:repair, info}, state), do: logged(state, "repair", info)
 
   defp record({:repeat, info}, state), do: logged(state, "repeat", info)
+
+  defp record({:wake, text}, state), do: logged(state, "wake", %{text: text})
+
+  defp record({:job_start, job}, state), do: logged(state, "job_start", job)
+
+  defp record({:job_end, job}, state), do: logged(state, "job_end", job)
 
   # The console's short preview; the request as sent follows.
   defp record({:request, _turn, _preview}, state), do: state

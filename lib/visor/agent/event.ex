@@ -9,6 +9,9 @@ defmodule Visor.Agent.Event do
   From `Visor.Agent`, for each prompt:
 
     * `{:user, text}`: a prompt the user sent
+    * `{:wake, text}`: a prompt of the agent's own, `text` being the
+      notices of background jobs that ended while it was idle (see
+      `Visor.Jobs`); its steps follow as a user prompt's do
     * `{:steer, text}`: a message the user sent while a prompt ran. It
       reaches the model as a user message after the running tool calls'
       results, or, when the model answers first, comes back as the next
@@ -48,6 +51,13 @@ defmodule Visor.Agent.Event do
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
 
+  From `Visor.Jobs`, for each background job, as `Visor.Jobs.public/1`
+  gives it (`id`, `kind`, `label`, `status`, `exit`, `ms`, `timeout_ms`,
+  `log`, `tail`, `os_pid`, `acknowledged`):
+
+    * `{:job_start, job}` and `{:job_end, job}`: a job started, and ended
+      with `status` `:exited`, `:failed`, `:killed` or `:timed_out`
+
   From `Visor.Code`, for each `elixir` script, keyed by its tool call id:
 
     * `{:code_call, call_id, call}`: a `V` call, first `status: :running`,
@@ -83,6 +93,7 @@ defmodule Visor.Agent.Event do
 
   @type t ::
           {:user, String.t()}
+          | {:wake, String.t()}
           | {:steer, String.t()}
           | {:turn_start, map()}
           | {:request, turn(), map()}
@@ -114,6 +125,8 @@ defmodule Visor.Agent.Event do
           | {:code_call, call_id(),
              %{required(:status) => :running | :ok | :error, optional(atom()) => term()}}
           | {:script_end, call_id(), map()}
+          | {:job_start, map()}
+          | {:job_end, map()}
 
   @doc "Subscribes the caller to session `id`'s events."
   @spec subscribe(term()) :: :ok | {:error, term()}

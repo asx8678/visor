@@ -21,6 +21,11 @@ live supervision tree beside it. There is no database.
   reads a summarized tool result back.
 - A prompt sent while one runs steers it: the model gets it after the
   running tool calls' results, or as the next prompt if it answers first.
+- `V.sh(cmd, background: true)` starts a job (`Visor.Jobs`) that outlives
+  its script and dies with its session. When it ends the model hears of
+  it, after the running tool calls or with the next prompt; an idle agent
+  wakes for it on its own, at most `Visor.Limits.job_wakeups/0` times
+  between the user's prompts and never after Stop or a failed call.
 - The agent's events are documented in `Visor.Agent.Event`. The console,
   `Visor.SessionLog` and `mix visor.log` all read them; change the event
   shapes there and keep the session log's JSON keys stable, since

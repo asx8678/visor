@@ -44,6 +44,30 @@ defmodule Visor.Limits do
   """
   def tool_deadline_ms(script_ms \\ script_timeout_ms()), do: script_ms + 15_000
 
+  @doc "When a background job is stopped, unless it asks for longer."
+  def job_timeout_ms, do: 60 * 60_000
+
+  @doc "The longest time limit a background job may ask for."
+  def max_job_timeout_ms, do: 24 * 60 * 60_000
+
+  @doc "Background jobs one session may run at once."
+  def jobs_at_once, do: 8
+
+  @doc "The end of a job's output its record keeps; the whole is in its file."
+  def job_tail_bytes, do: 8_000
+
+  @doc """
+  Times jobs ending may start the agent on their own (a wake) between two
+  prompts from the user.
+  """
+  def job_wakeups, do: 3
+
+  @doc """
+  How long the agent waits for more jobs to end before a wake (shorter in
+  the tests, `config :visor, job_wake_batch_ms: ms`).
+  """
+  def job_wake_batch_ms, do: Application.get_env(:visor, :job_wake_batch_ms, 1_000)
+
   @doc "When the agent stops a model call that is still streaming."
   def model_deadline_ms, do: 20 * 60_000
 

@@ -104,6 +104,7 @@ defmodule Visor.Code do
       error: call[:error] && first_line(call.error, 300),
       changed: call[:changed],
       ran: call[:ran] && first_line(call.ran, 200),
+      started: call[:started],
       exit: call[:exit],
       check: call[:value][:status],
       summary: call[:check] && first_line(call.check, 200)
@@ -193,6 +194,10 @@ defmodule Visor.Code.Allowlist do
       :check,
       :output,
       :recall,
+      :job,
+      :jobs,
+      :stop,
+      :wait,
       :beam_stats
     ]
 

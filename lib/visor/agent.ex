@@ -17,7 +17,7 @@ defmodule Visor.Agent do
   """
   use GenServer
 
-  alias Visor.{Compaction, Harness, Limits, Model, Tools, Usage}
+  alias Visor.{Compaction, Harness, Jobs, Limits, Model, Tools, Usage}
   alias Visor.Agent.{Event, Repair}
   alias Visor.Harness.Session
 
@@ -87,7 +87,17 @@ defmodule Visor.Agent do
     # model after the running tool calls, or starts the next prompt.
     queued: [],
     # The last script run and how many times in a row, as {hash, count}.
-    repeat: nil
+    repeat: nil,
+    # Background jobs that ended and the model hasn't heard of yet, by id
+    # (see Visor.Jobs). They reach it after the running tool calls, with
+    # the next prompt, or as a prompt of their own: a wake.
+    pending_jobs: [],
+    # Wakes since the user's last prompt, and whether they wait for the
+    # next one (after Stop or a failed model call).
+    wakes: 0,
+    wakes_held: false,
+    jobs_wake: true,
+    wake_timer: nil
   ]
 
   def start_link(opts) do
@@ -95,6 +105,9 @@ defmodule Visor.Agent do
   end
 
   defdelegate subscribe(id), to: Event
+
+  @doc "Tells session `id`'s agent that background job `job_id` ended."
+  def job_ended(id, job_id), do: GenServer.cast(via(id), {:job_ended, job_id})
   def efforts, do: @efforts
 
   @doc """
@@ -117,7 +130,10 @@ defmodule Visor.Agent do
   """
   def compact(id), do: GenServer.call(via(id), :compact)
 
-  @doc "Changes `:effort` or `:thinking`."
+  @doc """
+  Changes `:effort`, `:thinking` or `:jobs_wake` (whether a background job
+  that ends may start a prompt on its own).
+  """
   def configure(id, settings), do: GenServer.call(via(id), {:configure, settings})
 
   def settings(id), do: GenServer.call(via(id), :settings)
@@ -223,7 +239,13 @@ defmodule Visor.Agent do
 
     state =
       state
-      |> Map.merge(%{compaction: nil, facts: %{}, last_prompt_tokens: nil, last_estimate: nil})
+      |> Map.merge(%{
+        compaction: nil,
+        facts: %{},
+        last_prompt_tokens: nil,
+        last_estimate: nil,
+        pending_jobs: []
+      })
       |> put_messages([])
 
     {:reply, :ok, state}
@@ -252,6 +274,13 @@ defmodule Visor.Agent do
   end
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
+
+  @impl true
+  def handle_cast({:job_ended, job_id}, state) do
+    pending = Map.get(state, :pending_jobs, [])
+    pending = if job_id in pending, do: pending, else: pending ++ [job_id]
+    {:noreply, schedule_wake(Map.put(state, :pending_jobs, pending))}
+  end
 
   @impl true
   def handle_info({ref, result}, %{model_task: %Task{ref: ref}} = state) do
@@ -316,12 +345,76 @@ defmodule Visor.Agent do
     {:noreply, finish_tool(state, ref, result)}
   end
 
+  def handle_info(:wake, state) do
+    state = Map.put(state, :wake_timer, nil)
+
+    if state.status == :idle and can_wake?(state) do
+      case take_notices(state) do
+        {state, []} -> {:noreply, state}
+        {state, notices} -> {:noreply, start_wake(state, notices)}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   defp start_prompt(state, text) do
     broadcast(state, {:user, text})
-    state = state |> push_user(text) |> Map.merge(%{steps: 0, overflowed: false, repeat: nil})
-    start_turn(state)
+    {state, notices} = take_notices(state)
+    text = Enum.join([text | notices], "\n\n")
+
+    state
+    |> push_user(text)
+    |> Map.merge(%{steps: 0, overflowed: false, repeat: nil, wakes: 0, wakes_held: false})
+    |> start_turn()
+  end
+
+  # A prompt of the agent's own, when background jobs ended while it was
+  # idle: a fresh budget of model calls, without the user.
+  defp start_wake(state, notices) do
+    text = Enum.join(notices, "\n\n")
+    broadcast(state, {:wake, text})
+
+    state
+    |> push_user(text)
+    |> Map.merge(%{
+      steps: 0,
+      overflowed: false,
+      repeat: nil,
+      wakes: Map.get(state, :wakes, 0) + 1
+    })
+    |> start_turn()
+  end
+
+  # What the model hasn't heard of the jobs that ended. Taking them marks
+  # them as heard.
+  defp take_notices(state) do
+    notices =
+      for id <- Map.get(state, :pending_jobs, []),
+          job = Jobs.get(state.id, id),
+          job && job.status != :running && not job.acknowledged do
+        Jobs.acknowledge(state.id, id)
+        Jobs.notice(job)
+      end
+
+    {Map.put(state, :pending_jobs, []), notices}
+  end
+
+  defp can_wake?(state) do
+    Map.get(state, :jobs_wake, true) and not Map.get(state, :wakes_held, false) and
+      Map.get(state, :wakes, 0) < Limits.job_wakeups()
+  end
+
+  # Jobs that end close together wake the agent once.
+  defp schedule_wake(state) do
+    if state.status == :idle and Map.get(state, :pending_jobs, []) != [] and can_wake?(state) and
+         Map.get(state, :wake_timer) == nil do
+      Map.put(state, :wake_timer, Process.send_after(self(), :wake, Limits.job_wake_batch_ms()))
+    else
+      state
+    end
   end
 
   defp start_turn(state) do
@@ -725,14 +818,17 @@ defmodule Visor.Agent do
           )
         end
 
-        state |> append_tool_results(steps_left(state)) |> steer() |> start_turn()
+        state |> append_tool_results(footer(state)) |> steer() |> start_turn()
     end
   end
 
   # What the user sent while the batch ran reaches the model now, after its
   # results, as one user message.
+  # Background jobs that ended come after them.
   defp steer(state) do
-    case Map.get(state, :queued, []) do
+    {state, notices} = take_notices(state)
+
+    case Map.get(state, :queued, []) ++ notices do
       [] ->
         state
 
@@ -750,6 +846,29 @@ defmodule Visor.Agent do
   defp exit_text(reason), do: Exception.format_exit(reason)
 
   defp last_step?(step), do: step >= @max_steps
+
+  # What goes after a batch's last result: the calls left, and the jobs
+  # still running, so the model knows it will hear of them.
+  defp footer(state) do
+    case Enum.reject([steps_left(state), running_jobs(state)], &is_nil/1) do
+      [] -> nil
+      lines -> Enum.join(lines, "\n")
+    end
+  end
+
+  defp running_jobs(state) do
+    case Jobs.running(state.id) do
+      [] ->
+        nil
+
+      jobs ->
+        shown = jobs |> Enum.take(8) |> Enum.map_join(", ", &"#{&1.id} (#{Jobs.label(&1)})")
+        more = if length(jobs) > 8, do: " and #{length(jobs) - 8} more", else: ""
+
+        "[Visor: running in the background: #{shown}#{more}. Don't poll them: you'll hear " <>
+          "when each ends, after your next tool calls or as a message of its own.]"
+    end
+  end
 
   # What the model is told about its remaining calls, after the last tool
   # result. Only new messages carry it, so the cached prefix stays the same.
@@ -846,9 +965,19 @@ defmodule Visor.Agent do
         state
         |> struct(Map.delete(conversation, :batch))
         |> repair(:restart, Map.get(conversation, :batch, %{}))
+        |> restore_jobs()
 
       [] ->
         state
+    end
+  end
+
+  # Jobs that ended while no agent heard of them reach the model with the
+  # next prompt, as after a failed call.
+  defp restore_jobs(state) do
+    case for(job <- Jobs.list(state.id), job.status != :running, not job.acknowledged, do: job.id) do
+      [] -> state
+      pending -> Map.merge(state, %{pending_jobs: pending, wakes_held: true})
     end
   end
 
@@ -875,6 +1004,9 @@ defmodule Visor.Agent do
 
       {:thinking, thinking}, {:ok, state} when is_boolean(thinking) ->
         {:cont, {:ok, %{state | thinking: thinking}}}
+
+      {:jobs_wake, wake}, {:ok, state} when is_boolean(wake) ->
+        {:cont, {:ok, schedule_wake(Map.put(state, :jobs_wake, wake))}}
     end)
   end
 
@@ -882,6 +1014,7 @@ defmodule Visor.Agent do
     %{
       effort: state.effort,
       thinking: state.thinking,
+      jobs_wake: Map.get(state, :jobs_wake, true),
       status: state.status,
       messages: length(surface(state)),
       provider: Model.current().info()
@@ -896,9 +1029,16 @@ defmodule Visor.Agent do
     broadcast(state, {:prompt_end, %{reason: reason, steps: state.steps}})
     state = set_status(state, :idle)
 
+    # After Stop or a failed call, jobs that end wait for the user's next
+    # prompt rather than starting one.
+    state =
+      if reason in [:interrupted, :model_error, :model_crashed],
+        do: Map.put(state, :wakes_held, true),
+        else: state
+
     case {Map.get(state, :queued, []), reason} do
       {[], _reason} ->
-        state
+        schedule_wake(state)
 
       {texts, reason} when reason in [:interrupted, :model_error, :model_crashed] ->
         why = if reason == :interrupted, do: "was stopped", else: "failed"

@@ -10,7 +10,7 @@ defmodule VisorWeb.HarnessLive do
 
   import VisorWeb.{ConsoleComponents, InspectorComponents, ProcessComponents}
 
-  alias Visor.{Agent, Harness, Model, Observer, SessionLog, Usage}
+  alias Visor.{Agent, Harness, Jobs, Model, Observer, SessionLog, Usage}
   alias Visor.Agent.Totals
   alias VisorWeb.ModelCall
 
@@ -64,6 +64,7 @@ defmodule VisorWeb.HarnessLive do
       )
       |> stream(:entries, [])
       |> stream(:events, [])
+      |> stream(:jobs, [], dom_id: &"job-#{&1.id}")
 
     if connected?(socket) do
       Observer.subscribe()
@@ -97,6 +98,16 @@ defmodule VisorWeb.HarnessLive do
           <h2 class="font-display text-lg font-medium text-ink">Processes</h2>
           <.app_strip apps={@snapshot.apps} />
           <.prompt_timeline work={@work || @last_work} now={@now} />
+        </div>
+
+        <div class="border-b border-rule px-4 py-2">
+          <h3 class="pb-1 text-xs text-ink-dim">Background jobs</h3>
+          <ol id="jobs" phx-update="stream">
+            <li id="jobs-empty" class="hidden text-xs text-ink-dim only:block">
+              None yet. A script starts one with V.sh(command, background: true).
+            </li>
+            <.job_row :for={{id, job} <- @streams.jobs} id={id} job={job} />
+          </ol>
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
@@ -509,6 +520,9 @@ defmodule VisorWeb.HarnessLive do
 
   def handle_event("clear", _params, socket), do: {:noreply, run_command(socket, "clear", [])}
 
+  def handle_event("stop_job", %{"id" => job_id}, socket),
+    do: {:noreply, run_command(socket, "jobs", ["stop", job_id])}
+
   def handle_event("configure", %{"key" => "effort", "value" => effort}, socket) do
     {:noreply, configure(socket, effort: effort)}
   end
@@ -583,6 +597,42 @@ defmodule VisorWeb.HarnessLive do
     end
   end
 
+  defp run_command(socket, "jobs", []) do
+    case Jobs.list(socket.assigns.session_id) do
+      [] ->
+        note(socket, :info, "No background jobs yet.")
+
+      jobs ->
+        lines = Enum.map_join(jobs, "\n", &"#{&1.id}  #{&1.status}  #{Jobs.label(&1)}")
+        note(socket, :info, "Background jobs:\n" <> lines)
+    end
+  end
+
+  defp run_command(socket, "jobs", ["stop", job_id | _]) do
+    case Jobs.stop(socket.assigns.session_id, job_id) do
+      {:ok, %{status: :killed}} -> note(socket, :info, "Stopped job #{job_id}.")
+      {:ok, job} -> note(socket, :info, "Job #{job_id} had ended already (#{job.status}).")
+      {:error, message} -> note(socket, :error, message)
+    end
+  end
+
+  defp run_command(socket, "jobs", ["wake", value | _]) when value in ~w(on off) do
+    socket = configure(socket, jobs_wake: value == "on")
+
+    note(
+      socket,
+      :info,
+      if(value == "on",
+        do: "A background job that ends may start the agent on its own.",
+        else: "Background jobs that end now wait for your next prompt."
+      )
+    )
+  end
+
+  defp run_command(socket, "jobs", _args) do
+    note(socket, :error, "/jobs takes nothing, stop ID or wake on|off. Type /help for the list.")
+  end
+
   defp run_command(socket, "effort", [effort | _]), do: configure(socket, effort: effort)
   defp run_command(socket, "think", ["on" | _]), do: configure(socket, thinking: true)
   defp run_command(socket, "think", ["off" | _]), do: configure(socket, thinking: false)
@@ -639,20 +689,17 @@ defmodule VisorWeb.HarnessLive do
   # A prompt shows as the user's text, one work entry that folds up every
   # model turn and tool call it took, and the answer.
   defp agent_event({:user, text}, socket) do
-    work = %{
-      id: "work-#{System.unique_integer([:positive])}",
-      type: :work,
-      steps: [],
-      status: :running,
-      started: System.monotonic_time(:millisecond),
-      ms: nil,
-      totals: %Totals{}
-    }
-
-    socket
-    |> add_entry(%{type: :user, text: text})
-    |> assign(work: work, last_work: nil, step: nil)
+    socket |> add_entry(%{type: :user, text: text}) |> start_work()
   end
+
+  # A prompt of the agent's own works as the user's does.
+  defp agent_event({:wake, text}, socket) do
+    socket |> add_entry(%{type: :wake, text: text}) |> start_work()
+  end
+
+  defp agent_event({:job_start, job}, socket), do: stream_insert(socket, :jobs, job)
+
+  defp agent_event({:job_end, job}, socket), do: stream_insert(socket, :jobs, job)
 
   defp agent_event({:steer, text}, socket) do
     note(socket, :info, "Sent to the running prompt, for after its current step: " <> text)
@@ -997,6 +1044,22 @@ defmodule VisorWeb.HarnessLive do
   defp now, do: System.monotonic_time(:millisecond)
 
   defp note(socket, level, text), do: add_entry(socket, %{type: :note, level: level, text: text})
+
+  # The running prompt's work entry, which its model turns and tool calls
+  # fold into.
+  defp start_work(socket) do
+    work = %{
+      id: "work-#{System.unique_integer([:positive])}",
+      type: :work,
+      steps: [],
+      status: :running,
+      started: System.monotonic_time(:millisecond),
+      ms: nil,
+      totals: %Totals{}
+    }
+
+    assign(socket, work: work, last_work: nil, step: nil)
+  end
 
   defp add_entry(socket, entry) do
     stream_insert(

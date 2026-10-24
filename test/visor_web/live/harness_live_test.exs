@@ -159,6 +159,48 @@ defmodule VisorWeb.HarnessLiveTest do
     end
   end
 
+  test "shows background jobs, and the prompt a job's end starts", %{view: view} do
+    assert has_element?(view, "#jobs #jobs-empty")
+
+    prompt = ~S|> V.sh("sleep 0.3", background: true)|
+    view |> form("#prompt-form", prompt: %{text: prompt}) |> render_submit()
+    assert_receive {:agent, {:job_start, %{id: "j1"}}}, @flow_timeout
+    assert has_element?(view, "#job-j1", "running")
+    assert has_element?(view, "#stop-job-j1")
+
+    assert_receive {:agent, {:job_end, %{id: "j1"}}}, @flow_timeout
+    assert has_element?(view, "#job-j1", "exit 0")
+    refute has_element?(view, "#stop-job-j1")
+
+    # The wake is a prompt of its own, with its work line and answer.
+    assert_receive {:agent, {:wake, _text}}, @flow_timeout
+    assert_receive {:agent, {:prompt_end, _}}, @flow_timeout
+    assert has_element?(view, "#entries", "Visor, for the background jobs that ended")
+    assert has_element?(view, "#entries", "[Visor: background job j1 (sleep 0.3)")
+    assert view |> element("#entries") |> render() |> String.contains?("Worked")
+  end
+
+  test "lists and stops background jobs with /jobs", %{view: view} do
+    view |> form("#prompt-form", prompt: %{text: "/jobs"}) |> render_submit()
+    assert has_element?(view, "#entries", "No background jobs yet.")
+
+    view |> form("#prompt-form", prompt: %{text: "/jobs wake off"}) |> render_submit()
+    assert_receive {:agent, {:settings, %{jobs_wake: false}}}
+
+    prompt = ~S|> V.sh("touch /dev/null; sleep 30", background: true)|
+    view |> form("#prompt-form", prompt: %{text: prompt}) |> render_submit()
+    assert_receive {:agent, {:job_start, %{id: "j1"}}}, @flow_timeout
+    assert_receive {:agent, {:prompt_end, _}}, @flow_timeout
+
+    view |> form("#prompt-form", prompt: %{text: "/jobs"}) |> render_submit()
+    assert has_element?(view, "#entries", ~r/j1\s+running/)
+
+    view |> element("#stop-job-j1") |> render_click()
+    assert_receive {:agent, {:job_end, %{id: "j1", status: :killed}}}, @flow_timeout
+    assert has_element?(view, "#job-j1", "stopped")
+    assert has_element?(view, "#entries", "Stopped job j1.")
+  end
+
   test "handles slash commands", %{view: view} do
     view |> form("#prompt-form", prompt: %{text: "/help"}) |> render_submit()
     assert has_element?(view, "#entries", "/effort low|high|max")

@@ -63,6 +63,11 @@ defmodule Mix.Tasks.Visor.LogTest do
     %{event: "code_call", call_id: "c1", n: 1, text: ~s|write("a.css")|, status: "running"},
     %{event: "code_call", call_id: "c1", n: 1, text: ~s|write("a.css")|, status: "ok", ms: 2},
     %{event: "code_call", call_id: "c1", n: 2, text: ~s|sh("mix test")|, status: "running"},
+    %{event: "repeat", id: "c1", count: 3, blocked: false},
+    %{event: "repair", reason: "restart", answered: 2, dropped: 0},
+    %{event: "job_start", id: "j1", label: "mix test", status: "running"},
+    %{event: "job_end", id: "j1", label: "mix test", status: "failed", exit: 2, ms: 4200},
+    %{event: "wake", text: "[Visor: background job j1 (mix test) failed with status 2]"},
     %{
       event: "owner_down",
       text: "The console page closed or reloaded while the session was busy (tools).",
@@ -103,7 +108,7 @@ defmodule Mix.Tasks.Visor.LogTest do
 
     assert output() =~
              "2026-10-21T19:03:10  abc123  1 prompt, 1 turn, 1 tool call, 12,345 tokens in, " <>
-               "678 out, 13s  page closed or reloaded while tools"
+               "678 out, 18s  page closed or reloaded while tools"
   end
 
   test "prints a session as a timeline", %{tmp_dir: dir} do
@@ -140,6 +145,11 @@ defmodule Mix.Tasks.Visor.LogTest do
              "1 model call, 1 tool call, 1 V call, 0 errors, 12,345 tokens in (9,000 cached), " <>
                "678 out, model 6.4s, tools 0.0s, 2,048 bytes sent"
 
+    assert out =~ "repeat  the same script 3 times in a row, warned (c1)"
+    assert out =~ "repair  2 tool calls answered, 0 stray results dropped (restart)"
+    assert out =~ "job     j1 started: mix test"
+    assert out =~ "job     j1 failed, exit 2 after 4.2s: mix test"
+    assert out =~ "wake    [Visor: background job j1 (mix test) failed with status 2]"
     assert out =~ "summary 1 prompt (1 session_stopped) in 9.0s"
     assert out =~ "stop    session stopped (shutdown)"
   end

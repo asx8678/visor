@@ -24,7 +24,9 @@ defmodule Visor.Agent.Totals do
             reasoning_tokens: 0,
             model_ms: 0,
             tool_ms: 0,
-            request_bytes: 0
+            request_bytes: 0,
+            jobs: 0,
+            wakes: 0
 
   @type t :: %__MODULE__{}
 
@@ -55,6 +57,8 @@ defmodule Visor.Agent.Totals do
     do: bump(totals, v_calls: 1, v_errors: error(call.status))
 
   def add(totals, {:note, :error, _text}), do: bump(totals, errors: 1)
+  def add(totals, {:job_start, _job}), do: bump(totals, jobs: 1)
+  def add(totals, {:wake, _text}), do: bump(totals, wakes: 1)
   def add(totals, _event), do: totals
 
   @doc "Adds to fields by name; anything but an integer counts as 0."

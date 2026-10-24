@@ -98,7 +98,7 @@ defmodule Visor.CodeTest do
 
   test "takes only timeout: as an option, in seconds" do
     assert {:error, message} = Code.run(~S|V.sh("ls", cwd: "lib")|, %{})
-    assert message =~ "The only option is timeout: (seconds), not [:cwd]."
+    assert message =~ "The options are timeout: (seconds) and background: true, not [:cwd]."
 
     assert {:error, message} = Code.run(~S|V.sh("ls", timeout: "5")|, %{})
     assert message =~ ~s(timeout: is a number of seconds, not "5".)

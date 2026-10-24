@@ -21,6 +21,16 @@ defmodule VisorWeb.ConsoleComponents do
     """
   end
 
+  # A prompt of the agent's own: background jobs ended while it was idle.
+  def entry(%{entry: %{type: :wake}} = assigns) do
+    ~H"""
+    <article id={@id} class="border-l-2 border-rule py-1 pl-3">
+      <p class="text-xs text-ink-dim">Visor, for the background jobs that ended</p>
+      <p class="whitespace-pre-wrap break-words text-[13px] text-ink-dim">{@entry.text}</p>
+    </article>
+    """
+  end
+
   # Everything a prompt did before its answer, folded into one line: the
   # model turns and tool calls open below it. The turn streaming now
   # shows under the line until it ends.
@@ -103,7 +113,8 @@ defmodule VisorWeb.ConsoleComponents do
       <p class="mt-2 text-ink-dim">
         Anything else goes to the model. Enter sends and Shift+Enter starts a new line.
         Up and down arrows recall earlier prompts. A message sent while a prompt runs
-        steers it, after the running step. Escape stops a running prompt.
+        steers it, after the running step. Escape stops a running prompt, but not the
+        background jobs it started: stop those with /jobs stop or their stop button.
       </p>
       <p class="mt-2 text-ink-dim">
         Each session is logged to log/sessions. Run
@@ -188,11 +199,59 @@ defmodule VisorWeb.ConsoleComponents do
     """
   end
 
+  ## Background jobs
+
+  attr :id, :string, required: true
+  attr :job, :map, required: true
+
+  @doc "A background job: its id, command and how it is going or ended."
+  def job_row(assigns) do
+    ~H"""
+    <li id={@id} class="grid grid-cols-[28px_minmax(0,1fr)_auto] items-baseline gap-x-2 py-[3px]">
+      <span class="font-mono text-xs text-ink-dim">{@job.id}</span>
+      <span class="min-w-0 truncate font-mono text-xs text-ink/85" title={@job.label}>
+        {@job.label}
+      </span>
+      <span class="flex items-baseline gap-2 text-xs">
+        <span class={job_color(@job.status)}>{job_state(@job)}</span>
+        <button
+          :if={@job.status == :running}
+          id={"stop-#{@id}"}
+          type="button"
+          phx-click="stop_job"
+          phx-value-id={@job.id}
+          class="touch-manipulation text-ink-dim transition-colors hover:text-alarm"
+        >
+          stop
+        </button>
+      </span>
+    </li>
+    """
+  end
+
+  defp job_color(:running), do: "live-dot text-amber"
+  defp job_color(:exited), do: "text-signal"
+  defp job_color(:killed), do: "text-ink-dim"
+  defp job_color(_failed), do: "text-alarm"
+
+  defp job_state(%{status: :running}), do: "running"
+  defp job_state(%{status: :exited, ms: ms}), do: "exit 0 · #{seconds(ms)}"
+
+  defp job_state(%{status: :failed, exit: exit, ms: ms}) when is_integer(exit),
+    do: "exit #{exit} · #{seconds(ms)}"
+
+  defp job_state(%{status: :failed, ms: ms}), do: "failed · #{seconds(ms)}"
+  defp job_state(%{status: :killed, ms: ms}), do: "stopped · #{seconds(ms)}"
+  defp job_state(%{status: :timed_out, ms: ms}), do: "timed out · #{seconds(ms)}"
+
   def commands do
     [
       {"/stop", "Stop the running model call or tools"},
       {"/clear", "Forget the conversation and clear the console"},
       {"/compact", "Sum up the conversation so far, keeping its recent part as it was"},
+      {"/jobs", "List the background jobs"},
+      {"/jobs stop ID", "Stop a background job and what it started"},
+      {"/jobs wake on|off", "Whether a job that ends may start the agent on its own"},
       {"/effort low|high|max", "Set the reasoning effort"},
       {"/think on|off", "Turn thinking mode on or off"},
       {"/help", "Show this list"}

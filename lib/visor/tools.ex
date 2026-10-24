@@ -42,8 +42,15 @@ defmodule Visor.Tools do
                                           "test/app_test.exs:12") in a Mix project; returns
                                           %{status: :ok | :failed | :compile_error | :timeout | :error,
                                             tests: n, failed: n, failures: [...], errors: [...]}
-            V.output(ref, first..last)    an output that was cut, kept as ref such as "r3";
-                                          all of it, or only its lines first..last
+            V.sh(command, background: true)
+                                          start a command as a background job (a long build, a
+                                          server); returns %{job: id, log: path} at once. You hear
+                                          when it ends, so don't poll it
+            V.job(id), V.jobs()           a job's status, exit and the end of its output; all jobs
+            V.stop(id), V.wait(id, timeout: s)
+                                          stop a job; wait for one started earlier
+            V.output(ref, first..last)    an output that was cut, kept as ref such as "r3", or a
+                                          job's output by its id; all of it, or lines first..last
             V.recall(id)                  a tool result from before a compaction, by the tool
                                           call id the summary gives
             V.beam_stats()                runtime statistics as a map
@@ -285,8 +292,13 @@ defmodule Visor.Tools do
   command started is stopped with it, background jobs included.
 
   Options: `:timeout` in milliseconds, `:max_bytes` of output to keep
-  (`Visor.Limits.result_bytes/0` by default), and `:env`, extra
-  environment variables as `{name, value}` strings.
+  (`Visor.Limits.result_bytes/0` by default), `:env`, extra environment
+  variables as `{name, value}` strings, and for a background job (see
+  `Visor.Jobs`) `:on_start`, called with the command's OS pid, and
+  `:on_data`, called with each piece of output as it comes.
+
+  The calling process owns the command: when it exits, the command and
+  everything it started are killed.
   """
   def shell(command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, Limits.shell_timeout_ms())
@@ -316,9 +328,11 @@ defmodule Visor.Tools do
     # nil when a quick command has already exited, and closed its port;
     # its output and exit status are waiting in the mailbox.
     os_pid = with {:os_pid, os_pid} <- Port.info(port, :os_pid), do: os_pid
+    if on_start = opts[:on_start], do: on_start.(os_pid)
     limit = Keyword.get(opts, :max_bytes, Limits.result_bytes())
     deadline = System.monotonic_time(:millisecond) + timeout
-    run = %{os_pid: os_pid, tag: tag, deadline: deadline, limit: limit}
+    on_data = Keyword.get(opts, :on_data, fn _data -> :ok end)
+    run = %{os_pid: os_pid, tag: tag, deadline: deadline, limit: limit, on_data: on_data}
     shell_output(port, run, [], 0)
   end
 
@@ -344,9 +358,11 @@ defmodule Visor.Tools do
   defp shell_output(port, run, acc, size) do
     receive do
       {^port, {:data, data}} when size < run.limit ->
+        run.on_data.(data)
         shell_output(port, run, [acc | data], size + byte_size(data))
 
-      {^port, {:data, _data}} ->
+      {^port, {:data, data}} ->
+        run.on_data.(data)
         shell_output(port, run, acc, size)
 
       {^port, {:exit_status, status}} ->

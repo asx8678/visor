@@ -34,6 +34,7 @@ defmodule Visor.Feedback.Script do
         headline(result, calls),
         changed(calls),
         ran(calls),
+        started(calls),
         for(%{status: :ok, check: summary} <- calls, do: summary),
         printed(result.stdio, keep),
         value(result, calls, keep)
@@ -117,6 +118,13 @@ defmodule Visor.Feedback.Script do
       status = if call.exit == :timeout, do: "timed out", else: "exit #{call.exit}"
       status = if call.ref, do: "#{status}, output #{call.ref}", else: status
       "ran: #{one_line(command)} (#{status})"
+    end
+  end
+
+  defp started(calls) do
+    for %{status: :ok, started: job} = call <- calls do
+      [command | _] = call.args
+      "started: #{job}, #{one_line(command)} (in the background)"
     end
   end
 

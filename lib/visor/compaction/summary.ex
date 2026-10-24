@@ -187,8 +187,13 @@ defmodule Visor.Compaction.Summary do
   defp commands(events) do
     events
     |> v_calls()
-    |> Enum.filter(fn {_id, call} -> call.name == :sh and Map.has_key?(call, :ran) end)
-    |> Enum.map(fn {id, call} -> "- #{call.ran} (exit #{call.exit}) [call #{id}]" end)
+    |> Enum.filter(fn {_id, call} ->
+      call.name == :sh and (Map.has_key?(call, :ran) or Map.has_key?(call, :started))
+    end)
+    |> Enum.map(fn
+      {id, %{ran: ran} = call} -> "- #{ran} (exit #{call.exit}) [call #{id}]"
+      {id, call} -> "- #{call.text} (started as job #{call.started}) [call #{id}]"
+    end)
     |> Enum.take(-@sample)
   end
 

@@ -427,6 +427,16 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "steer"} = e, _opts), do: ["steer   #{e["text"]}"]
 
+  defp describe(%{"event" => "wake"} = e, _opts), do: ["wake    #{e["text"]}"]
+
+  defp describe(%{"event" => "job_start"} = e, _opts),
+    do: ["job     #{e["id"]} started: #{e["label"]}"]
+
+  defp describe(%{"event" => "job_end"} = e, _opts) do
+    exit = if e["exit"], do: ", exit #{e["exit"]}", else: ""
+    ["job     #{e["id"]} #{e["status"]}#{exit} after #{seconds(e["ms"])}: #{e["label"]}"]
+  end
+
   defp describe(%{"event" => "repeat"} = e, _opts) do
     what = if e["blocked"], do: "refused", else: "warned"
     ["repeat  the same script #{e["count"]} times in a row, #{what} (#{e["id"]})"]

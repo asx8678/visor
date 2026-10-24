@@ -11,7 +11,7 @@ defmodule V do
   for the model when the script ends (see `Visor.Feedback.Script`).
   """
 
-  alias Visor.{Check, Code, Feedback, Format, Limits, Lock, Observer, Tools, Workspace}
+  alias Visor.{Check, Code, Feedback, Format, Jobs, Limits, Lock, Observer, Tools, Workspace}
 
   defmodule Error do
     defexception [:message]
@@ -81,9 +81,35 @@ defmodule V do
   `timeout:` (seconds) raises its time limit from
   `Visor.Limits.shell_timeout_ms/0`. A command never runs past its
   script's own limit: it times out a second before.
+
+  `background: true` runs it as a job instead (see `Visor.Jobs`) and
+  returns `%{job: id, log: path}` at once. A job isn't bound by its
+  script: its limit is `Visor.Limits.job_timeout_ms/0`, or `timeout:`
+  up to `max_job_timeout_ms/0`. When it ends, the model hears of it.
   """
-  def sh(command, opts \\ []) when is_binary(command) and is_list(opts) do
-    timeout = within_script(opts, Limits.shell_timeout_ms(), 1_000)
+  def sh(command, opts \\ [])
+
+  def sh(command, opts) when is_binary(command) and is_list(opts) do
+    if Keyword.get(opts, :background, false),
+      do: background(command, opts),
+      else: foreground(command, opts)
+  end
+
+  defp background(command, opts) do
+    timeout =
+      opts
+      |> asked_timeout(Limits.job_timeout_ms(), [:timeout, :background])
+      |> min(Limits.max_job_timeout_ms())
+
+    track(:sh, [command, opts], fn ->
+      with {:ok, job} <- with_jobs(&Jobs.start_shell(&1, command, timeout)) do
+        {:ok, %{job: job.id, log: job.log}, %{started: job.id}}
+      end
+    end)
+  end
+
+  defp foreground(command, opts) do
+    timeout = within_script(opts, Limits.shell_timeout_ms(), 1_000, [:timeout, :background])
 
     track(:sh, [command | opts_args(opts)], fn ->
       {status, output} = Tools.shell(command, timeout: timeout)
@@ -128,16 +154,88 @@ defmodule V do
   end
 
   @doc """
+  Background job `id` (see `sh/2`): its `status` (`:running`, `:exited`,
+  `:failed`, `:killed` or `:timed_out`), `exit` code, `ms` so far, `log`
+  file and the end of its output (`tail`). Reading a job that ended
+  counts as hearing of it.
+  """
+  def job(id) when is_binary(id) do
+    track(:job, [id], fn ->
+      with {:ok, job} <- find_job(id) do
+        if job.status != :running, do: Jobs.acknowledge(session(), id)
+        {:ok, job_view(job)}
+      end
+    end)
+  end
+
+  @doc "The session's background jobs, without their output."
+  def jobs do
+    track(:jobs, [], fn ->
+      with {:ok, session} <- job_session() do
+        {:ok, for(job <- Jobs.list(session), do: Map.delete(job_view(job), :tail))}
+      end
+    end)
+  end
+
+  @doc "Stops background job `id` and what it started."
+  def stop(id) when is_binary(id) do
+    track(:stop, [id], fn ->
+      with {:ok, job} <- with_jobs(&Jobs.stop(&1, id)), do: {:ok, job_view(job)}
+    end)
+  end
+
+  @doc """
+  Waits for background job `id` to end, up to `timeout:` seconds (by
+  default, and at most, what the script has left), and returns it as
+  `job/1` does, ended or not. Starting a job and waiting for it in one
+  script is a foreground command; `wait` is for a job started earlier.
+  """
+  def wait(id, opts \\ []) when is_binary(id) and is_list(opts) do
+    left = max((Code.time_left() || Limits.script_timeout_ms()) - 2_000, 0)
+    timeout = opts |> asked_timeout(left, [:timeout]) |> min(left)
+
+    track(:wait, [id | opts_args(opts)], fn ->
+      with {:ok, job} <- with_jobs(&Jobs.wait(&1, id, timeout)) do
+        if job.status != :running, do: Jobs.acknowledge(session(), id)
+        {:ok, job_view(job)}
+      end
+    end)
+  end
+
+  @doc """
   An output the script's result kept as a ref (such as `"r3"`), or only
   its lines `first..last`, counted from 1.
   """
   def output(ref, lines \\ nil) when is_binary(ref) do
     track(:output, [ref | List.wrap(lines)], fn ->
-      with {:ok, text} <- Feedback.fetch(session(), ref) do
+      with {:ok, text} <- kept_output(ref) do
         lines(text, lines, ref)
       end
     end)
   end
+
+  # A job's id reads its log file: the whole of its output so far.
+  defp kept_output("j" <> _ = id) do
+    with {:ok, job} <- find_job(id) do
+      max = Limits.read_bytes()
+
+      case File.stat(job.log) do
+        {:ok, %{size: size}} when size > max ->
+          {:error,
+           "#{id}'s output is #{Format.number(size)} bytes, over the " <>
+             "#{Format.number(Limits.read_bytes())} V.output reads; read it in lines, " <>
+             ~s|such as V.output("#{id}", 1..200).|}
+
+        {:ok, _stat} ->
+          File.read(job.log)
+
+        {:error, _reason} ->
+          {:error, "#{id}'s output is gone with its session."}
+      end
+    end
+  end
+
+  defp kept_output(ref), do: Feedback.fetch(session(), ref)
 
   @doc """
   A tool result as the model first saw it, by its tool call id: how a
@@ -201,28 +299,63 @@ defmodule V do
   # A call's time limit in ms: `opts[:timeout]` seconds or `default`,
   # ending `margin` ms before the script's own limit, so the call reports
   # its timeout before the script is stopped.
-  defp within_script(opts, default, margin) do
-    asked =
-      case Keyword.get(opts, :timeout) do
-        nil ->
-          default
-
-        seconds when is_number(seconds) and seconds > 0 ->
-          round(seconds * 1000)
-
-        other ->
-          raise Error, "timeout: is a number of seconds, not #{inspect(other)}."
-      end
-
-    case Keyword.keys(opts) -- [:timeout] do
-      [] -> :ok
-      keys -> raise Error, "The only option is timeout: (seconds), not #{inspect(keys)}."
-    end
+  defp within_script(opts, default, margin, allowed \\ [:timeout]) do
+    asked = asked_timeout(opts, default, allowed)
 
     case Code.time_left() do
       nil -> asked
       left -> min(asked, max(left - margin, 0))
     end
+  end
+
+  defp asked_timeout(opts, default, allowed) do
+    case Keyword.keys(opts) -- allowed do
+      [] ->
+        :ok
+
+      keys when allowed == [:timeout] ->
+        raise Error, "The only option is timeout: (seconds), not #{inspect(keys)}."
+
+      keys ->
+        raise Error,
+              "The options are timeout: (seconds) and background: true, not #{inspect(keys)}."
+    end
+
+    case Keyword.get(opts, :timeout) do
+      nil -> default
+      seconds when is_number(seconds) and seconds > 0 -> round(seconds * 1000)
+      other -> raise Error, "timeout: is a number of seconds, not #{inspect(other)}."
+    end
+  end
+
+  defp job_session do
+    case session() do
+      nil -> {:error, "Background jobs need a console session."}
+      session -> {:ok, session}
+    end
+  end
+
+  defp with_jobs(fun) do
+    with {:ok, session} <- job_session(), do: fun.(session)
+  end
+
+  defp find_job(id) do
+    with {:ok, session} <- job_session() do
+      case Jobs.get(session, id) do
+        nil -> {:error, "There is no job #{id}."}
+        job -> {:ok, job}
+      end
+    end
+  end
+
+  defp job_view(job) do
+    job
+    |> Jobs.public()
+    |> Map.take([:id, :label, :status, :exit, :ms, :log, :tail])
+    |> Map.update!(:ms, fn
+      nil -> System.monotonic_time(:millisecond) - job.started
+      ms -> ms
+    end)
   end
 
   # Options as a call's arguments, so the console and the log show them.

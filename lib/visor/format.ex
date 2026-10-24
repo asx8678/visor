@@ -34,4 +34,13 @@ defmodule Visor.Format do
   def seconds(nil), do: "–"
   def seconds(ms) when ms < 1000, do: "#{ms} ms"
   def seconds(ms), do: "#{:erlang.float_to_binary(ms / 1000, decimals: 1)} s"
+
+  @doc "A length of time in ms, as `\"3.2 s\"`, `\"4 min 10 s\"` or `\"2 h 5 min\"`."
+  def duration(nil), do: "–"
+  def duration(ms) when ms < 60_000, do: seconds(ms)
+
+  def duration(ms) when ms < 3_600_000,
+    do: "#{div(ms, 60_000)} min #{div(rem(ms, 60_000), 1000)} s"
+
+  def duration(ms), do: "#{div(ms, 3_600_000)} h #{div(rem(ms, 3_600_000), 60_000)} min"
 end
