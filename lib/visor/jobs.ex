@@ -544,7 +544,13 @@ defmodule Visor.Jobs do
   # kills their commands. Their files go too.
   @impl true
   def terminate(_reason, state) do
-    File.rm_rf(Path.dirname(log_path(state.id, "j0")))
+    dir = Path.dirname(log_path(state.id, "j0"))
+    File.rm_rf(dir)
+    # This VM's folder goes too when no other session of it has jobs
+    # (rmdir only removes an empty folder), so runs don't each leave one
+    # behind: 180 had piled up. A session making its folder in that same
+    # instant could have it go from under it, a window of microseconds.
+    File.rmdir(Path.dirname(dir))
     :ok
   end
 
