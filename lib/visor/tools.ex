@@ -49,6 +49,8 @@ defmodule Visor.Tools do
             V.agent(task, seed: :snippet, role: text)
                                           start a sub-agent with a fresh context on a task, as a
                                           job; you hear its answer when it is done
+            V.council(task, roles: ["security reviewer", ...])
+                                          a sub-agent per role, then one that weighs their answers
             V.job(id), V.jobs()           a job's status, exit and the end of its output; all jobs
             V.stop(id), V.wait(id, timeout: s)
                                           stop a job; wait for one started earlier

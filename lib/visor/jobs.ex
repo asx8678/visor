@@ -63,6 +63,17 @@ defmodule Visor.Jobs do
     GenServer.call(Harness.via({session, :jobs}), {:start, :agent, prompt, opts})
   end
 
+  @doc """
+  Starts a council (see `V.council/2`): a sub-agent per role on `task`,
+  at once, then with `synthesize` one more that weighs their answers.
+  The members are jobs of their own, marked as the council's, and the
+  agent hears only of the council. Returns `{:ok, job}` or
+  `{:error, message}`.
+  """
+  def start_council(session, task, opts) do
+    GenServer.call(Harness.via({session, :jobs}), {:start, :council, task, opts})
+  end
+
   @doc "Session `session`'s job `id`, or nil."
   def get(session, id) do
     with store when store != nil <- Session.store(session),
@@ -111,6 +122,15 @@ defmodule Visor.Jobs do
   def public(job), do: Map.drop(job, [:pid, :started, :announced])
 
   @doc "What the model is told when job `job` has ended."
+  def notice(%{kind: :council} = job) do
+    answer = String.trim(job.tail || "")
+    members = length(Map.get(job, :members, []))
+
+    "[Visor: council #{job.id} (#{label(job)}) of #{members} sub-agents " <>
+      "#{if job.status == :exited, do: "answered (#{shorten(answer, 300)})", else: "#{job.status}"} " <>
+      "after #{Format.duration(job.ms)}. " <> ~s|V.output("#{job.id}") has its whole answer.]|
+  end
+
   def notice(%{kind: :agent} = job) do
     answer = String.trim(job.tail || "")
 
@@ -199,6 +219,28 @@ defmodule Visor.Jobs do
         start(state, from, :agent, opts.task, opts.timeout_ms, fn session, job ->
           run_agent(session, job, prompt, opts)
         end)
+        |> mark_member(state.id, opts[:council])
+    end
+  end
+
+  def handle_call({:start, :council, task, opts}, from, state) do
+    cond do
+      Session.depth(state.id) >= Limits.agent_depth() ->
+        {:reply, {:error, "A sub-agent can't start a council."}, state}
+
+      length(opts.roles) > Limits.agents_at_once() ->
+        {:reply,
+         {:error,
+          "A council has at most #{Limits.agents_at_once()} roles, the sub-agents a session " <>
+            "may run at once."}, state}
+
+      Enum.any?(running(state.id), &(&1.kind == :agent)) ->
+        {:reply, {:error, "Wait for the running sub-agents to end before a council."}, state}
+
+      true ->
+        start(state, from, :council, task, opts.timeout_ms, fn session, job ->
+          run_council(session, job, task, opts)
+        end)
     end
   end
 
@@ -255,6 +297,16 @@ defmodule Visor.Jobs do
     end
   end
 
+  # A council's member is marked as its, so the agent hears of the
+  # council alone.
+  defp mark_member({:reply, {:ok, job}, state}, session, council) when is_binary(council) do
+    job = Map.put(job, :council, council)
+    put(session, job)
+    {:reply, {:ok, job}, state}
+  end
+
+  defp mark_member(reply, _session, _council), do: reply
+
   defp stop_job(state, job_id) do
     case get(state.id, job_id) do
       nil ->
@@ -267,6 +319,13 @@ defmodule Visor.Jobs do
         cond do
           not is_pid(pid) ->
             :ok
+
+          # A council's members go with it.
+          job.kind == :council ->
+            for %{council: ^job_id, status: :running} = member <- list(state.id),
+                do: stop_job(state, member.id)
+
+            Process.exit(pid, :kill)
 
           # A sub-agent's task counts what its child did so far before it
           # goes; it is killed if it hasn't within a second.
@@ -363,7 +422,8 @@ defmodule Visor.Jobs do
       end
 
       Event.broadcast(state.id, {:job_end, public(job)})
-      Visor.Agent.job_ended(state.id, job_id)
+      # A council's member is the council's to hear of.
+      unless Map.get(job, :council), do: Visor.Agent.job_ended(state.id, job_id)
       %{state | waiters: Map.delete(state.waiters, job_id)}
     else
       state
@@ -461,6 +521,73 @@ defmodule Visor.Jobs do
     end)
 
     GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
+  end
+
+  # Starts the members, waits for each, then for the synthesis.
+  defp run_council(session, job, task, opts) do
+    Process.set_label("job #{job.id}")
+
+    agent = fn prompt, role ->
+      start_agent(session, prompt, Map.put(agent_opts(task, role, opts), :council, job.id))
+    end
+
+    members =
+      for role <- opts.roles do
+        {:ok, member} = agent.(task, role)
+        {role, member.id}
+      end
+
+    ids = Enum.map(members, &elem(&1, 1))
+    update(session, job.id, &Map.put(&1, :members, ids))
+
+    answers =
+      for {role, id} <- members do
+        {:ok, member} = wait(session, id, max(job.started + job.timeout_ms - now(), 0))
+        {role, member_answer(member)}
+      end
+
+    joined = Enum.map_join(answers, "\n\n", fn {role, answer} -> "## #{role}\n\n#{answer}" end)
+
+    {answer, members} =
+      if opts.synthesize do
+        prompt =
+          "Several reviewers answered this task on their own. Weigh their answers and give " <>
+            "one: where they agree, where they differ and which is right, and what to do.\n\n" <>
+            "Task: #{task}\n\n#{joined}"
+
+        {:ok, synthesis} = agent.(prompt, "the synthesizer of a council")
+        update(session, job.id, &Map.update!(&1, :members, fn ids -> ids ++ [synthesis.id] end))
+        {:ok, done} = wait(session, synthesis.id, max(job.started + job.timeout_ms - now(), 0))
+        {member_answer(done), Enum.map(members, &elem(&1, 1)) ++ [synthesis.id]}
+      else
+        {joined, Enum.map(members, &elem(&1, 1))}
+      end
+
+    File.mkdir_p!(Path.dirname(job.log))
+    File.write!(job.log, answer)
+    File.chmod!(job.log, 0o600)
+
+    update(session, job.id, fn record ->
+      Map.merge(record, %{
+        status: :exited,
+        ms: now() - record.started,
+        tail: keep_tail(answer),
+        members: members
+      })
+    end)
+
+    GenServer.cast(Harness.via({session, :jobs}), {:ended, job.id})
+  end
+
+  defp agent_opts(task, role, opts) do
+    %{task: task, role: role, max_steps: opts.max_steps, timeout_ms: opts.timeout_ms}
+  end
+
+  defp member_answer(%{log: log, tail: tail}) do
+    case File.read(log) do
+      {:ok, answer} -> answer
+      {:error, _reason} -> tail || ""
+    end
   end
 
   # The child's events, counted, until its first prompt ends. The count

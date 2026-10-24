@@ -202,6 +202,45 @@ defmodule V do
     end)
   end
 
+  @doc """
+  Starts a council on `task`: one sub-agent per role in `roles:` (up to
+  #{Limits.agents_at_once()}), all at once, each answering on its own;
+  then, with `synthesize: true` (the default), one more that weighs their
+  answers and gives one. Returns `%{job: id}` at once; you hear the
+  council's answer when it is done, and `V.output(id)` has all of it.
+  `max_steps:` and `timeout:` (seconds) apply to each member.
+  """
+  def council(task, opts) when is_binary(task) and is_list(opts) do
+    track(:council, [task | opts_args(opts)], fn ->
+      roles = Keyword.get(opts, :roles, [])
+
+      cond do
+        Keyword.keys(opts) -- [:roles, :synthesize, :max_steps, :timeout] != [] ->
+          {:error, "V.council's options are roles:, synthesize:, max_steps: and timeout:."}
+
+        roles == [] or not Enum.all?(roles, &is_binary/1) ->
+          {:error,
+           ~s|V.council needs roles: as a list of strings, such as ["security reviewer"].|}
+
+        true ->
+          with {:ok, session} <- job_session(),
+               {:ok, _prompt, settings} <-
+                 agent_settings(session, task, Keyword.take(opts, [:max_steps, :timeout])),
+               {:ok, job} <-
+                 Jobs.start_council(
+                   session,
+                   task,
+                   Map.merge(settings, %{
+                     roles: roles,
+                     synthesize: Keyword.get(opts, :synthesize, true)
+                   })
+                 ) do
+            {:ok, %{job: job.id}, %{started: job.id}}
+          end
+      end
+    end)
+  end
+
   defp agent_settings(session, task, opts) do
     allowed = [:seed, :role, :max_steps, :timeout]
 

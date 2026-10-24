@@ -218,6 +218,7 @@ defmodule Visor.Code.Allowlist do
       :run,
       :scripts,
       :agent,
+      :council,
       :beam_stats
     ]
 

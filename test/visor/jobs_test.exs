@@ -200,6 +200,40 @@ defmodule Visor.JobsTest do
       assert answer =~ "A sub-agent can't start sub-agents of its own"
     end
 
+    test "meets as a council: members answer, one weighs them, the agent hears once", %{id: id} do
+      script = ~S|V.council("list the files", roles: ["first", "second", "third"])|
+      assert :ok = Agent.prompt(id, "> " <> script)
+
+      assert_receive {:agent,
+                      {:job_end, %{id: "j1", kind: :council, members: members} = council}},
+                     10_000
+
+      assert length(members) == 4
+      assert council.tail =~ "Here is what came back"
+
+      assert_receive {:agent, {:wake, notice}}, 5_000
+      assert notice =~ "[Visor: council j1 (list the files) of 4 sub-agents answered"
+      refute notice =~ "sub-agent j2"
+      refute_receive {:agent, {:wake, _}}, 600
+
+      assert run(id, ~S|V.council("x", roles: ["a", "b", "c", "d"])|) =~
+               "A council has at most 3 roles"
+    end
+
+    test "stops its members when it is stopped", %{id: id} do
+      run(id, ~S|V.council("$ sleep 5", roles: ["a", "b"], synthesize: false)|)
+      assert_receive {:agent, {:job_start, %{id: "j2", child: first}}}, 5_000
+      assert_receive {:agent, {:job_start, %{id: "j3", child: second}}}, 5_000
+      # Stopped once their commands run: one stopped as it starts never runs.
+      for child <- [first, second], do: Agent.subscribe(child)
+      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
+      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
+
+      assert run(id, ~S|V.stop("j1").status|) =~ "=> :killed"
+      assert_receive {:agent, {:job_end, %{id: "j2", status: :killed}}}, 5_000
+      assert_receive {:agent, {:job_end, %{id: "j3", status: :killed}}}, 5_000
+    end
+
     test "ends when it is stopped, or when its parent's session ends", %{id: id} do
       run(id, ~S|V.agent("$ sleep 5")|)
       assert_receive {:agent, {:job_start, %{id: "j1", child: first}}}, 5_000
@@ -213,6 +247,8 @@ defmodule Visor.JobsTest do
 
       run(id, ~S|V.agent("$ sleep 5")|)
       assert_receive {:agent, {:job_start, %{id: "j2", child: second}}}, 5_000
+      Agent.subscribe(second)
+      assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
       ref = Process.monitor(session_pid(second))
       stop_supervised!(:session)
       assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 5_000
