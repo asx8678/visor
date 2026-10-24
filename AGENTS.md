@@ -59,7 +59,8 @@ live supervision tree beside it. There is no database.
   `.visor/` and walks skip it. `/run name` runs one without the model.
 - The rest of `V` a script has, each in `lib/v.ex`: `V.all` (read-only
   calls at once), `V.carry`/`V.compact`/`V.context` (what every summary
-  keeps, a compaction at the next settled step, how full the context is),
+  keeps, a compaction of what came before once the prompt has ended, how
+  full the context is),
   `V.think` (the model's own effort for the rest of a prompt), `V.note`
   (a progress note for the user only), `V.history` (earlier sessions on
   this project, from their logs), and `timeout:` on the tool, `V.sh` and

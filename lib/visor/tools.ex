@@ -60,8 +60,8 @@ defmodule Visor.Tools do
                                           call id the summary gives
             V.carry(add: text)            keep text in every compaction summary (remove: text,
                                           clear: true; V.carry() reads the list)
-            V.compact(reason)             compact the conversation once this script's results
-                                          are in, such as when a task is done
+            V.compact(reason)             sum up what came before this prompt once it has
+                                          ended, such as when a task is done
             V.context()                   %{tokens, threshold, window, share, band}: how full
                                           the context is
             V.all([{:sh, "cmd"}, {:read, ["mix.exs"]}, ...])

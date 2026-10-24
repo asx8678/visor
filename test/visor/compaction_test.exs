@@ -134,6 +134,25 @@ defmodule Visor.CompactionTest do
     assert :keep = Compaction.compact(messages, opts(force: true))
   end
 
+  test "keeps the messages from :keep_from as they are, and no summary too small to say much" do
+    messages = conversation(3) ++ [user("prompt 4")]
+
+    assert {:ok, %{from: 15}, %{kept: 1}} =
+             Compaction.compact(messages, opts(force: true, keep_from: 15))
+
+    # One short exchange would leave a summary of headings only.
+    short = [user("fix the parser"), answer("Fixed it."), user("now the lexer")]
+    assert :keep = Compaction.compact(short, opts(force: true, keep_from: 2))
+  end
+
+  test "keeps a section's latest line, cut, when not even one line fits" do
+    messages = [user("first: " <> String.duplicate("a", 3_000)), answer("done"), user("last ask")]
+    summary = Compaction.Summary.compile(messages, %{}, 1_200)
+
+    assert summary =~ "[Recent user directions and discussion]\nUser [message 3]:\nlast ask"
+    assert byte_size(summary) <= 1_200
+  end
+
   test "puts the summary in the first kept user message, or before an assistant one" do
     messages = [user("one"), answer("two"), user("three"), answer("four")]
 

@@ -366,15 +366,42 @@ defmodule Visor.AgentTest do
     assert {:error, "The summary carries at most 16 items." <> _} = Agent.carry(id, {:add, "17"})
   end
 
-  test "compacts when a script asks, before the next model call", %{id: id} do
+  # Made mid-prompt, a compaction took the prompt it ran in, and a live
+  # model said it saw no request outstanding.
+  test "compacts when a script asks, once its prompt has ended, keeping the next as it is",
+       %{id: id} do
     ask(id, @big)
     ask(id, @big)
 
     assert :ok = Agent.prompt(id, ~S|> V.compact("the setup is done")|)
     assert_receive {:agent, {:tool_end, %{status: :ok}}}, 5_000
-    assert_receive {:agent, {:compaction, %{reason: :requested, request: "the setup is done"}}}
-    assert_receive {:agent, {:turn_start, _info}}
     assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+    refute_received {:agent, {:compaction, _}}
+
+    assert :ok = Agent.prompt(id, "list the files")
+
+    assert_receive {:agent, {:compaction, %{reason: :requested, request: "the setup is done"}}},
+                   5_000
+
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    # The cut is before the new prompt, which the model sees as it was.
+    %{messages: messages, compaction: compaction} = :sys.get_state(agent(id))
+    assert Enum.find_index(messages, &(&1["content"] == "list the files")) >= compaction.from
+  end
+
+  test "makes no compaction a script asks for when there is too little to sum up", %{id: id} do
+    assert :ok = Agent.prompt(id, ~S|> V.compact("early")|)
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    assert :ok = Agent.prompt(id, "list the files")
+
+    assert_receive {:agent, {:note, :info, "The compaction a script asked for (early)" <> _}},
+                   5_000
+
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+    refute_received {:agent, {:compaction, _}}
+    assert :sys.get_state(agent(id)).compact_request == nil
   end
 
   test "lets the model set its own reasoning for the rest of the prompt", %{id: id} do

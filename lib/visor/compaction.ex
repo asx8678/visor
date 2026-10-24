@@ -25,6 +25,9 @@ defmodule Visor.Compaction do
   @safety 0.9
   # A compaction must make the context smaller than this share of before.
   @reduction 0.95
+  # A summary smaller than this has room for its headings and little else,
+  # so what it replaced would be lost rather than summed up.
+  @min_summary_bytes 1_024
 
   @doc "A term's size in estimated tokens: four bytes to a token."
   def estimate(term), do: div(:erlang.external_size(term), 4) + 1
@@ -63,6 +66,9 @@ defmodule Visor.Compaction do
     * `:window` - the context window in provider tokens, or nil
     * `:force` - compact even under the threshold
     * `:carry` - what every summary keeps (`V.carry/1`)
+    * `:keep_from` - the index from which messages stay as they are
+      whatever the budget, such as the prompt a requested compaction
+      waited for
   """
   def compact(messages, opts) do
     current = Keyword.get(opts, :compaction)
@@ -82,13 +88,17 @@ defmodule Visor.Compaction do
     target = target(tokens, fixed, scale, reserve, Keyword.get(opts, :window))
     budget = max(floor(target / scale) - fixed - reserve, 0)
 
-    with {:ok, from} <- cut(messages, current, budget) do
-      # Never more than half of what it replaces: the last summary and the
-      # messages it newly covers (dsh-fabric's guard).
-      start = if current, do: current.from, else: 0
-      replaced = total(Enum.slice(messages, start, from - start))
-      replaced = if current, do: replaced + estimate(current.summary), else: replaced
-      limit = min(Limits.summary_bytes(), max(replaced * 2 - 256, 256))
+    start = if current, do: current.from, else: 0
+
+    with {:ok, from} <- cut(messages, current, budget),
+         from = min(from, Keyword.get(opts, :keep_from, from)),
+         true <- from > start || :keep,
+         # Never more than half of what it replaces: the last summary and
+         # the messages it newly covers (dsh-fabric's guard).
+         replaced = total(Enum.slice(messages, start, from - start)),
+         replaced = if(current, do: replaced + estimate(current.summary), else: replaced),
+         limit = min(Limits.summary_bytes(), max(replaced * 2 - 256, 256)),
+         true <- limit >= @min_summary_bytes || :keep do
       summarized = Enum.take(messages, from)
       facts = Keyword.get(opts, :facts, %{})
       summary = Summary.compile(summarized, facts, limit, Keyword.get(opts, :carry, []))

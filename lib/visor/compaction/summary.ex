@@ -327,10 +327,13 @@ defmodule Visor.Compaction.Summary do
   end
 
   # A section's lines under its title, the earliest and latest of them when
-  # they don't all fit.
+  # they don't all fit, or the latest cut to fit when not even one does: a
+  # small summary still says what was asked last.
   defp block(title, lines, max_bytes) do
     lines = Enum.map(lines, &clip(&1, max(@line_bytes, @exchange_bytes)))
-    Enum.find_value(length(lines)..1//-1, title, &sampled_block(title, lines, &1, max_bytes))
+
+    Enum.find_value(length(lines)..1//-1, &sampled_block(title, lines, &1, max_bytes)) ||
+      title <> "\n" <> clip(String.trim(List.last(lines)), max_bytes - byte_size(title) - 1)
   end
 
   defp sampled_block(title, lines, keep, max_bytes) do

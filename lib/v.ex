@@ -647,10 +647,10 @@ defmodule V do
   end
 
   @doc """
-  Asks for the conversation to be compacted when this script's results are
-  in, before the next model call: the messages before the recent part
-  become a summary (see `carry/1` for what it always keeps). `reason`
-  says why, for the console.
+  Asks for the conversation to be compacted once this prompt has ended:
+  at the next prompt's first model call, everything before that prompt
+  becomes a summary (see `carry/1` for what it always keeps), and the
+  prompt stays as it was. `reason` says why, for the console.
   """
   def compact(reason) when is_binary(reason) do
     track(:compact, [reason], fn ->

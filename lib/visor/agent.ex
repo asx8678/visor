@@ -103,7 +103,7 @@ defmodule Visor.Agent do
     jobs_wake: true,
     wake_timer: nil,
     # What the model asked every summary to keep (V.carry/1), and its
-    # request to compact at the next settled step (V.compact/1).
+    # request to compact once its prompt has ended (V.compact/1).
     carry: [],
     compact_request: nil,
     # This agent's limit of model calls a prompt, its system prompt, and
@@ -191,8 +191,8 @@ defmodule Visor.Agent do
   def carry(id, change), do: GenServer.call(via(id), {:carry, change})
 
   @doc """
-  Asks for the conversation to be compacted at the next settled step,
-  before the next model call (`V.compact/1`).
+  Asks for the conversation to be compacted once the running prompt has
+  ended, at the next prompt's first model call (`V.compact/1`).
   """
   def request_compaction(id, reason), do: GenServer.call(via(id), {:request_compaction, reason})
 
@@ -864,18 +864,37 @@ defmodule Visor.Agent do
 
   ## Compaction
 
-  # A compaction the model asked for is made here, the next settled step;
-  # otherwise only past the threshold.
+  # A compaction the model asked for waits until its prompt has ended, as
+  # pi-fabric's waits for the agent to settle: at the first model call of
+  # the next prompt (or wake), what came before that prompt is summed up
+  # and the prompt stays as it was. Made mid-prompt, it would take the
+  # request being worked on with it. Otherwise only past the threshold.
   defp maybe_compact(state) do
-    {reason, state} =
-      case Map.get(state, :compact_request) do
-        nil -> {:threshold, state}
-        request -> {:requested, Map.merge(state, %{compact_request: nil, requested: request})}
-      end
+    case Map.get(state, :compact_request) do
+      request when is_binary(request) and state.steps == 0 ->
+        state = Map.merge(state, %{compact_request: nil, requested: request})
+        prompt = length(state.messages) - 1
 
-    case compact_messages(state, reason) do
-      {:ok, state, _info} -> Map.delete(state, :requested)
-      :keep -> Map.delete(state, :requested)
+        case compact_messages(state, :requested, nil, prompt) do
+          {:ok, state, _info} ->
+            Map.delete(state, :requested)
+
+          :keep ->
+            note(
+              state,
+              :info,
+              "The compaction a script asked for (#{request}) wasn't made: there isn't enough " <>
+                "before this prompt to sum up yet."
+            )
+
+            state |> Map.delete(:requested) |> save()
+        end
+
+      _none_or_waiting ->
+        case compact_messages(state, :threshold) do
+          {:ok, state, _info} -> state
+          :keep -> state
+        end
     end
   end
 
@@ -940,22 +959,26 @@ defmodule Visor.Agent do
   end
 
   # Compacts the conversation: past the threshold (`:threshold`), or now
-  # (`:manual`, `:overflow`). The cache misses once after a compaction, so
+  # (`:manual`, `:overflow`, `:requested`), keeping the messages from
+  # `keep_from` as they are. The cache misses once after a compaction, so
   # the next request is not compared with the last.
-  defp compact_messages(state, reason, window \\ nil) do
+  defp compact_messages(state, reason, window \\ nil, keep_from \\ nil) do
     provider = Model.current().info()
     current = Map.get(state, :compaction)
 
     result =
-      Compaction.compact(state.messages,
-        compaction: current,
-        facts: Map.get(state, :facts, %{}),
-        fixed: fixed_estimate(),
-        scale: Map.get(state, :token_scale, 1.0),
-        threshold: threshold(provider),
-        window: window || provider[:context_window],
-        force: reason != :threshold,
-        carry: Map.get(state, :carry, [])
+      Compaction.compact(
+        state.messages,
+        [
+          compaction: current,
+          facts: Map.get(state, :facts, %{}),
+          fixed: fixed_estimate(),
+          scale: Map.get(state, :token_scale, 1.0),
+          threshold: threshold(provider),
+          window: window || provider[:context_window],
+          force: reason != :threshold,
+          carry: Map.get(state, :carry, [])
+        ] ++ if(keep_from, do: [keep_from: keep_from], else: [])
       )
 
     case result do
