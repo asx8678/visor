@@ -3,7 +3,9 @@ defmodule Visor.Model.Demo do
   A scripted stand-in model for the tests (see `config/test.exs`).
 
   It streams canned reasoning and runs real scripts, so the harness and
-  the process view can be tested without network access.
+  the process view can be tested without network access. It rejects a
+  request the real API would reject for its message order (see
+  `invalid/1`), with the error the DeepSeek client would return.
   """
   @behaviour Visor.Model
 
@@ -27,6 +29,43 @@ defmodule Visor.Model.Demo do
 
   @impl true
   def stream(request, emit) do
+    case invalid(request.messages) do
+      nil -> answer(request, emit)
+      problem -> {:error, "DeepSeek returned HTTP 400. #{problem}"}
+    end
+  end
+
+  @doc """
+  Why the OpenAI-format API would refuse these messages, or nil: each
+  assistant message's tool calls must be answered, one tool message per
+  call id, before the next user or assistant message, and a tool message
+  must answer a call of the assistant message before it.
+  """
+  def invalid(messages), do: invalid(messages, [], 0)
+
+  # `open` holds the ids of the last assistant message's unanswered calls.
+  defp invalid([], [], _index), do: nil
+
+  defp invalid([], open, _index),
+    do: "Tool calls #{Enum.join(open, ", ")} have no tool messages answering them."
+
+  defp invalid([%{"role" => "tool", "tool_call_id" => id} | rest], open, index) do
+    if id in open,
+      do: invalid(rest, List.delete(open, id), index + 1),
+      else: "messages[#{index}]: a tool message must answer a tool call before it (#{id})."
+  end
+
+  defp invalid([_message | _rest], [_ | _] = open, index) do
+    "messages[#{index}]: tool calls #{Enum.join(open, ", ")} must be answered before " <>
+      "the next message."
+  end
+
+  defp invalid([%{"role" => "assistant", "tool_calls" => [_ | _] = calls} | rest], [], index),
+    do: invalid(rest, Enum.map(calls, & &1["id"]), index + 1)
+
+  defp invalid([_message | rest], [], index), do: invalid(rest, [], index + 1)
+
+  defp answer(request, emit) do
     started = now()
     {reasoning, content, calls} = reply(request.messages, Map.get(request, :tool_choice, "auto"))
 
