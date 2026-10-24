@@ -272,6 +272,29 @@ defmodule Visor.AgentTest do
     assert %{messages: ^before} = Agent.settings(id)
   end
 
+  test "warns about a script run again unchanged, and then refuses it", %{id: id} do
+    assert :ok = Agent.prompt(id, String.duplicate(">> V.exists?(\"mix.exs\")\n", 6))
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    results = for {:done, result} <- tool_events(), do: result
+    assert [first, second, third, _fourth, fifth, sixth] = results
+    refute first =~ "[Visor: this exact script"
+    refute second =~ "[Visor: this exact script"
+    assert third =~ "[Visor: this exact script has run 3 times in a row."
+    assert fifth =~ "has run 5 times in a row."
+    assert sixth =~ "Not run: this exact script already ran 5 times in a row"
+    assert_received {:agent, {:repeat, %{count: 6, blocked: true}}}
+  end
+
+  test "counts only identical scripts back to back", %{id: id} do
+    scripts = ["V.ls()", "V.ls()", ~S|V.exists?("lib")|, "V.ls()", "V.ls()"]
+    assert :ok = Agent.prompt(id, Enum.map_join(scripts, "\n", &">> #{&1}"))
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    for {:done, result} <- tool_events(), do: refute(result =~ "[Visor: this exact script")
+    refute_received {:agent, {:repeat, _}}
+  end
+
   test "answers the calls an agent crash left running, and carries on", %{
     id: id,
     session: session

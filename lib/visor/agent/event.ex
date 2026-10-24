@@ -37,6 +37,10 @@ defmodule Visor.Agent.Event do
       `Visor.Compaction`), because the context passed its threshold
       (`:threshold`), the user asked (`:manual`) or the provider rejected a
       request as too long (`:overflow`). Tokens are estimates
+    * `{:repeat, %{id, count, blocked}}`: tool call `id` runs the same
+      script as the `count - 1` before it, back to back. From
+      `Visor.Limits.repeat_warn/0` in a row its result says so; at
+      `repeat_block/0` it isn't run (`blocked: true`)
     * `{:repair, %{reason, answered, dropped}}`: tool calls without
       results were answered and results without calls dropped (see
       `Visor.Agent.Repair`), when the agent restarted mid-batch
@@ -96,6 +100,7 @@ defmodule Visor.Agent.Event do
           | {:prompt_end, %{reason: reason(), steps: non_neg_integer()}}
           | {:compaction,
              %{required(:reason) => :threshold | :manual | :overflow, optional(atom()) => term()}}
+          | {:repeat, %{id: call_id(), count: pos_integer(), blocked: boolean()}}
           | {:repair,
              %{
                reason: :restart | :request,

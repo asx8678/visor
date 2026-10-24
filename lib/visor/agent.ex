@@ -85,7 +85,9 @@ defmodule Visor.Agent do
     overflowed: false,
     # What the user sent while a prompt ran, oldest first: it goes to the
     # model after the running tool calls, or starts the next prompt.
-    queued: []
+    queued: [],
+    # The last script run and how many times in a row, as {hash, count}.
+    repeat: nil
   ]
 
   def start_link(opts) do
@@ -318,7 +320,7 @@ defmodule Visor.Agent do
 
   defp start_prompt(state, text) do
     broadcast(state, {:user, text})
-    state = state |> push_user(text) |> Map.merge(%{steps: 0, overflowed: false})
+    state = state |> push_user(text) |> Map.merge(%{steps: 0, overflowed: false, repeat: nil})
     start_turn(state)
   end
 
@@ -589,32 +591,85 @@ defmodule Visor.Agent do
       calls
       |> Enum.with_index()
       |> Map.new(fn {call, index} ->
-        {make_ref(), %{call: call, index: index, task: nil, started: nil, result: nil}}
+        {make_ref(),
+         %{call: call, index: index, task: nil, started: nil, result: nil, repeat: nil}}
       end)
 
     set_status(start_next_tool(%{state | tools: tools}), :tools)
   end
 
   defp start_next_tool(state) do
-    waiting = for {ref, %{task: nil} = tool} <- state.tools, do: {ref, tool}
+    waiting = for {ref, %{task: nil, result: nil} = tool} <- state.tools, do: {ref, tool}
 
     case Enum.min_by(waiting, fn {_ref, tool} -> tool.index end, fn -> nil end) do
       nil ->
         state
 
       {ref, %{call: call} = tool} ->
-        context = %{session: state.id, call_id: call.id}
+        {state, count} = repeat(state, call)
 
-        task =
-          Harness.async(state.tasks, "tool #{call.name}", fn ->
-            Tools.execute(call.name, call.arguments, context)
-          end)
-
-        Process.send_after(self(), {:deadline, task.ref}, Limits.tool_deadline_ms())
-        broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
-        tool = %{tool | task: task, started: now()}
-        %{state | tools: state.tools |> Map.delete(ref) |> Map.put(task.ref, tool)}
+        if count >= Limits.repeat_block() do
+          # Not run: it still starts and ends, like a cancelled call.
+          broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: nil})})
+          state = put_in(state.tools[ref].started, now())
+          finish_tool(state, ref, {:error, repeat_blocked(count), []})
+        else
+          run_tool(state, ref, Map.put(tool, :repeat, count))
+        end
     end
+  end
+
+  defp run_tool(state, ref, %{call: call} = tool) do
+    context = %{session: state.id, call_id: call.id}
+
+    task =
+      Harness.async(state.tasks, "tool #{call.name}", fn ->
+        Tools.execute(call.name, call.arguments, context)
+      end)
+
+    Process.send_after(self(), {:deadline, task.ref}, Limits.tool_deadline_ms())
+    broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
+    tool = %{tool | task: task, started: now()}
+    %{state | tools: state.tools |> Map.delete(ref) |> Map.put(task.ref, tool)}
+  end
+
+  # Counts a script run again unchanged, back to back: models in a loop
+  # rerun the same script and spend the prompt's model calls on it.
+  defp repeat(state, call) do
+    hash = :erlang.phash2({call.name, script_text(call.arguments)})
+
+    count =
+      case Map.get(state, :repeat) do
+        {^hash, count} -> count + 1
+        _other -> 1
+      end
+
+    if count >= Limits.repeat_warn() do
+      broadcast(
+        state,
+        {:repeat, %{id: call.id, count: count, blocked: count >= Limits.repeat_block()}}
+      )
+    end
+
+    {Map.put(state, :repeat, {hash, count}), count}
+  end
+
+  defp script_text(arguments) do
+    case Jason.decode(arguments) do
+      {:ok, %{"code" => code}} when is_binary(code) -> String.trim(code)
+      _other -> arguments
+    end
+  end
+
+  defp repeat_warning(count) do
+    "[Visor: this exact script has run #{count} times in a row. At " <>
+      "#{Limits.repeat_block()} in a row it is refused: change the approach, or answer with " <>
+      "what you know.]"
+  end
+
+  defp repeat_blocked(count) do
+    "Not run: this exact script already ran #{count - 1} times in a row, and running it " <>
+      "again adds nothing. Answer with what you know, or change the script."
   end
 
   # A task started before a hot reload still returns {status, output}.
@@ -623,6 +678,17 @@ defmodule Visor.Agent do
 
   defp finish_tool(state, ref, {status, output, facts}) do
     tool = state.tools[ref]
+
+    output =
+      case Map.get(tool, :repeat) do
+        count when is_integer(count) and count >= 1 ->
+          if count >= Limits.repeat_warn(),
+            do: output <> "\n\n" <> repeat_warning(count),
+            else: output
+
+        _not_counted ->
+          output
+      end
 
     broadcast(
       state,

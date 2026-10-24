@@ -427,6 +427,11 @@ defmodule Mix.Tasks.Visor.Log do
 
   defp describe(%{"event" => "steer"} = e, _opts), do: ["steer   #{e["text"]}"]
 
+  defp describe(%{"event" => "repeat"} = e, _opts) do
+    what = if e["blocked"], do: "refused", else: "warned"
+    ["repeat  the same script #{e["count"]} times in a row, #{what} (#{e["id"]})"]
+  end
+
   defp describe(%{"event" => "repair"} = e, _opts) do
     [
       "repair  #{count(e["answered"], "tool call")} answered, " <>

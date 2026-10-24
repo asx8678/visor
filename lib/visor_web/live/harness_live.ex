@@ -819,6 +819,16 @@ defmodule VisorWeb.HarnessLive do
 
   defp agent_event({:context, messages}, socket), do: assign(socket, :context_messages, messages)
 
+  defp agent_event({:repeat, %{blocked: true, count: count}}, socket) do
+    note(
+      socket,
+      :info,
+      "The model ran the same script #{count} times in a row, so Visor refused this run."
+    )
+  end
+
+  defp agent_event({:repeat, _info}, socket), do: socket
+
   defp agent_event({:repair, info}, socket) do
     why =
       if info.reason == :restart,
