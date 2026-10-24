@@ -15,6 +15,7 @@ defmodule Visor.Feedback.Script do
   """
 
   alias Visor.{Format, Limits, Tools}
+  alias Visor.Feedback.Hint
 
   @max_command_chars 100
   # Bounds on inspecting a value, which is cut at Limits.value_bytes() anyway;
@@ -72,8 +73,11 @@ defmodule Visor.Feedback.Script do
         "#{stop} after #{Format.count(length(calls), "call")}"
 
       true ->
+        message = without_stacktrace(failure.message)
+        hint = Hint.for_error(message)
+
         "failed after #{Format.count(length(calls), "call")}:\n" <>
-          indent(without_stacktrace(failure.message))
+          indent(message) <> if(hint, do: "\nhint: " <> hint, else: "")
     end
   end
 

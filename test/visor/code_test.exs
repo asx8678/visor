@@ -82,6 +82,32 @@ defmodule Visor.CodeTest do
     refute message =~ "lib/v.ex"
   end
 
+  test "hints at the right call for the mistakes models make" do
+    hints = %{
+      ~S|V.read_file("mix.exs")| => "V has no read_file; did you mean V.read(path)?",
+      ~S|V.edit("a.ex", old: "x", new: "y")| =>
+        "V.edit has no 2-argument form, and no keyword options: V.edit(path, old, new).",
+      ~S|V.grep("x", "lib", 3)| => ~S|V.grep(pattern, path \\ ".")|,
+      ~S|V.read(123)| => "the arguments don't fit V.read(path)",
+      ~S|File.read!("mix.exs")| => "use V.read(path).",
+      ~S|Path.wildcard("*")| => "use V.glob(pattern).",
+      ~S|System.cmd("ls", [])| => "use V.sh(command).",
+      ~S|File.stat("x")| => "only through V, which has beam_stats, check, edit",
+      ~S|import Enum; map([1], & &1)| => "write a module's full name",
+      ~S|try do 1 rescue _ -> 2 end| => "check first, such as V.exists?(path)"
+    }
+
+    for {script, hint} <- hints do
+      assert {:error, message} = Code.run(script, %{})
+      assert [_error, line] = String.split(message, "\nhint: ")
+      assert line =~ hint, "#{script} gave: #{line}"
+    end
+
+    # No hint for an error it knows nothing about.
+    assert {:error, message} = Code.run(~S|{:ok, _} = :error|, %{})
+    refute message =~ "hint:"
+  end
+
   test "checks whether a file exists, since a script can't rescue a failed read" do
     assert {:ok, "ok: 2 calls\n=> {true, false}"} =
              Code.run(~S|{V.exists?("lib/app.ex"), V.exists?("lib/nope.ex")}|, %{})
