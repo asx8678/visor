@@ -23,15 +23,6 @@ defmodule VisorWeb.HarnessLiveTest do
     %{view: view, id: id}
   end
 
-  # For what arrives outside the agent's events, such as a /run result.
-  defp eventually(check, tries \\ 50) do
-    cond do
-      check.() -> true
-      tries == 0 -> false
-      true -> receive(after: (50 -> eventually(check, tries - 1)))
-    end
-  end
-
   test "shows the process view, console and model inspector", %{view: view} do
     assert has_element?(view, "#runtime-header")
     assert has_element?(view, "#supervision-tree")
@@ -215,7 +206,8 @@ defmodule VisorWeb.HarnessLiveTest do
 
     view |> form("#prompt-form", prompt: %{text: "/run answer"}) |> render_submit()
     assert has_element?(view, "#entries", "Running saved script answer")
-    assert eventually(fn -> has_element?(view, "#entries", "=> 42") end)
+    assert_receive {:agent, {:script_run, %{name: "answer", status: :ok}}}, @flow_timeout
+    assert has_element?(view, "#entries", "=> 42")
   end
 
   test "lists and stops background jobs with /jobs", %{view: view} do

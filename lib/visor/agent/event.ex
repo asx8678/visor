@@ -56,6 +56,11 @@ defmodule Visor.Agent.Event do
     * `{:status, :idle | :streaming | :tools}`, `{:note, :info | :error, text}`,
       `{:settings, settings}` and `{:context, message_count}`
 
+  From the console's `/run`:
+
+    * `{:script_run, %{name, status, text}}`: a saved script ran without
+      the model, and what it returned
+
   From `Visor.Reviewer`, when it is on:
 
     * `{:review, %{mode, action, message, usage}}`: a review, as
@@ -146,6 +151,7 @@ defmodule Visor.Agent.Event do
           | {:script_end, call_id(), map()}
           | {:script_note, call_id(), String.t()}
           | {:review, map()}
+          | {:script_run, %{name: String.t(), status: :ok | :error, text: String.t()}}
           | {:job_start, map()}
           | {:job_end, map()}
 

@@ -665,10 +665,12 @@ defmodule VisorWeb.HarnessLive do
     id = socket.assigns.session_id
     context = %{session: id, call_id: "run-#{System.unique_integer([:positive])}"}
 
-    Harness.async(Harness.via({id, :tasks}), "run #{name}", fn ->
-      {status, text, _calls} = Visor.Code.execute("V.run(#{inspect(name)})", context)
-      {:script_run, name, status, text}
-    end)
+    {:ok, _pid} =
+      Task.Supervisor.start_child(Harness.via({id, :tasks}), fn ->
+        Process.set_label("run #{name}")
+        {status, text, _calls} = Visor.Code.execute("V.run(#{inspect(name)})", context)
+        Visor.Agent.Event.broadcast(id, {:script_run, %{name: name, status: status, text: text}})
+      end)
 
     note(socket, :info, "Running saved script #{name}…")
   end
@@ -752,14 +754,6 @@ defmodule VisorWeb.HarnessLive do
     end
   end
 
-  def handle_info({ref, {:script_run, name, status, text}}, socket) when is_reference(ref) do
-    Process.demonitor(ref, [:flush])
-    level = if status == :ok, do: :info, else: :error
-    {:noreply, note(socket, level, "Saved script #{name}:\n" <> text)}
-  end
-
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, socket), do: {:noreply, socket}
-
   def handle_info({:agent, event}, socket),
     do: {:noreply, socket |> tally(event) |> show_log() |> then(&agent_event(event, &1))}
 
@@ -797,6 +791,11 @@ defmodule VisorWeb.HarnessLive do
     do: note(socket, :info, "Supervisor: the goal is met. #{text} The supervisor is off.")
 
   defp agent_event({:review, _info}, socket), do: socket
+
+  defp agent_event({:script_run, %{name: name, status: status, text: text}}, socket) do
+    level = if status == :ok, do: :info, else: :error
+    note(socket, level, "Saved script #{name}:\n" <> text)
+  end
 
   defp agent_event({:job_start, job}, socket), do: stream_insert(socket, :jobs, job)
 

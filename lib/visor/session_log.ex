@@ -15,6 +15,7 @@ defmodule Visor.SessionLog do
     * `user`: a prompt, numbered; `steer`: a message sent while a prompt
       ran, for the model after the running tool calls; `wake`: a prompt
       of the agent's own, the notices of background jobs that ended;
+    * `script_run`: a saved script run from the console's `/run`;
     * `review`: the advisor's or supervisor's review: what it did
       (`action`), its `message` and token `usage`;
     * `job_start`, `job_end`: a background job, with its command
@@ -416,6 +417,8 @@ defmodule Visor.SessionLog do
   defp record({:wake, text}, state), do: logged(state, "wake", %{text: text})
 
   defp record({:review, info}, state), do: logged(state, "review", info)
+
+  defp record({:script_run, info}, state), do: logged(state, "script_run", info)
 
   defp record({:script_note, call_id, text}, state),
     do: logged(state, "script_note", %{call_id: call_id, text: text})
