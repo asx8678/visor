@@ -114,6 +114,7 @@ defmodule Visor.Code do
       changed: call[:changed],
       ran: call[:ran] && first_line(call.ran, 200),
       started: call[:started],
+      reverted: call[:reverted],
       exit: call[:exit],
       check: call[:value][:status],
       summary: call[:check] && first_line(call.check, 200)

@@ -1045,7 +1045,13 @@ defmodule Visor.Agent do
     # Saved as it comes in, so an agent that crashes later in the batch
     # still answers this call with its result.
     state = save(Map.put(state, :facts, facts))
-    changed? = Enum.any?(facts[tool.call.id].calls, &Map.has_key?(&1, :changed))
+    # What an attempt put back isn't a change.
+    script_facts = facts[tool.call.id].calls
+    reverted = for %{reverted: paths} <- script_facts, path <- paths, do: path
+
+    changed? =
+      Enum.any?(script_facts, &(Map.has_key?(&1, :changed) and &1.changed not in reverted))
+
     state = if changed?, do: prewalk(state), else: state
 
     cond do

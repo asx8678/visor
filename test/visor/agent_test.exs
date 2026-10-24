@@ -445,6 +445,25 @@ defmodule Visor.AgentTest do
     refute_received {:agent, {:note, :info, "Prewalk" <> _}}
   end
 
+  @tag :tmp_dir
+  test "with prewalk, a change an attempt put back isn't the first change", %{
+    id: id,
+    tmp_dir: tmp_dir
+  } do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, tmp_dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+
+    assert {:ok, _settings} = Agent.configure(id, prewalk: true)
+    script = ~S|> V.attempt(fn -> V.write("a.txt", "x"); V.edit("a.txt", "nope", "y") end)|
+    assert :ok = Agent.prompt(id, script)
+    assert_receive {:agent, {:tool_end, %{status: :error, result: result}}}, 5_000
+    assert result =~ "reverted: a.txt (the attempt failed)"
+    assert_receive {:agent, {:prompt_end, _}}, 5_000
+    refute_received {:agent, {:note, :info, "Prewalk" <> _}}
+    refute File.exists?(Path.join(tmp_dir, "a.txt"))
+  end
+
   test "tells a script how full the context is", %{id: id} do
     ask(id, @big)
     assert :ok = Agent.prompt(id, ~S|> c = V.context(); {c.band, c.tokens > 0, c.threshold}|)

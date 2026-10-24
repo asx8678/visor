@@ -92,6 +92,10 @@ defmodule Visor.Reviewer do
     {:noreply, review(state, "the prompt ended (#{reason})")}
   end
 
+  # A call the user cancelled with Stop failed for no reason to review.
+  def handle_info({:agent, {:tool_end, %{status: :error, result: "Cancelled."}}}, state),
+    do: {:noreply, state}
+
   def handle_info({:agent, {:tool_end, %{status: :error, result: result}}}, %{mode: mode} = state)
       when mode != nil do
     if state.tool_reviews < 2 do

@@ -70,4 +70,13 @@ defmodule Visor.ReviewerTest do
     :ok = Reviewer.stop(id)
     assert Reviewer.status(id) == nil
   end
+
+  test "doesn't review what the user stopped", %{id: id} do
+    :ok = Reviewer.start(id, :advisor, "")
+    assert :ok = Agent.prompt(id, "$ sleep 5")
+    assert_receive {:agent, {:tool_start, %{pid: pid}}} when is_pid(pid), 5_000
+    assert :ok = Agent.interrupt(id)
+    assert_receive {:agent, {:prompt_end, %{reason: :interrupted}}}
+    refute_receive {:agent, {:review, _}}, 300
+  end
 end

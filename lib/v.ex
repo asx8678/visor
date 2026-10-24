@@ -96,11 +96,7 @@ defmodule V do
   end
 
   defp background(command, opts) do
-    if Process.get(:visor_attempt) do
-      raise Error,
-            "A background job can't start inside V.attempt: it would go on running " <>
-              "against files the attempt may put back."
-    end
+    not_in_attempt("A background job")
 
     timeout =
       opts
@@ -192,6 +188,8 @@ defmodule V do
   is, including anything secret a file read put in it.
   """
   def agent(task, opts \\ []) when is_binary(task) and is_list(opts) do
+    not_in_attempt("A sub-agent")
+
     track(:agent, [task | opts_args(opts)], fn ->
       with {:ok, session} <- job_session(),
            {:ok, prompt, settings} <- agent_settings(session, task, opts) do
@@ -211,6 +209,8 @@ defmodule V do
   `max_steps:` and `timeout:` (seconds) apply to each member.
   """
   def council(task, opts) when is_binary(task) and is_list(opts) do
+    not_in_attempt("A council")
+
     track(:council, [task | opts_args(opts)], fn ->
       roles = Keyword.get(opts, :roles, [])
 
@@ -239,6 +239,16 @@ defmodule V do
           end
       end
     end)
+  end
+
+  # What goes on running after its call returns can't start inside an
+  # attempt, which may put its files back under it.
+  defp not_in_attempt(what) do
+    if Process.get(:visor_attempt) do
+      raise Error,
+            "#{what} can't start inside V.attempt: it would go on running against files " <>
+              "the attempt may put back."
+    end
   end
 
   defp agent_settings(session, task, opts) do
@@ -738,8 +748,10 @@ defmodule V do
         path = Path.relative_to(full, root)
         seen = Feedback.changed(session(), path, before)
 
+        # A file that is gone (an attempt removing one it created) has
+        # nothing to touch.
         case stat(full) do
-          ^seen -> File.touch(full, elem(seen, 0) - 1)
+          ^seen when seen != nil -> File.touch(full, elem(seen, 0) - 1)
           _ -> :ok
         end
 

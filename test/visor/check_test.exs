@@ -258,6 +258,9 @@ defmodule Visor.CheckTest do
       script = ~S|V.attempt(fn -> V.sh("sleep 1", background: true) end)|
       assert {:error, text} = Code.run(script, context)
       assert text =~ "A background job can't start inside V.attempt"
+
+      assert {:error, text} = Code.run(~S|V.attempt(fn -> V.agent("x") end)|, context)
+      assert text =~ "A sub-agent can't start inside V.attempt"
     end
 
     # Runs mix test in a small project of its own, never in Visor.
