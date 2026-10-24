@@ -139,6 +139,13 @@ defmodule Visor.JobsTest do
     run(id, ~S|V.sh("sleep 0.1", background: true)|)
     assert_receive {:agent, {:job_end, %{id: "j1"}}}, 5_000
     refute_receive {:agent, {:wake, _}}, 600
+
+    # /jobs wake off is about jobs: a supervisor the user turned on still
+    # wakes the agent, and the job's notice goes with it.
+    :ok = Agent.review(id, "[Visor supervisor: go on]", true)
+    assert_receive {:agent, {:wake, notices}}, 5_000
+    assert notices =~ "background job j1"
+    assert notices =~ "[Visor supervisor: go on]"
   end
 
   test "lists a started job in the script's result, and reads its whole output", %{id: id} do

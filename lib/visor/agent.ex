@@ -651,8 +651,11 @@ defmodule Visor.Agent do
      notices ++ texts}
   end
 
+  # `/jobs wake off` holds what jobs wake the agent for; a supervisor's
+  # message wakes it all the same, within the same count.
   defp can_wake?(state) do
-    Map.get(state, :jobs_wake, true) and not Map.get(state, :wakes_held, false) and
+    (Map.get(state, :jobs_wake, true) or Map.get(state, :wake_texts, false)) and
+      not Map.get(state, :wakes_held, false) and
       Map.get(state, :wakes, 0) < Limits.job_wakeups()
   end
 
