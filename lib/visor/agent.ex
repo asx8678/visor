@@ -268,6 +268,12 @@ defmodule Visor.Agent do
   """
   def spent(id, cost, tokens), do: GenServer.cast(via(id), {:spent, cost, tokens})
 
+  @doc """
+  Holds a picture `V.image/1` asked for (an image part, see
+  `Visor.Content`), for the user message after the batch's results.
+  """
+  def attach_image(id, path, part), do: GenServer.call(via(id), {:attach_image, path, part})
+
   @doc "The code of session `id`'s last script that worked, or nil (`/save`)."
   def last_script(id), do: GenServer.call(via(id), :last_script)
 
@@ -413,6 +419,18 @@ defmodule Visor.Agent do
   end
 
   def handle_call(:settings, _from, state), do: {:reply, public_settings(state), state}
+
+  def handle_call({:attach_image, path, part}, _from, state) do
+    images = Map.get(state, :pending_images, [])
+
+    if length(images) >= Limits.images_per_call() do
+      {:reply, {:error, "At most #{Limits.images_per_call()} pictures go with one model call."},
+       state}
+    else
+      note(state, :info, "The model looks at #{path}.")
+      {:reply, :ok, Map.put(state, :pending_images, images ++ [{path, part}])}
+    end
+  end
 
   def handle_call(:last_script, _from, state) do
     facts = Map.get(state, :facts, %{})
@@ -704,6 +722,7 @@ defmodule Visor.Agent do
       prompt_changed: MapSet.new(),
       nudged: false,
       kept: nil,
+      pending_images: [],
       spent: %{spent(state) | prompt: 0.0, tokens: 0}
     })
     |> start_turn()
@@ -1325,14 +1344,25 @@ defmodule Visor.Agent do
   # Background jobs that ended come after them.
   defp steer(state) do
     {state, notices} = take_notices(state)
+    images = Map.get(state, :pending_images, [])
 
     case Map.get(state, :queued, []) ++ notices do
-      [] ->
+      [] when images == [] ->
         state
 
       texts ->
-        message = %{"role" => "user", "content" => Enum.join(texts, "\n\n")}
-        state |> Map.put(:queued, []) |> append(message)
+        shown =
+          for {path, _part} <- images, do: ~s|[Visor: the picture V.image("#{path}") showed.]|
+
+        content =
+          Visor.Content.with_images(
+            Enum.join(shown ++ texts, "\n\n"),
+            Enum.map(images, &elem(&1, 1))
+          )
+
+        state
+        |> Map.merge(%{queued: [], pending_images: []})
+        |> append(%{"role" => "user", "content" => content})
     end
   end
 
@@ -1563,7 +1593,7 @@ defmodule Visor.Agent do
 
     case List.last(messages) do
       %{"role" => "user", "content" => previous} when length(messages) > from ->
-        message = %{"role" => "user", "content" => previous <> "\n\n" <> text}
+        message = %{"role" => "user", "content" => Visor.Content.append(previous, text)}
         put_messages(state, List.replace_at(messages, -1, message))
 
       _ ->

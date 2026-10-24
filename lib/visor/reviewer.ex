@@ -238,8 +238,8 @@ defmodule Visor.Reviewer do
             %{"tool_calls" => [_ | _] = calls} ->
               "calls: " <> Enum.map_join(calls, "; ", &get_in(&1, ["function", "arguments"]))
 
-            %{"content" => content} when is_binary(content) ->
-              content
+            %{"content" => content} ->
+              Visor.Content.text(content)
 
             _ ->
               ""

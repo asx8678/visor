@@ -135,6 +135,7 @@ defmodule Visor.Model.Demo do
     case {List.last(messages), tool_choice} do
       {%{"role" => "tool"}, "none"} -> summarize(messages)
       {%{"role" => "tool"}, _auto} -> keep_going(messages)
+      {%{"role" => "user", "content" => [_ | _] = parts}, _} -> look(parts)
       {%{"role" => "user", "content" => text}, _} -> respond(text)
     end
   end
@@ -164,9 +165,18 @@ defmodule Visor.Model.Demo do
   # "keep going" asks for a task that never finishes: list the files after
   # every result, for as long as the tools are on.
   defp keep_going([%{"content" => first} | _] = messages) do
-    if first =~ "keep going",
+    if Visor.Content.text(first) =~ "keep going",
       do: script("V.ls()", "Not done yet. I'll list the files again."),
       else: summarize(messages)
+  end
+
+  # A prompt with images: says how many it sees, and what the text asked.
+  defp look(parts) do
+    n = Visor.Content.images(parts)
+    text = Visor.Content.text(parts)
+
+    {"The prompt has #{n} image(s).",
+     "I see #{n} image(s). You wrote: #{String.slice(text, 0, 200)}", []}
   end
 
   defp respond(text) do

@@ -92,7 +92,8 @@ defmodule Visor.Compaction.Summary do
     |> Enum.flat_map(fn {message, n} -> message_events(message, n, facts) end)
   end
 
-  defp message_events(%{"role" => "user", "content" => text}, n, _facts), do: [{:user, n, text}]
+  defp message_events(%{"role" => "user", "content" => content}, n, _facts),
+    do: [{:user, n, Visor.Content.text(content)}]
 
   defp message_events(%{"role" => "assistant"} = message, n, _facts) do
     text = message["content"] || ""

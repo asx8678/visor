@@ -246,6 +246,7 @@ defmodule Visor.Code.Allowlist do
       :glob,
       :exists?,
       :read,
+      :image,
       :grep,
       :docs,
       :source,

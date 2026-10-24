@@ -145,6 +145,21 @@ defmodule Visor.CompactionTest do
     assert :keep = Compaction.compact(short, opts(force: true, keep_from: 2))
   end
 
+  test "reads a message with a picture as its text, and puts a summary before one" do
+    image = Visor.Content.image("image/png", <<0x89, "PNG", 0::size(64)>>)
+
+    picture = %{
+      "role" => "user",
+      "content" => [%{"type" => "text", "text" => "what's this?"}, image]
+    }
+
+    summary = Compaction.Summary.compile([picture, answer("a red square")], %{}, 2_000)
+    assert summary =~ "what's this?[image]"
+
+    assert [%{"content" => [%{"type" => "text", "text" => "S\n\nwhat's this?"}, ^image]} | _] =
+             Compaction.surface([user("one"), answer("two"), picture], %{from: 2, summary: "S"})
+  end
+
   test "keeps a section's latest line, cut, when not even one line fits" do
     messages = [user("first: " <> String.duplicate("a", 3_000)), answer("done"), user("last ask")]
     summary = Compaction.Summary.compile(messages, %{}, 1_200)

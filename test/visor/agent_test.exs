@@ -666,6 +666,40 @@ defmodule Visor.AgentTest do
     refute_received {:agent, {:note, :info, "Visor asked the model" <> _}}
   end
 
+  # A 16x16 red PNG, which DeepSeek's Flash, through zro, called "Red".
+  @red_png Base.decode64!(
+             "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
+           )
+
+  # BeamWeaver's DeepSeek guide: Flash reads images.
+  @tag :tmp_dir
+  test "shows the model a picture it asked for, with its next call", %{id: id, tmp_dir: dir} do
+    previous = Application.get_env(:visor, :workspace)
+    Application.put_env(:visor, :workspace, dir)
+    on_exit(fn -> Application.put_env(:visor, :workspace, previous) end)
+    File.write!(Path.join(dir, "red.png"), @red_png)
+    File.write!(Path.join(dir, "notes.txt"), "not a picture")
+
+    assert :ok = Agent.prompt(id, ~S|> V.image("red.png")|)
+    assert_receive {:agent, {:note, :info, "The model looks at red.png."}}, 5_000
+    assert_receive {:agent, {:prompt_end, %{reason: :answered}}}, 5_000
+
+    messages = :sys.get_state(agent(id)).messages
+
+    assert [_prompt, _call, _result, %{"role" => "user", "content" => [text, image]}, answer] =
+             messages
+
+    assert text["text"] == ~s|[Visor: the picture V.image("red.png") showed.]|
+    assert image["image_url"]["url"] =~ "data:image/png;base64,iVBORw0KGgo"
+    assert answer["content"] =~ "I see 1 image(s)."
+
+    # A picture counts as what it costs, not its base64; text isn't one.
+    assert Visor.Compaction.estimate(Enum.at(messages, 3)) < 1_600
+    assert :ok = Agent.prompt(id, ~S|> V.image("notes.txt")|)
+    assert_receive {:agent, {:tool_end, %{status: :error, result: error}}}, 5_000
+    assert error =~ "notes.txt isn't a PNG, JPEG, GIF or WebP picture."
+  end
+
   # The model never saw the project's own instructions.
   @tag :tmp_dir
   test "carries the project's AGENTS.md or CLAUDE.md in the system prompt, cut to a size",

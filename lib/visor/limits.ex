@@ -25,6 +25,18 @@ defmodule Visor.Limits do
   @doc "The most `V` calls one script may make."
   def v_calls, do: 2_000
 
+  @doc "The largest image `V.image/1` or the console sends the model."
+  def image_bytes, do: 5_000_000
+
+  @doc "Pictures that may go with one model call."
+  def images_per_call, do: 4
+
+  @doc """
+  Tokens an image is counted as for compaction: about what DeepSeek
+  charged for a screenshot-sized one (a 16x16 picture was 184).
+  """
+  def image_tokens, do: 1_500
+
   @doc "The most of the project's AGENTS.md (or CLAUDE.md) the system prompt carries."
   def rules_bytes, do: 8_000
 

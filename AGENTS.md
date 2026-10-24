@@ -86,6 +86,9 @@ live supervision tree beside it. There is no database.
 - `V.save`/`V.run` keep and rerun scripts in the project's `.visor/scripts/`
   (`Visor.Scripts`), checked against their SHA-256; tools can't write
   `.visor/` and walks skip it. `/run name` runs one without the model.
+- A message's content may be a list of parts when it carries pictures
+  (`Visor.Content`; read and extend content through it): `V.image(path)`
+  sends one with the next model call, counted as `Visor.Limits.image_tokens/0`.
 - The rest of `V` a script has, each in `lib/v.ex`: `V.docs`/`V.source`
   (docs, signatures and file:line read from the project's compiled `.beam`
   files, never loaded; `Visor.Docs`), `V.calls` (call sites from the parsed

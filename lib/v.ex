@@ -43,6 +43,31 @@ defmodule V do
   def exists?(path) when is_binary(path),
     do: track(:exists?, [path], fn -> Tools.exists(path) end)
 
+  @doc """
+  Shows you a picture in the project (PNG, JPEG, GIF or WebP, up to
+  #{div(Limits.image_bytes(), 1_000_000)} MB): it comes with your next model call, after this
+  batch's results, as DeepSeek's Flash models read images. Returns
+  `%{attached: path, bytes: n}`.
+  """
+  def image(path) when is_binary(path) do
+    track(:image, [path], fn ->
+      with {:ok, image} <- Tools.image(path),
+           :ok <- attach_image(path, image) do
+        {:ok, %{attached: path, bytes: byte_size(image.data)}}
+      end
+    end)
+  end
+
+  defp attach_image(path, image) do
+    case session() do
+      nil ->
+        {:error, "Showing a picture needs a console session."}
+
+      session ->
+        Visor.Agent.attach_image(session, path, Visor.Content.image(image.mime, image.data))
+    end
+  end
+
   @doc "A text file's contents (up to `Visor.Limits.read_bytes/0`)."
   def read(path) when is_binary(path),
     do: track(:read, [path], fn -> Tools.read(path) end)

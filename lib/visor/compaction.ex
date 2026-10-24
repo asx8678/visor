@@ -30,6 +30,12 @@ defmodule Visor.Compaction do
   @min_summary_bytes 1_024
 
   @doc "A term's size in estimated tokens: four bytes to a token."
+  def estimate(%{"content" => [_ | _] = parts} = message) do
+    # An image counts as what the provider charges for one, not its base64.
+    estimate(%{message | "content" => Visor.Content.text(parts)}) +
+      Visor.Content.images(parts) * Visor.Limits.image_tokens()
+  end
+
   def estimate(term), do: div(:erlang.external_size(term), 4) + 1
 
   @doc """
@@ -41,8 +47,8 @@ defmodule Visor.Compaction do
 
   def surface(messages, %{from: from, summary: summary}) do
     case Enum.drop(messages, from) do
-      [%{"role" => "user", "content" => text} = first | rest] ->
-        [%{first | "content" => summary <> "\n\n" <> text} | rest]
+      [%{"role" => "user", "content" => content} = first | rest] ->
+        [%{first | "content" => Visor.Content.prepend(summary, content)} | rest]
 
       kept ->
         [%{"role" => "user", "content" => summary} | kept]

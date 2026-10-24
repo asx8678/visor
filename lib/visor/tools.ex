@@ -57,6 +57,8 @@ defmodule Visor.Tools do
                                           when it ends, so don't poll it; wake_on: "text" also
                                           tells you of the first line with it (server ready)
             V.schedule(seconds, note)     hear note back in seconds, to look at something later
+            V.image(path)                 look at a picture in the project (PNG, JPEG, GIF, WebP):
+                                          it comes with your next model call
             V.remember(note)              keep a short note for every later session on this
                                           project (V.memories(), V.forget(note))
             V.goal()                      the supervisor's goal, if the user set one; V.goal(:done)
@@ -358,6 +360,23 @@ defmodule Visor.Tools do
   @doc "Whether a file or folder exists in the project."
   def exists(path) do
     with {:ok, full} <- Workspace.resolve(path), do: {:ok, File.exists?(full)}
+  end
+
+  @doc """
+  A picture in the project, for the model: `{:ok, %{mime, data}}` for a
+  PNG, JPEG, GIF or WebP up to `Visor.Limits.image_bytes/0`.
+  """
+  def image(path) do
+    with {:ok, full} <- Workspace.resolve(path),
+         :ok <- Workspace.readable(full, path),
+         {:ok, %{size: size}} <- File.stat(full) |> describe_error(path),
+         :ok <- within(size, Limits.image_bytes(), path),
+         {:ok, data} <- File.read(full) |> describe_error(path) do
+      case Visor.Content.mime(data) do
+        nil -> {:error, "#{path} isn't a PNG, JPEG, GIF or WebP picture."}
+        mime -> {:ok, %{mime: mime, data: data}}
+      end
+    end
   end
 
   @doc "A text file's contents. Files over `max_bytes` are refused."
