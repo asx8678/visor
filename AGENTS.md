@@ -44,8 +44,10 @@ live supervision tree beside it. There is no database.
   `mix visor.log` reads old log files. `Visor.Agent.Totals` counts the
   events once for both; its fields are the keys of the log's `prompt_end`
   and `summary` lines.
-- The model is always DeepSeek (`Visor.Model.DeepSeek`). Tests use the
-  scripted `Visor.Model.Demo` in `test/support`; never add a demo fallback.
+- The model is always DeepSeek (`Visor.Model.DeepSeek`); never add a demo
+  fallback. Only `mix visor.example`'s `loop` phase names another, its
+  scripted `Visor.Example.ScriptedModel` (`dev/`), for that phase alone;
+  it refuses requests DeepSeek would refuse for their message order.
 - The agent has one tool, `elixir` (code mode): one script per step, run in a
   Dune sandbox, calling the project through `V` (`lib/v.ex`). `V.check/1`
   compiles and runs the tests and returns only the failures. A prompt's
@@ -57,7 +59,9 @@ live supervision tree beside it. There is no database.
   earlier sessions kept with `V.remember` (`.visor/memory.md`, `Visor.Memory`).
 - Every path a tool touches goes through `Visor.Workspace`, which confines
   it to the project, follows symlinks itself and refuses `.env` files.
-  Tool limits live in `Visor.Limits`.
+  Shell commands run without the model's settings and, by default, any
+  variable named like a key, token, secret or password (`config :visor,
+  :hidden_env`). Tool limits live in `Visor.Limits`.
 - `V.agent(task)` starts a sub-agent as a job: a session of its own
   (`depth` 1, `Visor.Limits.agent_depth/0`) whose owner is the job's task,
   so stopping the job or the parent's session ends it. Its answer is the
@@ -71,13 +75,23 @@ live supervision tree beside it. There is no database.
   ($1, `VISOR_PROMPT_LIMIT_USD`) or a session past `session_cost_limit/0`
   ($5) before its next model call (`:budget`), its reviews' and
   sub-agents' spending included; a sub-agent starts with what its parent's
-  prompt has left (`Visor.Agent.allowance/1`). `/budget` shows and sets it.
+  prompt has left (`Visor.Agent.allowance/1`), passes each call's cost on
+  to the parent itself as it comes, and asks the parent before each of its
+  calls what is left (its `budget_parent`), so the two stop at the
+  parent's limit (`proofs/budget.ts`). A parent that doesn't answer within
+  1 s leaves it to the parent's last answer, less what it spent since.
+  `/budget` shows and sets it.
 - `Visor.ModelHealth` is a node-wide circuit breaker: after
   `Visor.Limits.model_failures/0` failed model calls in a row it holds back
-  wakes, sub-agents, councils and reviews for `model_cooldown_ms/0` (60 s;
-  0 in the tests); the user's prompts still go.
+  wakes, sub-agents, councils and reviews for `model_cooldown_ms/0` (60 s);
+  the user's prompts still go. A call that hangs past its
+  deadline counts as failed, as does a bad key or a missing model; a request
+  refused as malformed (`{:error, :rejected, _}`: HTTP 400, 422) or too
+  large (a 413, or a 400 that names the window: it compacts and retries
+  once, answered pictures left out) counts neither way. Its state is a table its process alone
+  writes and callers read themselves.
 - `Visor.Alarms` reads os_mon's memory and disk alarms (thresholds in
-  `config/dev.exs`, `prod.exs`; os_mon isn't started in the tests, sasl is):
+  `config/dev.exs`, `prod.exs`):
   while one is on, the console says so and no wake, job or sub-agent starts.
 - `/advisor` and `/supervise goal` turn on the session's `Visor.Reviewer`:
   a model call of its own when a prompt ends or a tool call fails, whose
@@ -90,12 +104,14 @@ live supervision tree beside it. There is no database.
 - `V.save`/`V.run` keep and rerun scripts in the project's `.visor/scripts/`
   (`Visor.Scripts`), checked against their SHA-256; tools can't write
   `.visor/` and walks skip it. `/run name` runs one without the model.
-- `V.tidewave(tool, args)` calls the running Phoenix app's Tidewave tools
-  (`project_eval`, `get_logs`, ...) over its `/tidewave/mcp` endpoint
-  (`VISOR_TIDEWAVE_URL`): the code runs in the app, never in Visor's VM.
 - A message's content may be a list of parts when it carries pictures
   (`Visor.Content`; read and extend content through it): `V.image(path)`
   sends one with the next model call, counted as `Visor.Limits.image_tokens/0`.
+  A picture lasts for the prompt it came with (a user's sent while one ran
+  comes with the steer or the next prompt): the next prompt leaves it out,
+  so requests don't carry them all again. The session keeps the user's
+  last `Limits.pictures_kept/0` (within `pictures_kept_bytes/0`) for
+  `V.image("picture:NAME")`.
 - The rest of `V` a script has, each in `lib/v.ex`: `V.docs`/`V.source`
   (docs, signatures and file:line read from the project's compiled `.beam`
   files, never loaded; `Visor.Docs`), `V.calls` (call sites from the parsed
@@ -120,8 +136,28 @@ live supervision tree beside it. There is no database.
   (`Visor.Feedback.Hint`), and a heredoc whose text starts on its opening
   line, as in Python, is put right before the script runs
   (`Visor.Tools.Heredoc`); `mix visor.log stats` counts V calls scripts
-  got wrong. The demo model refuses requests DeepSeek would refuse, so
-  message-order bugs fail the tests.
+  got wrong.
+- `proofs/` proves rules with gdp-wired (`mix visor.proofs`, bun; in
+  `mix precommit` as `--strict`, which fails without bun): the wake counts
+  (`Visor.Agent.Wakes`), the spending limit and the repeat guard. Each
+  keeps the broken variant it rules out; change a rule and its module
+  together.
+- `mix visor.example` runs Visor on `examples/todo_app` (a Mix project
+  with a bug in it), offline through the `elixir` tool, then the agent's
+  own loop with the scripted model (`loop`: steering, Stop, budgets, a
+  sub-agent, wakes, the repeat guard, compaction, overflows, malformed
+  arguments; a check fails when Repair had to put a request in order),
+  then with the model (`--offline` for none), checks what it does, and writes
+  `log/example/STAMP/report.md` (again after each check, so a run
+  stopped by hand leaves one) and `events.jsonl` (every session's
+  events from its first, sub-agents' too); an offline run keeps its
+  session and server logs there as well. `mix precommit` runs it
+  `--offline`: it is the regression gate, as Visor has no test suite. It
+  and `mix visor.proofs` live in `dev/` (`Visor.Example.*`), built in
+  dev and test only. A process watching several sessions subscribes with
+  `Visor.Agent.Event.subscribe(id, tagged: true)` and gets
+  `{:agent, id, event}`; `subscribe_all/0` gives every session's, those
+  that start later too (a sub-agent's job: `Visor.Harness.Session.parent/1`).
 - Several pages may work on one project. `Visor.Lock` makes a file's
   writes and edits, and the project's checks, run one at a time across
   sessions.

@@ -18,7 +18,18 @@ defmodule Visor.Jobs.Monitor do
 
   defstruct match: nil, line: "", cut: false, previous: nil
 
+  @type t :: %__MODULE__{
+          match: String.t() | nil,
+          line: binary(),
+          cut: boolean(),
+          previous: String.t() | nil
+        }
+
+  @typedoc "Lines the agent hasn't heard yet: the newest, and how many older ones were left out."
+  @type batch :: %{lines: [String.t()], omitted: non_neg_integer()}
+
   @doc "A monitor for the lines that hold `match`, or for every line (`true`)."
+  @spec new(true | String.t()) :: t()
   def new(true), do: %__MODULE__{}
   def new(match) when is_binary(match), do: %__MODULE__{match: match}
 
@@ -26,6 +37,7 @@ defmodule Visor.Jobs.Monitor do
   Takes a piece of the job's output. Returns the monitor and the lines it
   ended that the model should hear of.
   """
+  @spec feed(t(), binary()) :: {t(), [String.t()]}
   def feed(%__MODULE__{} = monitor, data) do
     [first | rest] = String.split(data, "\n")
 
@@ -39,6 +51,7 @@ defmodule Visor.Jobs.Monitor do
   end
 
   @doc "The job's last line when its output didn't end with a newline: `[]` or `[line]`."
+  @spec close(t()) :: [String.t()]
   def close(%__MODULE__{} = monitor) do
     case end_line(monitor) do
       {_monitor, nil} -> []
@@ -47,6 +60,7 @@ defmodule Visor.Jobs.Monitor do
   end
 
   @doc "Batch `batch` (nil for none yet) with `lines` after it."
+  @spec add(batch() | nil, [String.t()]) :: batch()
   def add(nil, lines), do: add(%{lines: [], omitted: 0}, lines)
 
   def add(%{lines: held, omitted: omitted}, lines) do
@@ -56,6 +70,7 @@ defmodule Visor.Jobs.Monitor do
   end
 
   @doc "Two batches as one: `held`, then `batch`."
+  @spec merge(batch() | nil, batch()) :: batch()
   def merge(nil, batch), do: batch
   def merge(held, batch), do: add(%{held | omitted: held.omitted + batch.omitted}, batch.lines)
 

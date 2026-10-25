@@ -1,62 +1,112 @@
-// The agent's wakes (Visor.Agent's can_wake?/1 and start_wake/3), proven
-// with gdp-wired: `bun install && bun wakes.ts`. Exits 1 when a law fails.
+// The agent's wakes (Visor.Agent.Wakes, and the handle_info(:wake, _)
+// that calls it), proven with gdp-wired: `bun wakes.ts` (or `mix
+// visor.proofs`). Exits 1 when a law fails.
 //
 // A wake is a prompt the agent starts on its own. Between two of the
-// user's prompts, a job's end (or a reviewer's message) may wake it
-// Visor.Limits.job_wakeups/0 times, and a monitored job's lines alone
-// monitor_wakeups/0 times; Stop or a failed call holds them all.
-import {bool, oneOf, proveRule, rule, when} from 'gdp-wired'
+// user's prompts, a job's end (or a supervisor's message) may wake it
+// jobLimit times (Visor.Limits.job_wakeups/0), and a monitored job's lines
+// alone monitorLimit times (monitor_wakeups/0); Stop or a failed call holds
+// them all. Notices that come close together wake it once: they wait for
+// the batch timer, and a batch that holds a job's end counts as a job's
+// wake. A notice that comes while the agent runs goes with its tool calls'
+// results, or waits until it is idle.
+//
+// Left out, since each only holds a wake back and counts nothing: /jobs
+// wake off, Visor.ModelHealth and Visor.Alarms.
+import {bool, nat, oneOf, proveRule, proveSteps, rule, when} from 'gdp-wired'
+import {search} from 'gdp-wired/machine'
 
-const event = oneOf('monitor', 'end', 'prompt', 'stop')
-const held = ({e, held}: any) => e.is('prompt').not().and(e.is('stop').or(held))
+export const events = ['lines', 'end', 'fire', 'results', 'answer', 'stop', 'prompt'] as const
+// lines:   a monitored job printed lines its monitor looks for
+// end:     a job ended (or a supervisor's message came)
+// fire:    the batch timer went off
+// results: the running tool calls' results went to the model, with the notices
+// answer:  the running prompt (the user's or a wake) ended with an answer
+// stop:    the running prompt was stopped, or its model call failed
+// prompt:  the user sent a prompt
+const event = oneOf(...events)
+
+// The parts both counts share: what waits to be told, whether the agent
+// runs, and the ghost state the law reads (`endWakes`: wakes since the
+// user's prompt that told of a job's end; `missed`: a batch with a job's
+// end found the agent idle and didn't wake it).
+const base = {
+  held: bool.from(false), idle: bool.from(true),
+  pendEnd: bool.from(false), pendLines: bool.from(false),
+  endWakes: 0, missed: bool.from(false),
+}
+
+const common = (env: any, wake: any) => {
+  const {e, held, idle, pendEnd, pendLines, endWakes, missed} = env
+  const fresh = e.is('prompt').and(idle)
+  const told = fresh.or(wake).or(e.is('results').and(idle.not()))
+  return {
+    held: fresh.not().and(held.or(e.is('stop').and(idle.not()))),
+    idle: fresh.or(wake).not().and(idle.or(e.is('answer')).or(e.is('stop'))),
+    pendEnd: told.not().and(pendEnd.or(e.is('end'))),
+    pendLines: told.not().and(pendLines.or(e.is('lines'))),
+    endWakes: when(fresh, 0, when(wake.and(pendEnd), endWakes.plus(1), endWakes)),
+    missed: fresh.not().and(missed.or(e.is('fire').and(idle).and(pendEnd).and(wake.not()))),
+  }
+}
 
 // As Visor does it: two counts.
-const wakes = rule('wakes')
+export const wakes = rule('wakes')
+  .params({jobLimit: nat, monitorLimit: nat})
   .inputs({e: event})
-  .state({jobWakes: 0, monitorWakes: 0, held: bool.from(false), untold: 0, ends: 0})
-  .step(({e, jobWakes, monitorWakes, held: h, untold, ends}) => {
-    const fresh = e.is('prompt')
-    const jobWake = e.is('end').and(h.not()).and(jobWakes.lt(3))
-    const monitorWake = e.is('monitor').and(h.not()).and(monitorWakes.lt(3))
+  .state({...base, jobWakes: 0, monitorWakes: 0})
+  .flags(({e, held, idle, pendEnd, pendLines, jobWakes, monitorWakes, jobLimit, monitorLimit}) => ({
+    wake: e.is('fire').and(idle).and(held.not()).and(
+      pendEnd.and(jobWakes.lt(jobLimit)).or(pendEnd.not().and(pendLines).and(monitorWakes.lt(monitorLimit)))),
+  }))
+  .step((env) => {
+    const {e, idle, wake, pendEnd, jobWakes, monitorWakes} = env
+    const fresh = e.is('prompt').and(idle)
     return {
-      jobWakes: when(fresh, 0, when(jobWake, jobWakes.plus(1), jobWakes)),
-      monitorWakes: when(fresh, 0, when(monitorWake, monitorWakes.plus(1), monitorWakes)),
-      held: held({e, held: h}),
-      // Job ends that wait for the user's next prompt, and job ends since it.
-      untold: when(fresh, 0, when(e.is('end').and(jobWake.not()), untold.plus(1), untold)),
-      ends: when(fresh, 0, when(e.is('end'), ends.plus(1), ends)),
+      ...common(env, wake),
+      jobWakes: when(fresh, 0, when(wake.and(pendEnd), jobWakes.plus(1), jobWakes)),
+      monitorWakes: when(fresh, 0, when(wake.and(pendEnd.not()), monitorWakes.plus(1), monitorWakes)),
     }
   })
 
-// A job's end waits for the next prompt only after Stop, or when job
-// ends themselves have used up the wakes: never because of a monitor.
+// A batch with a job's end that found the agent idle waits for the next
+// prompt only after Stop, or once job ends have had their wakes: never
+// because monitors woke the agent.
 const law = (r: any) =>
-  r.law("a monitor never uses up a job end's wake", ({untold, held, ends}: any) =>
-    untold.eq(0).or(held).or(ends.atLeast(4)))
+  r.law("a monitor never uses up a job end's wake", ({missed, held, endWakes, jobLimit}: any) =>
+    missed.implies(held.or(endWakes.atLeast(jobLimit))))
 
-// The bug this rules out, as Visor had it: one count for both,
-// so one monitor batch and three job ends left the third untold.
+// The invariant that makes it inductive: the job count is the ghost count.
+const counted = wakes.law('the job count counts the wakes that told of an end',
+  ({jobWakes, endWakes}) => jobWakes.eq(endWakes))
+const jobBound = wakes.law('job ends wake the agent at most jobLimit times',
+  ({jobWakes, jobLimit}) => jobWakes.atMost(jobLimit))
+const monitorBound = wakes.law('monitors wake the agent at most monitorLimit times',
+  ({monitorWakes, monitorLimit}) => monitorWakes.atMost(monitorLimit))
+const heldStays = wakes.stepLaw('a held agent wakes for nothing but the user',
+  ({held, idle, e}, after) => held.and(idle).and(e.is('prompt').not()).implies(after.idle))
+const runningStays = wakes.stepLaw('a running agent never wakes',
+  ({idle, jobWakes, monitorWakes}, after) =>
+    idle.not().implies(after.jobWakes.eq(jobWakes).and(after.monitorWakes.eq(monitorWakes))))
+
+// The bug this rules out, as Visor had it: one count for both, so one
+// monitor batch and three job ends left the third untold.
 const shared = rule('wakes-shared')
+  .params({jobLimit: nat, monitorLimit: nat})
   .inputs({e: event})
-  .state({wakes: 0, held: bool.from(false), untold: 0, ends: 0})
-  .step(({e, wakes: w, held: h, untold, ends}) => {
-    const fresh = e.is('prompt')
-    const can = h.not().and(w.lt(3))
-    return {
-      wakes: when(fresh, 0, when(e.is('monitor').or(e.is('end')).and(can), w.plus(1), w)),
-      held: held({e, held: h}),
-      untold: when(fresh, 0, when(e.is('end').and(can.not()), untold.plus(1), untold)),
-      ends: when(fresh, 0, when(e.is('end'), ends.plus(1), ends)),
-    }
+  .state({...base, wakes: 0})
+  .flags(({e, held, idle, pendEnd, pendLines, wakes: w, jobLimit}) => ({
+    wake: e.is('fire').and(idle).and(held.not()).and(pendEnd.or(pendLines)).and(w.lt(jobLimit)),
+  }))
+  .step((env) => {
+    const {e, idle, wake, wakes: w} = env
+    return {...common(env, wake), wakes: when(e.is('prompt').and(idle), 0, when(wake, w.plus(1), w))}
   })
 
-// The invariant that makes it inductive (found by gdp-wired's search): a
-// job end is either told by a job wake or waits, never lost to a monitor.
-const accounted = wakes.law('job wakes and waiting ends add up to the ends', ({jobWakes, untold, ends, held}: any) =>
-  held.not().implies(jobWakes.plus(untold).atMost(ends)))
-
-const proven = proveRule(wakes, [law(wakes), accounted], {search: false})
+const proven = proveSteps(wakes, [law(wakes), counted, jobBound, monitorBound], [heldStays, runningStays], {search: false})
 const broken = proveRule(shared, [law(shared)], {search: false})
 console.log('wakes:', JSON.stringify(proven))
-console.log('shared count (must be refused):', JSON.stringify(broken))
-if (!(proven.proven && proven.checked) || broken.proven) process.exit(1)
+// Not only not inductive: a real run from the start breaks it.
+const bug = search(shared.machine, law(shared), 8)
+console.log('shared count (must be refused):', JSON.stringify(broken), 'run:', JSON.stringify(bug))
+if (!(proven.proven && proven.checked) || broken.proven || !bug) process.exit(1)

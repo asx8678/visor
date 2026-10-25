@@ -40,6 +40,23 @@ defmodule Visor.Harness.Session do
     end
   end
 
+  @doc """
+  The job session `id` runs for, as `"SESSION/JOB"`: a sub-agent's or a
+  council member's (see `Visor.Jobs`). Nil for a console's own session,
+  or once the session has ended.
+  """
+  def parent(id) do
+    with store when store != nil <- store(id),
+         [{:parent, parent}] <- :ets.lookup(store, :parent) do
+      parent
+    else
+      _ -> nil
+    end
+  rescue
+    # The table went with the session, between the lookup and the read.
+    ArgumentError -> nil
+  end
+
   @doc "The table session `id` keeps its conversation in, or nil."
   def store(id) do
     case Registry.lookup(Harness.Registry, {id, :store}) do
@@ -56,10 +73,11 @@ defmodule Visor.Harness.Session do
     tasks = Harness.via({id, :tasks})
     store = :ets.new(:visor_session, [:public, read_concurrency: true])
     {:ok, _owner} = Registry.register(Harness.Registry, {id, :store}, store)
-    # How deep under other agents this session's agent runs, and whether
-    # its scripts only read (a council's members).
+    # How deep under other agents this session's agent runs, whether its
+    # scripts only read (a council's members), and whose job started it.
     :ets.insert(store, {:depth, Keyword.get(opts, :depth, 0)})
     :ets.insert(store, {:read_only, Keyword.get(opts, :read_only, false)})
+    :ets.insert(store, {:parent, Keyword.get(opts, :parent)})
 
     job_tasks = Harness.via({id, :job_tasks})
 

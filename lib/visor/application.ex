@@ -18,6 +18,8 @@ defmodule Visor.Application do
       Visor.ModelHealth,
       Visor.Alarms,
       Visor.Harness,
+      # The job folders of Visors that were killed, which never removed them.
+      Supervisor.child_spec({Task, &Visor.Jobs.sweep_folders/0}, id: :sweep_job_folders),
       Visor.Observer,
       # Start to serve requests, typically the last entry
       VisorWeb.Endpoint

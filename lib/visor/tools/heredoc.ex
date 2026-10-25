@@ -22,11 +22,21 @@ defmodule Visor.Tools.Heredoc do
   # Delimiters a one-line sigil may take, in the order tried.
   @pairs [{"[", "]"}, {"{", "}"}, {"(", ")"}, {"<", ">"}, {"|", "|"}, {"/", "/"}]
   @tries 20
+  # Past this, a script is left for its error: each try parses it whole,
+  # in the agent's process.
+  @max_bytes 64_000
 
-  @doc "The script with each such heredoc put right, or nil when it has none or can't be."
+  @doc """
+  The script with each such heredoc put right, or nil when it has none or
+  can't be. It runs in the agent's process (`Visor.Tools.prepare/1`), so
+  nothing in it raises: a script it can't read is left for its error.
+  """
   @spec repair(String.t()) :: String.t() | nil
   def repair(code) when is_binary(code) do
-    if String.contains?(code, [~s("""), "'''"]), do: repair(code, @tries, false)
+    if byte_size(code) <= @max_bytes and String.contains?(code, [~s("""), "'''"]),
+      do: repair(code, @tries, false)
+  rescue
+    _error -> nil
   end
 
   defp repair(code, tries, fixed?) do
@@ -47,7 +57,10 @@ defmodule Visor.Tools.Heredoc do
   defp parse(code) do
     encoder = fn token, _meta -> {:ok, token} end
 
-    case Code.string_to_quoted(code, static_atoms_encoder: encoder, existing_atoms_only: true) do
+    # Quietly: the script's own warnings are the sandbox's to report.
+    opts = [static_atoms_encoder: encoder, existing_atoms_only: true, emit_warnings: false]
+
+    case Code.string_to_quoted(code, opts) do
       {:ok, _ast} ->
         :ok
 

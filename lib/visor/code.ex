@@ -266,7 +266,6 @@ defmodule Visor.Code.Allowlist do
       :remember,
       :memories,
       :forget,
-      :tidewave,
       :carry,
       :compact,
       :context,

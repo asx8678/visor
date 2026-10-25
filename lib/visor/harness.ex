@@ -43,7 +43,17 @@ defmodule Visor.Harness do
   def start_session(owner, opts \\ []) do
     id = random_id()
     # A sub-agent's session (see Visor.Jobs) takes these from its parent.
-    child = Keyword.take(opts, [:max_steps, :role, :depth, :label, :read_only, :limits])
+    child =
+      Keyword.take(opts, [
+        :max_steps,
+        :role,
+        :depth,
+        :label,
+        :read_only,
+        :limits,
+        :budget_parent,
+        :parent
+      ])
 
     case DynamicSupervisor.start_child(@sessions, {Session, [id: id, owner: owner] ++ child}) do
       {:ok, pid} ->

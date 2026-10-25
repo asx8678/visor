@@ -134,9 +134,20 @@ defmodule Visor.Model.DeepSeek do
       {:ok, %Req.Response{status: status} = resp} ->
         message = api_error(status, Req.Response.get_private(resp, :error_body, ""))
 
-        if overflow?(status, message),
-          do: {:error, :context_overflow, message},
-          else: {:error, message}
+        cond do
+          overflow?(status, message) ->
+            {:error, :context_overflow, message}
+
+          # Refused as malformed: the request's fault, not the provider's
+          # (Visor.ModelHealth). A bad key (401, 403), a model or endpoint
+          # that isn't there (404), a timeout or a rate limit are failures
+          # waiting won't fix, or that it will: they count.
+          status in [400, 422] ->
+            {:error, :rejected, message}
+
+          true ->
+            {:error, message}
+        end
 
       {:error, exception} ->
         {:error, "The request to DeepSeek failed: " <> Exception.message(exception)}
@@ -219,8 +230,12 @@ defmodule Visor.Model.DeepSeek do
 
   # A request the API rejected for holding more tokens than the model's
   # window, such as "This model's maximum context length is 131072 tokens".
+  # Too large: a 413 whatever its body says (a proxy's own page, often),
+  # or a 400 that names the window.
+  defp overflow?(413, _message), do: true
+
   defp overflow?(status, message) do
-    status in [400, 413] and
+    status == 400 and
       message =~ ~r/context (length|window)|maximum.{0,40}tokens|too many tokens/i
   end
 

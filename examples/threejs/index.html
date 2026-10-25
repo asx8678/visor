@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Driftlight — a three.js example page</title>
+<meta name="description" content="A single-file example website with a three.js scene: a rotating crystal, a particle field and mouse parallax." />
+<style>
+  :root {
+    --ink: #eaf2ff;
+    --muted: #9fb0c9;
+    --accent: #6ee7ff;
+    --accent-2: #a78bfa;
+    --bg: #05070e;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* The canvas sits behind everything and stays put while the page scrolls. */
+  #scene {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .page { position: relative; z-index: 1; }
+
+  .veil {
+    position: fixed;
+    inset: 0;
+    z-index: 2;
+    background: var(--bg);
+    opacity: 1;
+    transition: opacity 1.2s ease 0.15s;
+    pointer-events: none;
+  }
+  body.ready .veil { opacity: 0; }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.1rem clamp(1.1rem, 5vw, 3.5rem);
+    backdrop-filter: blur(10px);
+    background: linear-gradient(to bottom, rgba(5, 7, 14, 0.75), rgba(5, 7, 14, 0));
+  }
+
+  .brand {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent), 0 0 32px rgba(110, 231, 255, 0.45);
+  }
+
+  nav { display: flex; gap: clamp(0.75rem, 2.5vw, 1.75rem); }
+  nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: color 0.2s ease;
+  }
+  nav a:hover, nav a:focus-visible { color: var(--ink); }
+
+  section { padding: clamp(3rem, 10vh, 8rem) clamp(1.1rem, 5vw, 3.5rem); }
+
+  .hero {
+    min-height: 92vh;
+    display: grid;
+    align-content: center;
+    max-width: 46rem;
+  }
+
+  .eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.28em;
+    font-size: 0.72rem;
+    color: var(--accent);
+    margin: 0 0 1.2rem;
+  }
+
+  h1 {
+    font-size: clamp(2.4rem, 7vw, 4.6rem);
+    line-height: 1.03;
+    letter-spacing: -0.03em;
+    margin: 0 0 1.2rem;
+    font-weight: 700;
+  }
+
+  h1 span {
+    background: linear-gradient(100deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .lede {
+    font-size: clamp(1rem, 2.2vw, 1.18rem);
+    color: var(--muted);
+    max-width: 34rem;
+    margin: 0 0 2rem;
+  }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 0.8rem; }
+
+  .btn {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    padding: 0.7rem 1.35rem;
+    font: inherit;
+    font-size: 0.92rem;
+    color: var(--ink);
+    background: rgba(255, 255, 255, 0.05);
+    cursor: pointer;
+    text-decoration: none;
+    transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  }
+  .btn:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.35); }
+  .btn.primary {
+    background: linear-gradient(100deg, var(--accent), var(--accent-2));
+    border-color: transparent;
+    color: #05121a;
+    font-weight: 600;
+  }
+
+  .grid {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    max-width: 68rem;
+  }
+
+  .card {
+    padding: 1.5rem;
+    border-radius: 1.1rem;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.015));
+    backdrop-filter: blur(12px);
+  }
+
+  .card h3 { margin: 0 0 0.4rem; font-size: 1.02rem; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+  .section-head { margin-bottom: 2rem; max-width: 40rem; }
+  .section-head h2 {
+    font-size: clamp(1.5rem, 4vw, 2.3rem);
+    letter-spacing: -0.02em;
+    margin: 0 0 0.6rem;
+  }
+  .section-head p { color: var(--muted); margin: 0; }
+
+  footer {
+    padding: 2.5rem clamp(1.1rem, 5vw, 3.5rem);
+    color: var(--muted);
+    font-size: 0.85rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    justify-content: space-between;
+  }
+
+  .note {
+    position: fixed;
+    left: 50%;
+    bottom: 1.25rem;
+    transform: translateX(-50%);
+    z-index: 4;
+    padding: 0.5rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+  .note.show { opacity: 1; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .veil { transition: none; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div class="veil"></div>
+
+  <div class="page">
+    <header>
+      <div class="brand"><span class="dot"></span> Driftlight</div>
+      <nav>
+        <a href="#how">How it works</a>
+        <a href="#parts">Parts</a>
+        <a href="#start">Start</a>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <p class="eyebrow">single file · no build step</p>
+      <h1>Geometry that <span>answers the pointer</span></h1>
+      <p class="lede">
+        A small example website whose background is a live three.js scene: an
+        faceted crystal, a drifting field of particles, and a camera that leans
+        toward your cursor.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="#how">Read the walkthrough</a>
+        <a class="btn" href="#parts">See the parts</a>
+      </div>
+    </section>
+
+    <section id="how">
+      <div class="section-head">
+        <h2>How it works</h2>
+        <p>One <code>index.html</code>, one canvas, one animation loop.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>Scene and camera</h3>
+          <p>A <code>PerspectiveCamera</code> at z=6 with a <code>WebGLRenderer</code> whose pixel ratio is capped at 2 so phones stay cool.</p>
+        </div>
+        <div class="card">
+          <h3>The crystal</h3>
+          <p>An <code>IcosahedronGeometry</code> with a metallic standard material, plus an <code>EdgesGeometry</code> wireframe drawn on top.</p>
+        </div>
+        <div class="card">
+          <h3>Particles</h3>
+          <p>Twelve hundred points in a spherical shell, one <code>BufferGeometry</code>, additive blending, no per-frame allocation.</p>
+        </div>
+        <div class="card">
+          <h3>Pointer parallax</h3>
+          <p>Mouse and touch move a target the camera eases toward each frame, so motion stays soft and frame-rate independent.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="parts">
+      <div class="section-head">
+        <h2>The parts</h2>
+        <p>Everything is in the script at the bottom of the page.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3><code>buildScene()</code></h3>
+          <p>Creates the background gradient, lights, crystal and particles, then returns the moving parts.</p>
+        </div>
+        <div class="card">
+          <h3><code>onPointerMove()</code></h3>
+          <p>Stores a normalized pointer position; the loop damps toward it.</p>
+        </div>
+        <div class="card">
+          <h3><code>tick()</code></h3>
+          <p>Rotates, drifts and renders. Uses a clock delta so speed does not depend on refresh rate.</p>
+        </div>
+        <div class="card">
+          <h3><code>onResize()</code></h3>
+          <p>Keeps the drawing buffer and the camera's aspect in step with the window.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="start">
+      <div class="section-head">
+        <h2>Run it</h2>
+        <p>Put the file next to a terminal and open it — it loads three.js from a CDN through an import map.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>Fastest</h3>
+          <p>Open <code>index.html</code> in a browser. Needs a network connection for the three.js module.</p>
+        </div>
+        <div class="card">
+          <h3>Local server</h3>
+          <p><code>python3 -m http.server 8000</code> in this folder, then <code>localhost:8000</code>.</p>
+        </div>
+        <div class="card">
+          <h3>Offline</h3>
+          <p>Download <code>three.module.js</code> beside the file and point the import map at <code>./three.module.js</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span>Driftlight — an example page, no framework.</span>
+      <span>three.js · WebGL · ~250 lines</span>
+    </footer>
+  </div>
+
+  <div class="note" id="note">WebGL is unavailable here — showing the plain page.</div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.170.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+
+    const canvas = document.getElementById("scene");
+    const note = document.getElementById("note");
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    } catch (error) {
+      showFallback();
+    }
+
+    if (renderer) {
+      start();
+    }
+
+    function showFallback() {
+      canvas.style.display = "none";
+      note.classList.add("show");
+      document.body.classList.add("ready");
+    }
+
+    function start() {
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x05070e, 0.055);
+
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+      camera.position.set(0, 0, 6);
+
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setClearColor(0x05070e, 1);
+
+      // ---- background: a vertical gradient painted onto a canvas texture ----
+      const gradient = document.createElement("canvas");
+      gradient.width = 2;
+      gradient.height = 256;
+      const gctx = gradient.getContext("2d");
+      const fill = gctx.createLinearGradient(0, 0, 0, 256);
+      fill.addColorStop(0, "#0b1024");
+      fill.addColorStop(0.55, "#06080f");
+      fill.addColorStop(1, "#02030a");
+      gctx.fillStyle = fill;
+      gctx.fillRect(0, 0, 2, 256);
+
+      const backdrop = new THREE.Mesh(
+        new THREE.SphereGeometry(40, 16, 16),
+        new THREE.MeshBasicMaterial({
+          map: new THREE.CanvasTexture(gradient),
+          side: THREE.BackSide,
+          depthWrite: false,
+          fog: false
+        })
+      );
+      scene.add(backdrop);
+
+      // ---- lights ----
+      const key = new THREE.PointLight(0x6ee7ff, 90, 40);
+      key.position.set(4, 4, 5);
+      scene.add(key);
+
+      const rim = new THREE.PointLight(0xa78bfa, 70, 40);
+      rim.position.set(-5, -3, 4);
+      scene.add(rim);
+
+      scene.add(new THREE.AmbientLight(0x223355, 1.4));
+
+      // ---- the crystal ----
+      const crystal = new THREE.Group();
+      const geometry = new THREE.IcosahedronGeometry(1.6, 0);
+
+      const body = new THREE.Mesh(
+        geometry,
+        new THREE.MeshStandardMaterial({
+          color: 0x111a33,
+          metalness: 0.92,
+          roughness: 0.22,
+          flatShading: true
+        })
+      );
+      crystal.add(body);
+
+      const edges = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geometry),
+        new THREE.LineBasicMaterial({ color: 0x8ff4ff, transparent: true, opacity: 0.85 })
+      );
+      edges.scale.setScalar(1.001);
+      crystal.add(edges);
+
+      crystal.position.set(2.1, -0.2, 0);
+      scene.add(crystal);
+
+      // ---- particles ----
+      const COUNT = 1200;
+      const positions = new Float32Array(COUNT * 3);
+      const radii = new Float32Array(COUNT);
+
+      for (let i = 0; i < COUNT; i += 1) {
+        const radius = 3.2 + Math.random() * 5.5;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+        positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+        positions[i * 3 + 2] = radius * Math.cos(phi);
+        radii[i] = radius;
+      }
+
+      const particleGeometry = new THREE.BufferGeometry();
+      particleGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+      const particles = new THREE.Points(
+        particleGeometry,
+        new THREE.PointsMaterial({
+          color: 0xbcd6ff,
+          size: 0.035,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: 0.75,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending
+        })
+      );
+      scene.add(particles);
+
+      // ---- pointer ----
+      const pointer = { x: 0, y: 0, tx: 0, ty: 0 };
+
+      function onPointerMove(event) {
+        const x = event.clientX / window.innerWidth;
+        const y = event.clientY / window.innerHeight;
+        pointer.tx = x * 2 - 1;
+        pointer.ty = y * 2 - 1;
+      }
+
+      window.addEventListener("pointermove", onPointerMove, { passive: true });
+
+      // ---- resize ----
+      function onResize() {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+
+        // Narrow screens: bring the crystal behind the text and shrink it a little.
+        const narrow = width / height < 1.05;
+        crystal.position.x = narrow ? 0 : 2.1;
+        crystal.scale.setScalar(narrow ? 0.72 : 1);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(width, height, false);
+      }
+
+      window.addEventListener("resize", onResize);
+      onResize();
+
+      // ---- animation loop ----
+      const clock = new THREE.Clock();
+      let scrollY = 0;
+
+      window.addEventListener("scroll", () => { scrollY = window.scrollY; }, { passive: true });
+
+      // Damp helper: frame-rate independent easing toward a target.
+      const damp = (current, target, lambda, delta) =>
+        current + (target - current) * (1 - Math.exp(-lambda * delta));
+
+      function tick() {
+        const delta = Math.min(clock.getDelta(), 0.05);
+        const time = clock.elapsedTime;
+        const speed = reduceMotion ? 0.25 : 1;
+
+        pointer.x = damp(pointer.x, pointer.tx, 3, delta);
+        pointer.y = damp(pointer.y, pointer.ty, 3, delta);
+
+        const scroll = scrollY / Math.max(window.innerHeight, 1);
+
+        crystal.rotation.y += delta * 0.25 * speed;
+        crystal.rotation.x = Math.sin(time * 0.35) * 0.12 + scroll * 0.5;
+        crystal.position.y = Math.sin(time * 0.7) * 0.16 - 0.2 + scroll * 0.6;
+
+        particles.rotation.y += delta * 0.02 * speed;
+        particles.rotation.x = pointer.y * 0.15;
+
+        camera.position.x = pointer.x * 0.55;
+        camera.position.y = -pointer.y * 0.4 + scroll * 0.35;
+        camera.lookAt(0, scroll * 0.3, 0);
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(tick);
+      }
+
+      requestAnimationFrame(tick);
+
+      console.info("three.js r" + THREE.REVISION + " — driftlight scene running");
+      requestAnimationFrame(() => document.body.classList.add("ready"));
+    }
+  </script>
+</body>
+</html>

@@ -59,11 +59,16 @@ defmodule Visor.Model do
 
   @doc """
   `{:error, :context_overflow, message}` is a request the provider
-  rejected as longer than the model's window; the agent compacts the
-  conversation and tries once more.
+  rejected as too large: longer than the model's window, or (HTTP 413)
+  over the size it takes; the agent compacts the conversation and tries
+  once more. `{:error, :rejected, message}` is one it refused as
+  malformed (HTTP 400 or 422), which fails the prompt but not the
+  provider's health (`Visor.ModelHealth`).
   """
   @callback stream(request(), emit :: (emitted() -> any())) ::
-              {:ok, result()} | {:error, String.t()} | {:error, :context_overflow, String.t()}
+              {:ok, result()}
+              | {:error, String.t()}
+              | {:error, :context_overflow | :rejected, String.t()}
 
   @doc """
   The provider to use: DeepSeek, unless the config names another one, as

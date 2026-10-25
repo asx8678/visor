@@ -59,12 +59,10 @@ defmodule Visor.Tools do
                                           it stops after 5 min (timeout: up to 30), at Stop or
                                           when a model call fails
             V.image(path)                 look at a picture in the project (PNG, JPEG, GIF, WebP):
-                                          it comes with your next model call
+                                          it comes with your next model call and lasts for this
+                                          prompt; "picture:NAME" shows again one the user sent
             V.remember(note)              keep a short note for every later session on this
                                           project (V.memories(), V.forget(note))
-            V.tidewave(tool, args)        the running Phoenix app's Tidewave tools: "project_eval"
-                                          (%{code: ...}, runs in the app), "get_logs" (%{tail: n}),
-                                          "execute_sql_query"; V.tidewave() lists them
             V.agent(task, seed: :snippet, role: text)
                                           start a sub-agent with a fresh context on a task, as a
                                           job; you hear its answer when it is done
@@ -199,10 +197,18 @@ defmodule Visor.Tools do
     end
   end
 
+  # The agent prepares a call's arguments before it runs it (prepare/1)
+  # and passes them in `context`, so they aren't put right twice.
   defp script_arguments(arguments, context) do
-    with {:ok, %{} = args} <- Jason.decode(arguments),
-         %{"code" => code} = args when is_binary(code) and code != "" <-
-           repair_arguments(args, context) do
+    prepared =
+      case Map.get(context, :prepared) do
+        nil -> prepare(arguments)
+        prepared -> prepared
+      end
+
+    with {:ok, args, fixes} <- prepared,
+         :ok <- report_fixes(fixes, context),
+         %{"code" => code} when is_binary(code) and code != "" <- args do
       {:ok, code, args}
     else
       _ -> :error
@@ -210,18 +216,35 @@ defmodule Visor.Tools do
   end
 
   @doc """
-  The script an `elixir` call's `arguments` carry, as `execute/3` would
-  run it after putting its shape right, trimmed; nil when there is none.
-  The agent counts scripts run again unchanged by it.
+  An `elixir` call's `arguments` decoded and put right, as `execute/3`
+  runs them: `{:ok, args, fixes}`, with what was put right, or `:error`
+  when they aren't a JSON object.
   """
-  def script(arguments) do
-    with {:ok, %{} = args} <- Jason.decode(arguments),
-         {%{"code" => code}, _fixes} when is_binary(code) <- repaired(args) do
-      String.trim(code)
-    else
-      _ -> nil
+  @spec prepare(term()) :: {:ok, map(), [String.t()]} | :error
+  def prepare(arguments) when is_binary(arguments) do
+    case Jason.decode(arguments) do
+      {:ok, %{} = args} ->
+        {args, fixes} = repaired(args)
+        {:ok, args, fixes}
+
+      _other ->
+        :error
     end
   end
+
+  def prepare(_arguments), do: :error
+
+  @doc "The script of prepared arguments (`prepare/1`), trimmed; nil when there is none."
+  @spec script_of({:ok, map(), [String.t()]} | :error | nil) :: String.t() | nil
+  def script_of({:ok, %{"code" => code}, _fixes}) when is_binary(code), do: String.trim(code)
+  def script_of(_prepared), do: nil
+
+  @doc """
+  The script an `elixir` call's `arguments` carry, as `execute/3` would
+  run it after putting its shape right, trimmed; nil when there is none.
+  """
+  @spec script(term()) :: String.t() | nil
+  def script(arguments), do: arguments |> prepare() |> script_of()
 
   # Shapes models give the arguments that have one clear meaning, put
   # right before they are read, after pi-fabric's argument preparation:
@@ -231,7 +254,11 @@ defmodule Visor.Tools do
   # is left for the error it gets.
   defp repair_arguments(args, context) do
     {args, fixes} = repaired(args)
+    report_fixes(fixes, context)
+    args
+  end
 
+  defp report_fixes(fixes, context) do
     if fixes != [] and context[:session] do
       Visor.Agent.Event.broadcast(
         context.session,
@@ -240,7 +267,7 @@ defmodule Visor.Tools do
       )
     end
 
-    args
+    :ok
   end
 
   defp repaired(args) do
@@ -486,6 +513,38 @@ defmodule Visor.Tools do
   exec 3<&- </dev/null
   """
 
+  # Names like a key, a token, a secret, a password or credentials:
+  # GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, SECRET_KEY_BASE, PGPASSWORD; not
+  # MONKEY or TOKENIZERS_PARALLELISM.
+  @hidden_env "(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(_|$)|(^|_)KEY$|PASSWORD$"
+
+  # Unset in a command's environment, so they can't be read back with
+  # `env`: the model's settings always (the key and its gateway's other
+  # DEEPSEEK_ ones), and the names config :visor, :hidden_env matches.
+  # Those the caller passes are set even so.
+  defp hidden_env(passed) do
+    pattern = hidden_pattern()
+
+    names =
+      for {name, _value} <- System.get_env(),
+          String.starts_with?(name, "DEEPSEEK_") or (pattern != nil and name =~ pattern),
+          do: name
+
+    for name <- Enum.uniq(["DEEPSEEK_API_KEY" | names]),
+        name not in passed,
+        do: {String.to_charlist(name), false}
+  end
+
+  # A regex, or its source (read caseless); nil or "" hides only the
+  # model's settings. Compiled per command: a command costs far more.
+  defp hidden_pattern do
+    case Application.get_env(:visor, :hidden_env, @hidden_env) do
+      %Regex{} = regex -> regex
+      source when source in [nil, ""] -> nil
+      source when is_binary(source) -> Regex.compile!(source, "i")
+    end
+  end
+
   @doc """
   Runs a shell command in the project folder. Returns `{status, output}`,
   where status is the exit code, or `:timeout` if it was killed at its
@@ -498,12 +557,20 @@ defmodule Visor.Tools do
   `Visor.Jobs`) `:on_start`, called with the command's OS pid, and
   `:on_data`, called with each piece of output as it comes.
 
+  The command's environment is the VM's without the model's settings
+  (`DEEPSEEK_*`) and, by default, without any variable named like a key,
+  a token, a secret, a password or credentials. `config :visor,
+  :hidden_env` sets that pattern: a regex, or its source read caseless;
+  nil hides only the model's settings. A variable passed in `:env` is set
+  even so.
+
   The calling process owns the command: when it exits, the command and
   everything it started are killed.
   """
   def shell(command, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, Limits.shell_timeout_ms())
-    extra_env = for {name, value} <- Keyword.get(opts, :env, []), do: {~c"#{name}", ~c"#{value}"}
+    env = Keyword.get(opts, :env, [])
+    extra_env = for {name, value} <- env, do: {~c"#{name}", ~c"#{value}"}
     # Unique to this command and this VM. A command run by a Visor that is
     # itself under a command (its tests, say) adds to the tag it inherited,
     # so the outer command's kill reaches it too.
@@ -516,14 +583,14 @@ defmodule Visor.Tools do
         :stderr_to_stdout,
         args: ["-c", @watchdog <> command],
         cd: Workspace.root(),
-        env: [
-          # Unset, so the key can't be read back with `env`.
-          {~c"DEEPSEEK_API_KEY", false},
-          {~c"PAGER", ~c"cat"},
-          {~c"GIT_PAGER", ~c"cat"},
-          {~c"TERM", ~c"dumb"},
-          {~c"VISOR_RUN", String.to_charlist(tag)} | extra_env
-        ]
+        env:
+          hidden_env(for {name, _value} <- env, do: to_string(name)) ++
+            [
+              {~c"PAGER", ~c"cat"},
+              {~c"GIT_PAGER", ~c"cat"},
+              {~c"TERM", ~c"dumb"},
+              {~c"VISOR_RUN", String.to_charlist(tag)} | extra_env
+            ]
       ])
 
     # nil when a quick command has already exited, and closed its port;

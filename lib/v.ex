@@ -46,25 +46,30 @@ defmodule V do
   @doc """
   Shows you a picture in the project (PNG, JPEG, GIF or WebP, up to
   #{div(Limits.image_bytes(), 1_000_000)} MB): it comes with your next model call, after this
-  batch's results, as DeepSeek's Flash models read images. Returns
-  `%{attached: path, bytes: n}`.
+  batch's results, as DeepSeek's Flash models read images, and lasts for
+  this prompt. `"picture:NAME"` shows again one the user sent (`[The
+  user's picture: NAME]`). Returns `%{attached: path, bytes: n}`.
   """
   def image(path) when is_binary(path) do
     track(:image, [path], fn ->
-      with {:ok, image} <- Tools.image(path),
-           :ok <- attach_image(path, image) do
-        {:ok, %{attached: path, bytes: byte_size(image.data)}}
+      with {:ok, part} <- picture(path),
+           :ok <- attach_image(path, part) do
+        {:ok, %{attached: path, bytes: Visor.Content.bytes(part)}}
       end
     end)
   end
 
-  defp attach_image(path, image) do
-    case session() do
-      nil ->
-        {:error, "Showing a picture needs a console session."}
+  # "picture:NAME" is one the user sent, which the session keeps.
+  defp picture("picture:" <> name), do: Visor.Agent.user_picture(session(), name)
 
-      session ->
-        Visor.Agent.attach_image(session, path, Visor.Content.image(image.mime, image.data))
+  defp picture(path) do
+    with {:ok, image} <- Tools.image(path), do: {:ok, Visor.Content.image(image.mime, image.data)}
+  end
+
+  defp attach_image(path, part) do
+    case session() do
+      nil -> {:error, "Showing a picture needs a console session."}
+      session -> Visor.Agent.attach_image(session, path, part)
     end
   end
 
@@ -284,29 +289,6 @@ defmodule V do
   def forget(note) when is_binary(note) do
     track(:forget, [note], fn ->
       with :ok <- not_read_only("V.forget"), do: Visor.Memory.forget(note)
-    end)
-  end
-
-  @doc """
-  Calls a tool of the project's running app through Tidewave (`plug
-  Tidewave` in its Phoenix endpoint): `V.tidewave("project_eval", %{code:
-  "MyApp.Repo.aggregate(MyApp.User, :count)"})` evaluates in the app,
-  `"get_logs"` (`%{tail: 50}`) reads its log, and `V.tidewave()` lists
-  the tools. The code runs in the app, not here (`Visor.Tidewave`).
-  Returns the tool's text.
-  """
-  def tidewave do
-    track(:tidewave, [], fn ->
-      with :ok <- not_read_only("V.tidewave"), do: Visor.Tidewave.tools()
-    end)
-  end
-
-  def tidewave(tool, arguments \\ %{}) when is_binary(tool) and is_map(arguments) do
-    track(:tidewave, [tool, arguments], fn ->
-      timeout = max(min(Code.time_left() || 60_000, 60_000) - 1_000, 1_000)
-
-      with :ok <- not_read_only("V.tidewave"),
-           do: Visor.Tidewave.call(tool, arguments, timeout)
     end)
   end
 
@@ -1088,7 +1070,20 @@ defmodule V do
     call = %{n: n, name: name, text: call_text(name, args), args: args, status: :running, ms: nil}
     Code.report(context, call)
     started = System.monotonic_time(:millisecond)
-    result = fun.()
+
+    result =
+      try do
+        fun.()
+      catch
+        # A process of Visor's the call asks (the agent, the jobs server)
+        # went down or was too busy: the script hears it as a failed call,
+        # instead of its sandbox going down with the exit. Other exits go on.
+        :exit, {_why, {GenServer, :call, _args}} = reason ->
+          {:error,
+           "Visor couldn't answer #{name}: " <>
+             String.slice(Exception.format_exit(reason), 0, 300)}
+      end
+
     call = %{call | ms: System.monotonic_time(:millisecond) - started}
 
     case result do

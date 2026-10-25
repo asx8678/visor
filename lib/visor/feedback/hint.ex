@@ -59,8 +59,7 @@ defmodule Visor.Feedback.Hint do
 
         if module != "V" do
           "#{module} isn't loaded in a script's sandbox, which runs apart from the project: " <>
-            ~s|run the project's code with V.sh("mix run -e '...'"), or in its running app | <>
-            ~s|with V.tidewave("project_eval", %{code: "..."}).|
+            ~s|run the project's code with V.sh("mix run -e '...'").|
         end
 
       message =~ "not a valid pattern" ->

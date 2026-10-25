@@ -32,6 +32,15 @@ defmodule Visor.Limits do
   def images_per_call, do: 4
 
   @doc """
+  The user's pictures a session keeps, newest first, for
+  `V.image("picture:NAME")` once the prompt they came with has ended.
+  """
+  def pictures_kept, do: 8
+
+  @doc "The most bytes the user's kept pictures (`pictures_kept/0`) may hold, together."
+  def pictures_kept_bytes, do: 20_000_000
+
+  @doc """
   Tokens an image is counted as for compaction: about what DeepSeek
   charged for a screenshot-sized one (a 16x16 picture was 184).
   """

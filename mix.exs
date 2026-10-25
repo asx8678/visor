@@ -36,9 +36,10 @@ defmodule Visor.MixProject do
     ]
   end
 
-  # Specifies which paths to compile per environment.
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
-  defp elixirc_paths(_), do: ["lib"]
+  # dev/ holds the tooling, mix visor.example and visor.proofs: built in
+  # dev and test (where mix precommit runs), kept out of a release.
+  defp elixirc_paths(env) when env in [:dev, :test], do: ["lib", "dev"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   # Specifies your project dependencies.
   #
@@ -49,7 +50,6 @@ defmodule Visor.MixProject do
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2.0"},
-      {:lazy_html, ">= 0.1.0", only: :test},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
       {:heroicons,
@@ -62,7 +62,7 @@ defmodule Visor.MixProject do
       {:req, "~> 0.5"},
       {:jason, "~> 1.2"},
       {:bandit, "~> 1.5"},
-      {:dune, github: "asx8678/dune", ref: "989ddaebee4752efa99260dfd84bbc84e0e1be52"}
+      {:dune, github: "asx8678/dune", ref: "59dccd0613efb2416c86b93cf5c1508ce5424d86"}
     ]
   end
 
@@ -82,7 +82,13 @@ defmodule Visor.MixProject do
         "esbuild visor --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "visor.proofs --strict",
+        "visor.example --offline"
+      ]
     ]
   end
 end

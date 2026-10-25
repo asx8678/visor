@@ -189,8 +189,8 @@ defmodule Visor.Reviewer do
     end
   end
 
-  defp answered(state, _error) do
-    Visor.ModelHealth.record(:error)
+  defp answered(state, error) do
+    Visor.ModelHealth.record_result(error)
     state
   end
 

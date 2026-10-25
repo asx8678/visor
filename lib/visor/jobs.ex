@@ -37,7 +37,7 @@ defmodule Visor.Jobs do
   @typedoc "A job as the session's table keeps it."
   @type job :: %{
           id: String.t(),
-          kind: :shell,
+          kind: :shell | :agent | :council,
           label: String.t(),
           status: :running | :exited | :failed | :killed | :timed_out,
           exit: integer() | nil,
@@ -49,7 +49,8 @@ defmodule Visor.Jobs do
           os_pid: integer() | nil,
           pid: pid() | nil,
           acknowledged: boolean(),
-          monitor: true | String.t() | nil
+          monitor: true | String.t() | nil,
+          version: non_neg_integer()
         }
 
   def start_link(opts) do
@@ -116,6 +117,14 @@ defmodule Visor.Jobs do
   @doc "The jobs still running."
   def running(session), do: Enum.filter(list(session), &(&1.status == :running))
 
+  @doc """
+  Returns once session `session`'s jobs server has handled what reached
+  it before: a job's end it was told of is announced, and its last
+  monitored lines are held for the agent.
+  """
+  @spec sync(String.t()) :: :ok
+  def sync(session), do: GenServer.call(Harness.via({session, :jobs}), :sync)
+
   @doc "Stops job `id`. Returns `{:ok, job}` or `{:error, message}`."
   def stop(session, id), do: GenServer.call(Harness.via({session, :jobs}), {:stop, id})
 
@@ -132,8 +141,8 @@ defmodule Visor.Jobs do
   that it ended.
   """
   def acknowledge(session, id) do
-    with %{status: status} = job when status != :running <- get(session, id) do
-      put(session, %{job | acknowledged: true})
+    with %{status: status} when status != :running <- get(session, id) do
+      update(session, id, &%{&1 | acknowledged: true})
       if store = Session.store(session), do: :ets.delete(store, {:monitor, id})
     end
 
@@ -188,7 +197,8 @@ defmodule Visor.Jobs do
   end
 
   @doc "The job as events, the console and `V.job/1` show it."
-  def public(job), do: Map.drop(job, [:pid, :started, :announced])
+  @spec public(job()) :: map()
+  def public(job), do: Map.drop(job, [:pid, :started, :announced, :version])
 
   @doc "What the model is told when job `job` has ended."
   def notice(%{kind: :council} = job) do
@@ -326,6 +336,7 @@ defmodule Visor.Jobs do
   end
 
   def handle_call({:stop, job_id}, _from, state), do: stop_job(state, job_id)
+  def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
   def handle_call({:wait, job_id, timeout_ms}, from, state),
     do: wait_job(state, job_id, timeout_ms, from)
@@ -365,32 +376,43 @@ defmodule Visor.Jobs do
           os_pid: nil,
           pid: nil,
           acknowledged: false,
-          monitor: nil
+          monitor: nil,
+          # Raised by each write (update/3), which replaces the record
+          # only while it is the version it read.
+          version: 0
         },
         fields
       )
 
     session = state.id
-
-    {:ok, pid} =
-      Task.Supervisor.start_child(state.tasks, fn -> run.(session, job) end, restart: :temporary)
-
-    job = %{job | pid: pid}
+    # In the table before its task starts, which updates it from its
+    # first moment.
     put(session, job)
-    ref = Process.monitor(pid)
-    # A sub-agent's job says it started once its child session has.
-    if kind != :agent, do: Event.broadcast(session, {:job_start, public(job)})
 
-    {:reply, {:ok, job},
-     %{state | next: state.next + 1, monitors: Map.put(state.monitors, ref, job_id)}}
+    case Task.Supervisor.start_child(state.tasks, fn -> run.(session, job) end,
+           restart: :temporary
+         ) do
+      {:ok, pid} ->
+        update(session, job_id, &%{&1 | pid: pid})
+        job = %{job | pid: pid}
+        ref = Process.monitor(pid)
+        # A sub-agent's job says it started once its child session has.
+        if kind != :agent, do: Event.broadcast(session, {:job_start, public(job)})
+
+        {:reply, {:ok, job},
+         %{state | next: state.next + 1, monitors: Map.put(state.monitors, ref, job_id)}}
+
+      {:error, reason} ->
+        if store = Session.store(session), do: :ets.delete(store, {:job, job_id})
+        {:reply, {:error, "The job didn't start: #{inspect(reason)}"}, state}
+    end
   end
 
   # A council's member is marked as its, so the agent hears of the
   # council alone.
   defp mark_member({:reply, {:ok, job}, state}, session, council) when is_binary(council) do
-    job = Map.put(job, :council, council)
-    put(session, job)
-    {:reply, {:ok, job}, state}
+    update(session, job.id, &Map.put(&1, :council, council))
+    {:reply, {:ok, Map.put(job, :council, council)}, state}
   end
 
   defp mark_member(reply, _session, _council), do: reply
@@ -402,8 +424,11 @@ defmodule Visor.Jobs do
 
       %{status: :running, pid: pid} = job ->
         # Marked first, so the exit that follows reads as stopped.
-        put(state.id, %{job | status: :killed, ms: now() - job.started})
+        update(state.id, job_id, &%{&1 | status: :killed, ms: now() - job.started})
 
+        # Ended with :shutdown rather than :kill: a job's task doesn't trap
+        # exits, so it ends all the same, and its supervisor doesn't log a
+        # stop the user asked for as a crash.
         cond do
           not is_pid(pid) ->
             :ok
@@ -413,7 +438,7 @@ defmodule Visor.Jobs do
             for %{council: ^job_id, status: :running} = member <- list(state.id),
                 do: stop_job(state, member.id)
 
-            Process.exit(pid, :kill)
+            Process.exit(pid, :shutdown)
 
           # A sub-agent's task counts what its child did so far before it
           # goes; it is killed if it hasn't within a second.
@@ -422,7 +447,7 @@ defmodule Visor.Jobs do
             Process.send_after(self(), {:kill, pid}, 1_000)
 
           true ->
-            Process.exit(pid, :kill)
+            Process.exit(pid, :shutdown)
         end
 
         {:reply, {:ok, get(state.id, job_id)}, state}
@@ -450,11 +475,12 @@ defmodule Visor.Jobs do
   @impl true
   def handle_cast({:ended, job_id}, state), do: {:noreply, ended(state, job_id)}
 
-  # A monitored job's task sends the lines it framed; the tick passes them on.
-  def handle_cast({:lines, job_id, lines}, state) do
+  # A monitored job's task sends the lines it framed, as a batch already
+  # cut to what the model is told; the tick passes them on.
+  def handle_cast({:lines, job_id, batch}, state) do
     state = ticking(state)
     held = Map.get(state, :lines, %{})
-    {:noreply, Map.put(state, :lines, Map.put(held, job_id, Monitor.add(held[job_id], lines)))}
+    {:noreply, Map.put(state, :lines, Map.put(held, job_id, Monitor.merge(held[job_id], batch)))}
   end
 
   def handle_cast(:stop_monitored, state) do
@@ -475,7 +501,11 @@ defmodule Visor.Jobs do
     # was killed or crashed hasn't.
     case get(state.id, job_id) do
       %{status: :running} = job ->
-        put(state.id, %{job | status: :failed, ms: now() - job.started})
+        update(state.id, job_id, fn
+          %{status: :running} = record -> %{record | status: :failed, ms: now() - job.started}
+          record -> record
+        end)
+
         {:noreply, ended(state, job_id)}
 
       %{status: :killed} ->
@@ -505,29 +535,51 @@ defmodule Visor.Jobs do
   # The lines monitored jobs printed since the last tick reach the table,
   # and the agent hears that they are there, as when a job ends.
   def handle_info(:monitor_tick, state) do
-    for {job_id, batch} <- Map.get(state, :lines, %{}) do
+    lines = Map.get(state, :lines, %{})
+
+    for {job_id, batch} <- lines do
       hold_lines(state.id, job_id, batch)
       Visor.Agent.job_event(state.id, job_id)
     end
 
-    {:noreply, Map.put(state, :lines, %{})}
+    state = Map.put(state, :lines, %{})
+
+    # Quiet, with no monitored job running: the ticks stop until the next line.
+    if lines == %{} and not Enum.any?(running(state.id), & &1.monitor) do
+      {:noreply, stop_ticking(state)}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  # Ticks start with the first monitored line a session has, and go on:
+  # Ticks start with a monitored line and go on while monitored jobs run:
   # an interval, as a tick lost while Mix recompiles this module is only
   # one tick.
   defp ticking(state) do
     if Map.get(state, :ticking) do
       state
     else
-      {:ok, _timer} = :timer.send_interval(Limits.monitor_interval_ms(), :monitor_tick)
-      Map.put(state, :ticking, true)
+      {:ok, timer} = :timer.send_interval(Limits.monitor_interval_ms(), :monitor_tick)
+      Map.put(state, :ticking, timer)
     end
   end
 
-  # Lines the agent hasn't taken yet stay, with these after them.
+  defp stop_ticking(state) do
+    case Map.get(state, :ticking) do
+      timer when timer not in [nil, true] -> :timer.cancel(timer)
+      _none -> :ok
+    end
+
+    Map.put(state, :ticking, nil)
+  end
+
+  # Lines the agent hasn't taken yet stay, with these after them. A take
+  # and then an insert, not one step, and safe so: only this server writes
+  # a job's held lines, and the agent only takes them (take_lines/2). A
+  # take between the two finds nothing, and the lines it would have had
+  # are in the insert, for the next.
   defp hold_lines(session, job_id, batch) do
     if store = Session.store(session) do
       held =
@@ -554,12 +606,42 @@ defmodule Visor.Jobs do
     :ok
   end
 
+  @doc """
+  Removes the job folders of Visors that are gone: `terminate/2` doesn't
+  run for a VM that was killed, whose folder would stay. A folder is
+  named after its VM's OS pid; one whose process is still running, or
+  can't be checked, stays. Returns the folders removed.
+  """
+  @spec sweep_folders() :: [String.t()]
+  def sweep_folders do
+    root = Path.join(System.tmp_dir!(), "visor-jobs")
+
+    with ps when is_binary(ps) <- System.find_executable("ps"),
+         {:ok, names} <- File.ls(root) do
+      for name <- names,
+          name != System.pid(),
+          match?({_pid, ""}, Integer.parse(name)),
+          not os_process?(ps, name),
+          dir = Path.join(root, name),
+          match?({:ok, _removed}, File.rm_rf(dir)),
+          do: dir
+    else
+      _none -> []
+    end
+  end
+
+  defp os_process?(ps, pid) do
+    match?({_out, 0}, System.cmd(ps, ["-p", pid], stderr_to_stdout: true))
+  rescue
+    _error -> true
+  end
+
   # Tells whoever waits for the job, the console and the agent, once.
   defp ended(state, job_id) do
     job = get(state.id, job_id)
 
     if job && not Map.get(job, :announced, false) do
-      put(state.id, Map.put(job, :announced, true))
+      update(state.id, job_id, &Map.put(&1, :announced, true))
 
       for {from, timer} <- Map.get(state.waiters, job_id, []) do
         Process.cancel_timer(timer)
@@ -656,41 +738,55 @@ defmodule Visor.Jobs do
     if monitor = Process.get(:job_monitor) do
       {monitor, lines} = step.(monitor)
       Process.put(:job_monitor, monitor)
-      if lines != [], do: GenServer.cast(Harness.via({session, :jobs}), {:lines, job.id, lines})
+      # Cut here to what the model is told: a chatty job sends a batch of
+      # its newest lines, not every one it printed.
+      if lines != [],
+        do:
+          GenServer.cast(Harness.via({session, :jobs}), {:lines, job.id, Monitor.add(nil, lines)})
     end
   end
 
   # A sub-agent: a session of its own whose owner is this task, so it
   # ends when the job is stopped or its parent's session ends. The job
   # ends with the child's first prompt, and its output is the child's
-  # last answer.
+  # last answer. What the child spends is the parent's spending too, and
+  # held to what the parent has left: the child passes it on and asks
+  # itself (`budget_parent`, Visor.Agent's budget_limits/1).
   defp run_agent(session, job, prompt, opts) do
     Process.set_label("job #{job.id}")
 
-    {:ok, child} =
+    started =
       Harness.start_session(self(),
         depth: Session.depth(session) + 1,
         max_steps: opts.max_steps,
         role: opts.role,
         read_only: Map.get(opts, :read_only, false),
         limits: Map.get(opts, :limits),
+        budget_parent: session,
         label: "agent #{job.id} of #{session}",
         parent: "#{session}/#{job.id}"
       )
 
-    update(session, job.id, &Map.put(&1, :child, child))
-    Event.broadcast(session, {:job_start, public(get(session, job.id))})
-    Visor.Agent.subscribe(child)
-    :ok = Visor.Agent.prompt(child, prompt)
+    case started do
+      {:ok, child} ->
+        update(session, job.id, &Map.put(&1, :child, child))
+        Event.broadcast(session, {:job_start, public(get(session, job.id))})
+        Visor.Agent.subscribe(child)
+        :ok = Visor.Agent.prompt(child, prompt)
 
-    {reason, totals} =
-      await_child({session, job.id}, job.started + job.timeout_ms, %Visor.Agent.Totals{})
+        {reason, totals} =
+          await_child({session, job.id}, job.started + job.timeout_ms, %Visor.Agent.Totals{})
 
-    # What the child spent is its parent's spending too.
-    Visor.Agent.spent(session, totals.cost, totals.prompt_tokens + totals.completion_tokens)
+        end_agent(session, job, reason, child_answer(child), totals)
 
-    answer = child_answer(child)
+      {:error, why} ->
+        Event.broadcast(session, {:job_start, public(get(session, job.id))})
+        answer = "The sub-agent's session didn't start: #{inspect(why)}."
+        end_agent(session, job, :not_started, answer, %Visor.Agent.Totals{})
+    end
+  end
 
+  defp end_agent(session, job, reason, answer, totals) do
     File.mkdir_p!(Path.dirname(job.log))
     File.chmod!(Path.dirname(job.log), 0o700)
     File.write!(job.log, answer)
@@ -829,7 +925,8 @@ defmodule Visor.Jobs do
 
   # The child's events, counted, until its first prompt ends. The count
   # goes into the record as each model call and tool call ends, so a
-  # stopped child's spending is still counted.
+  # stopped child's spending is still counted. (The child passes its
+  # spending on to the parent itself, as it comes: Visor.Agent's spend/3.)
   defp await_child({session, job_id} = job, deadline, totals) do
     receive do
       {:agent, {:prompt_end, %{reason: reason}} = event} ->
@@ -898,19 +995,46 @@ defmodule Visor.Jobs do
     end
   end
 
+  # A record changes only from what it was when `fun` read it: the job's
+  # task, this server and the agent's scripts all write it, and a write
+  # made from a stale read would undo another's (a stopped job read as
+  # still running). So `fun` may run again, on the fresher record. A job
+  # stopped while its task finishes stays stopped, at the time it was.
+  @spec update(String.t(), String.t(), (job() -> job())) :: :ok
   defp update(session, job_id, fun) do
-    case get(session, job_id) do
-      # A job stopped while its task finishes stays stopped, at the time
-      # it was stopped.
-      %{status: :killed} = job ->
-        put(session, Map.merge(fun.(job), %{status: :killed, ms: job.ms}))
+    if store = Session.store(session), do: swap(store, {:job, job_id}, fun)
+    :ok
+  end
 
-      nil ->
+  defp swap(store, key, fun) do
+    case :ets.lookup(store, key) do
+      [] ->
         :ok
 
-      job ->
-        put(session, fun.(job))
+      [{^key, job}] ->
+        new =
+          case job do
+            %{status: :killed} -> Map.merge(fun.(job), %{status: :killed, ms: job.ms})
+            job -> fun.(job)
+          end
+
+        if :ets.select_replace(store, swap_spec(key, job, new)) == 1,
+          do: :ok,
+          else: swap(store, key, fun)
     end
+  end
+
+  # Replaced only while the record is still the version read. A record
+  # written before versions (an older session) is compared whole.
+  defp swap_spec(key, %{version: version}, new) do
+    [{{key, %{version: version}}, [], [{:const, {key, %{new | version: version + 1}}}]}]
+  end
+
+  defp swap_spec(key, job, new) do
+    [
+      {{key, :"$1"}, [{:"=:=", :"$1", {:const, job}}],
+       [{:const, {key, Map.put(new, :version, 1)}}]}
+    ]
   end
 
   defp put(session, job) do

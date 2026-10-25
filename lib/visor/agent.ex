@@ -18,7 +18,7 @@ defmodule Visor.Agent do
   use GenServer
 
   alias Visor.{Compaction, Harness, Jobs, Limits, Model, Tools, Usage}
-  alias Visor.Agent.{Event, Repair}
+  alias Visor.Agent.{Event, Repair, Wakes}
   alias Visor.Harness.Session
 
   # Model calls allowed for one prompt. The last runs without tools, so the
@@ -106,6 +106,7 @@ defmodule Visor.Agent do
     monitor_wakes: 0,
     wakes_held: false,
     jobs_wake: true,
+    # The batch timer of the next wake, as {ref, timer}.
     wake_timer: nil,
     # What the model asked every summary to keep (V.carry/1), and its
     # request to compact once its prompt has ended (V.compact/1).
@@ -126,7 +127,13 @@ defmodule Visor.Agent do
     # What the session and its running prompt have spent, and may
     # (Visor.Limits.prompt_cost_limit/0 and the rest).
     spent: nil,
-    limits: nil
+    limits: nil,
+    # A sub-agent's parent session: what it spends is the parent's too,
+    # and before each model call it asks the parent what is left. The
+    # parent's last answer, as caps on the sub-agent's own spending, for
+    # when the parent doesn't answer in time (budget_limits/1).
+    budget_parent: nil,
+    parent_cap: nil
   ]
 
   def start_link(opts) do
@@ -267,9 +274,24 @@ defmodule Visor.Agent do
   end
 
   @doc """
+  Session `id`'s conversation as its table keeps it, or `[]`. It reads
+  the table, not the agent, so it answers while a prompt runs.
+  """
+  @spec messages(String.t()) :: [map()]
+  def messages(id) do
+    with store when store != nil <- Session.store(id),
+         [{:conversation, %{messages: messages}}] <- :ets.lookup(store, :conversation) do
+      messages
+    else
+      _none -> []
+    end
+  end
+
+  @doc """
   Adds to session `id`'s spending what a model call of its own reviewer
   or sub-agents cost: `cost` in dollars (nil when unreported) and `tokens`.
   """
+  @spec spent(String.t(), number() | nil, non_neg_integer() | nil) :: :ok
   def spent(id, cost, tokens), do: GenServer.cast(via(id), {:spent, cost, tokens})
 
   @doc """
@@ -283,9 +305,41 @@ defmodule Visor.Agent do
 
   @doc """
   What session `id` may still spend: `%{prompt: dollars, session:
-  dollars, tokens: n}`, for a sub-agent to start with.
+  dollars, tokens: n}`, for a sub-agent to start with, and that the
+  sub-agent asks for again before each of its model calls.
   """
+  @spec allowance(String.t()) :: %{prompt: float(), session: float(), tokens: integer()}
   def allowance(id), do: GenServer.call(via(id), :allowance)
+
+  @doc """
+  A picture the user sent in session `id`, by the name its prompt gave it
+  (`[The user's picture: NAME]`), for `V.image("picture:NAME")`: the
+  session keeps the newest `Visor.Limits.pictures_kept/0`. Reads the
+  session's table, so a running script can call it.
+  """
+  @spec user_picture(String.t() | nil, String.t()) :: {:ok, map()} | {:error, String.t()}
+  def user_picture(id, name) do
+    kept =
+      with store when store != nil <- id && Session.store(id),
+           [{:pictures, kept, _names}] <- :ets.lookup(store, :pictures) do
+        kept
+      else
+        _none -> []
+      end
+
+    case List.keyfind(kept, name, 0) do
+      {_name, part} ->
+        {:ok, part}
+
+      nil when kept == [] ->
+        {:error, "This session keeps no picture the user sent."}
+
+      nil ->
+        {:error,
+         "No picture the user sent is called #{name}. The ones kept: " <>
+           Enum.map_join(kept, ", ", &elem(&1, 0)) <> "."}
+    end
+  end
 
   defp via(id), do: Harness.via({id, :agent})
 
@@ -306,7 +360,8 @@ defmodule Visor.Agent do
           project_rules() <> Visor.Memory.prompt_text(),
       # A sub-agent's are what its parent's prompt had left (allowance/1).
       limits: Keyword.get(opts, :limits) || default_limits(),
-      depth: Keyword.get(opts, :depth, 0)
+      depth: Keyword.get(opts, :depth, 0),
+      budget_parent: Keyword.get(opts, :budget_parent)
     }
 
     {:ok, restore(state)}
@@ -329,13 +384,16 @@ defmodule Visor.Agent do
   end
 
   def handle_call({:prompt, text, pictures}, _from, %{status: :idle} = state) do
-    {:reply, :ok, start_prompt(state, text, pictures)}
+    {:reply, :ok, start_prompt(state, text, fit_pictures(state, pictures))}
   end
 
+  # While a prompt runs they wait with its text: for the batch's results,
+  # or for the next prompt if the model answers first.
   def handle_call({:prompt, text, pictures}, from, state) do
-    labelled = for {name, part} <- pictures, do: {"[The user's picture: #{name}]", part}
+    taken = fit_pictures(state, pictures)
+    labelled = for {name, part} <- taken, do: {user_label(name), part}
     state = Map.update(state, :pending_images, labelled, &(&1 ++ labelled))
-    handle_call({:prompt, with_names(text, pictures)}, from, state)
+    handle_call({:prompt, with_names(text, taken)}, from, state)
   end
 
   def handle_call(:interrupt, _from, %{model_task: %Task{} = task} = state) do
@@ -462,7 +520,7 @@ defmodule Visor.Agent do
 
   def handle_call(:allowance, _from, state) do
     spent = spent(state)
-    limits = Map.get(state, :limits) || default_limits()
+    limits = limits(state)
 
     {:reply,
      %{
@@ -581,7 +639,8 @@ defmodule Visor.Agent do
 
   def handle_call(:context, _from, state) do
     info = Model.current().info()
-    tokens = round(Map.get(state, :last_estimate, 0) * Map.get(state, :token_scale, 1.0))
+    # Nil before the first request, and after a reset or a resume.
+    tokens = round((Map.get(state, :last_estimate) || 0) * Map.get(state, :token_scale, 1.0))
     threshold = threshold(info)
     share = if threshold > 0, do: tokens / threshold, else: 0.0
 
@@ -624,7 +683,7 @@ defmodule Visor.Agent do
   @impl true
   def handle_info({ref, result}, %{model_task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    Visor.ModelHealth.record(if match?({:ok, _}, result), do: :ok, else: :error)
+    Visor.ModelHealth.record_result(result)
     {:noreply, handle_model_result(result, %{state | model_task: nil})}
   end
 
@@ -667,9 +726,12 @@ defmodule Visor.Agent do
   def handle_info({:deadline, ref}, %{model_task: %Task{ref: ref} = task} = state) do
     case Task.shutdown(task, :brutal_kill) do
       {:ok, result} ->
+        Visor.ModelHealth.record_result(result)
         {:noreply, handle_model_result(result, %{state | model_task: nil})}
 
       _stopped ->
+        # A call that hangs is the provider failing as much as one that errs.
+        Visor.ModelHealth.record(:error)
         minutes = div(Limits.model_deadline_ms(), 60_000)
         broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "timeout"}})
 
@@ -699,56 +761,77 @@ defmodule Visor.Agent do
     {:noreply, finish_tool(state, ref, result)}
   end
 
-  def handle_info(:wake, state) do
-    state = Map.put(state, :wake_timer, nil)
+  # The batch timer's wake, tagged so a timer armed again (see
+  # schedule_wake/1) leaves only one to act on.
+  def handle_info({:wake, ref}, state) do
+    case Map.get(state, :wake_timer) do
+      {^ref, _timer} -> wake(Map.put(state, :wake_timer, nil))
+      _stale -> {:noreply, state}
+    end
+  end
 
-    if state.status == :idle and can_wake?(state) do
-      count = if wake_kind(state) == :monitor, do: :monitor_wakes, else: :wakes
+  # A timer armed before wakes were tagged.
+  def handle_info(:wake, state), do: wake(Map.put(state, :wake_timer, nil))
 
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp wake(state) do
+    # Read once: a job that ended between two reads would be counted as
+    # another kind than the one allowed.
+    kind = wake_kind(state)
+
+    if state.status == :idle and can_wake?(state, kind) do
       case take_notices(state) do
         {state, []} -> {:noreply, state}
-        {state, notices} -> {:noreply, start_wake(state, notices, count)}
+        {state, notices} -> {:noreply, start_wake(state, notices, kind)}
       end
     else
       {:noreply, state}
     end
   end
 
-  def handle_info(_message, state), do: {:noreply, state}
-
+  # The user's prompt. Pictures sent while the last one ran, which the
+  # model never got (`pending_images`), come with it, and those of
+  # earlier prompts are left out (retire_pictures/1).
   defp start_prompt(state, text, pictures \\ []) do
     broadcast(state, {:user, with_names(text, pictures)})
     {state, notices} = take_notices(state)
     text = Enum.join([text | notices], "\n\n")
-    labels = for {name, _part} <- pictures, do: "[The user's picture: #{name}]"
-    parts = for {_name, part} <- pictures, do: part
+
+    images =
+      Map.get(state, :pending_images, []) ++
+        for({name, part} <- pictures, do: {user_label(name), part})
+
+    labels = for {label, _part} <- images, do: label
+    parts = for {_label, part} <- images, do: part
 
     state
+    |> retire_pictures()
     |> push_user(Visor.Content.with_images(Enum.join([text | labels], "\n\n"), parts))
     |> Map.merge(%{
       steps: 0,
       overflowed: false,
       repeat: nil,
-      wakes: 0,
-      monitor_wakes: 0,
-      wakes_held: false,
       prompt_changed: MapSet.new(),
       nudged: false,
       kept: nil,
       pending_images: [],
-      spent: %{spent(state) | prompt: 0.0, tokens: 0}
+      spent: %{spent(state) | prompt: 0.0, tokens: 0},
+      parent_cap: rebase_parent_cap(state)
     })
+    |> Wakes.reset()
     |> start_turn()
   end
 
   # A prompt of the agent's own, when background jobs ended while it was
-  # idle: a fresh budget of model calls, without the user. `count` is the
-  # wakes it counts in.
-  defp start_wake(state, notices, count) do
+  # idle: a fresh budget of model calls, without the user. `kind` is the
+  # wakes it counts in (Visor.Agent.Wakes).
+  defp start_wake(state, notices, kind) do
     text = Enum.join(notices, "\n\n")
     broadcast(state, {:wake, text})
 
     state
+    |> retire_pictures()
     |> push_user(text)
     |> Map.merge(%{
       steps: 0,
@@ -758,7 +841,7 @@ defmodule Visor.Agent do
       nudged: false,
       kept: nil
     })
-    |> Map.put(count, Map.get(state, count, 0) + 1)
+    |> Wakes.count(kind)
     |> start_turn()
   end
 
@@ -781,14 +864,9 @@ defmodule Visor.Agent do
   # message wakes it all the same, within the same count. A wake for a
   # monitored job's lines alone has a count of its own, so a monitor
   # can't use up the wakes a job's end needs.
-  defp can_wake?(state) do
-    left? =
-      if wake_kind(state) == :monitor,
-        do: Map.get(state, :monitor_wakes, 0) < Limits.monitor_wakeups(),
-        else: Map.get(state, :wakes, 0) < Limits.job_wakeups()
-
+  defp can_wake?(state, kind) do
     (Map.get(state, :jobs_wake, true) or Map.get(state, :wake_texts, false)) and
-      not Map.get(state, :wakes_held, false) and left? and
+      Wakes.allowed?(state, kind) and
       Visor.ModelHealth.open() == nil and Visor.Alarms.held() == nil
   end
 
@@ -800,25 +878,41 @@ defmodule Visor.Agent do
         match?(%{status: status} when status != :running, Jobs.get(state.id, id))
       end)
 
-    if ended? or Map.get(state, :pending_texts, []) != [], do: :jobs, else: :monitor
+    Wakes.kind(ended? or Map.get(state, :pending_texts, []) != [])
   end
 
-  # Jobs that end close together wake the agent once.
+  # Jobs that end close together wake the agent once. A timer that has
+  # fired is armed again: its message may never come (dropped while Mix
+  # recompiled this module), and no wake would start for the rest of the
+  # session. If it does come, its ref is no longer the one armed.
   defp schedule_wake(state) do
     waiting? = Map.get(state, :pending_jobs, []) != [] or Map.get(state, :wake_texts, false)
 
-    if state.status == :idle and waiting? and can_wake?(state) and
-         Map.get(state, :wake_timer) == nil do
-      Map.put(state, :wake_timer, Process.send_after(self(), :wake, Limits.job_wake_batch_ms()))
+    if state.status == :idle and waiting? and not wake_armed?(state) and
+         can_wake?(state, wake_kind(state)) do
+      ref = make_ref()
+      timer = Process.send_after(self(), {:wake, ref}, Limits.job_wake_batch_ms())
+      Map.put(state, :wake_timer, {ref, timer})
     else
       state
+    end
+  end
+
+  defp wake_armed?(state) do
+    case Map.get(state, :wake_timer) do
+      nil -> false
+      {_ref, timer} -> Process.read_timer(timer) != false
+      # Armed before wakes were tagged.
+      timer -> Process.read_timer(timer) != false
     end
   end
 
   # Before each model call: a prompt or session past its spending limit
   # (BeamAgent's guardrails, Vibe's budget) makes no more.
   defp start_turn(state) do
-    case over_budget(state) do
+    {limits, state} = budget_limits(state)
+
+    case over_budget(state, limits) do
       nil ->
         call_model(state)
 
@@ -950,22 +1044,22 @@ defmodule Visor.Agent do
     state
   end
 
-  # The provider rejected the request as longer than its window: the
-  # window is smaller than that request, so compact under it and try once
-  # more.
+  # The provider rejected the request as too large: longer than its
+  # window, or (HTTP 413) over the size it takes. Leave out the pictures
+  # the model has already answered (compaction keeps the recent part as
+  # it was, pictures and all), compact under 90% of what was sent, and try
+  # once more if either made the request smaller.
   defp handle_model_result({:error, :context_overflow, message}, state) do
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "error"}})
     sent = round(Map.get(state, :last_estimate, 0) * Map.get(state, :token_scale, 1.0))
     window = max(floor(sent * 0.9), 1)
 
     with false <- Map.get(state, :overflowed, false),
-         {:ok, state, _info} <-
-           compact_messages(Map.put(state, :overflowed, true), :overflow, window) do
+         {:ok, state, done} <- smaller(Map.put(state, :overflowed, true), window) do
       note(
         state,
         :info,
-        "The request was longer than the model's window, so the conversation was compacted " <>
-          "and the call made again."
+        "The request was too large for the model, so #{done} and the call made again."
       )
 
       start_turn(state)
@@ -976,10 +1070,36 @@ defmodule Visor.Agent do
     end
   end
 
+  # A request the provider refused as malformed fails the prompt as any
+  # error does, though it tells nothing of the provider's health.
+  defp handle_model_result({:error, :rejected, message}, state),
+    do: handle_model_result({:error, message}, state)
+
   defp handle_model_result({:error, message}, state) do
     broadcast(state, {:turn_end, %{turn: state.turn, finish_reason: "error"}})
     note(state, :error, message)
     finish(state, :model_error)
+  end
+
+  # The request made smaller after an overflow, and what was done, or
+  # :keep when nothing could be.
+  defp smaller(state, window) do
+    retired = retire_pictures(state)
+    pictures? = retired.messages != state.messages
+
+    case compact_messages(retired, :overflow, window) do
+      {:ok, state, _info} when pictures? ->
+        {:ok, state, "the pictures it had answered were left out, the conversation compacted"}
+
+      {:ok, state, _info} ->
+        {:ok, state, "the conversation was compacted"}
+
+      :keep when pictures? ->
+        {:ok, retired, "the pictures it had answered were left out"}
+
+      :keep ->
+        :keep
+    end
   end
 
   @doc false
@@ -1187,7 +1307,10 @@ defmodule Visor.Agent do
         state
 
       {ref, %{call: call} = tool} ->
-        {state, count} = repeat(state, call)
+        # Decoded and put right once, here: the count reads the script as it
+        # runs, and the task runs this one.
+        prepared = Tools.prepare(call.arguments)
+        {state, count} = repeat(state, call, prepared)
 
         if count >= Limits.repeat_block() do
           # Not run: it still starts and ends, like a cancelled call.
@@ -1195,13 +1318,14 @@ defmodule Visor.Agent do
           state = put_in(state.tools[ref].started, now())
           finish_tool(state, ref, {:error, repeat_blocked(count), []})
         else
-          run_tool(state, ref, Map.put(tool, :repeat, count))
+          run_tool(state, ref, Map.merge(tool, %{repeat: count, prepared: prepared}))
         end
     end
   end
 
   defp run_tool(state, ref, %{call: call} = tool) do
-    context = %{session: state.id, call_id: call.id}
+    prepared = Map.get(tool, :prepared)
+    context = %{session: state.id, call_id: call.id, prepared: prepared}
     # The prompt's variables so far, which the script continues.
     kept = Map.get(state, :kept) || Dune.Session.new()
 
@@ -1210,7 +1334,7 @@ defmodule Visor.Agent do
         Tools.execute(call.name, call.arguments, context, kept)
       end)
 
-    deadline = Limits.tool_deadline_ms(Visor.Code.timeout_ms(asked_timeout(call)))
+    deadline = Limits.tool_deadline_ms(Visor.Code.timeout_ms(asked_timeout(prepared)))
     Process.send_after(self(), {:deadline, task.ref}, deadline)
     broadcast(state, {:tool_start, Map.merge(call, %{status: :running, pid: task.pid})})
     tool = Map.merge(tool, %{task: task, started: now(), deadline: deadline})
@@ -1219,8 +1343,10 @@ defmodule Visor.Agent do
 
   # Counts a script run again unchanged, back to back: models in a loop
   # rerun the same script and spend the prompt's model calls on it.
-  defp repeat(state, call) do
-    hash = :erlang.phash2({call.name, script_text(call.arguments)})
+  # The script as it runs, after the argument repairs, as pi-fabric's
+  # fingerprint is taken: a code fence or a list of lines isn't a change.
+  defp repeat(state, call, prepared) do
+    hash = :erlang.phash2({call.name, Tools.script_of(prepared) || call.arguments})
 
     count =
       case Map.get(state, :repeat) do
@@ -1239,16 +1365,8 @@ defmodule Visor.Agent do
   end
 
   # The seconds a call's script asked for, if any (see Visor.Code.timeout_ms/1).
-  defp asked_timeout(call) do
-    case Jason.decode(call.arguments) do
-      {:ok, %{"timeout" => seconds}} -> seconds
-      _other -> nil
-    end
-  end
-
-  # The script as it runs, after the argument repairs, as pi-fabric's
-  # fingerprint is taken: a code fence or a list of lines isn't a change.
-  defp script_text(arguments), do: Tools.script(arguments) || arguments
+  defp asked_timeout({:ok, %{"timeout" => seconds}, _fixes}), do: seconds
+  defp asked_timeout(_prepared), do: nil
 
   defp repeat_warning(count) do
     "[Visor: this exact script has run #{count} times in a row. At " <>
@@ -1621,6 +1739,8 @@ defmodule Visor.Agent do
         compaction: Map.get(state, :compaction),
         facts: Map.get(state, :facts, %{}),
         queued: Map.get(state, :queued, []),
+        # Pictures sent with what is queued, or asked for by the batch.
+        pending_images: Map.get(state, :pending_images, []),
         carry: Map.get(state, :carry, []),
         think: Map.get(state, :think),
         compact_request: Map.get(state, :compact_request),
@@ -1650,6 +1770,7 @@ defmodule Visor.Agent do
       [{:conversation, conversation}] ->
         state
         |> struct(Map.delete(conversation, :batch))
+        |> Map.put(:pending_images, Map.get(conversation, :pending_images, []))
         |> repair(:restart, Map.get(conversation, :batch, %{}))
         |> restore_jobs()
 
@@ -1663,7 +1784,7 @@ defmodule Visor.Agent do
   defp restore_jobs(state) do
     case for(job <- Jobs.list(state.id), job.status != :running, not job.acknowledged, do: job.id) do
       [] -> state
-      pending -> Map.merge(state, %{pending_jobs: pending, wakes_held: true})
+      pending -> state |> Map.put(:pending_jobs, pending) |> Wakes.hold()
     end
   end
 
@@ -1696,7 +1817,7 @@ defmodule Visor.Agent do
 
       {:budget, {scope, dollars}}, {:ok, state}
       when scope in [:prompt, :session] and is_number(dollars) and dollars > 0 ->
-        limits = Map.put(Map.get(state, :limits) || default_limits(), scope, dollars / 1)
+        limits = Map.put(limits(state), scope, dollars / 1)
         {:cont, {:ok, Map.put(state, :limits, limits)}}
 
       {:budget, _other}, _ ->
@@ -1711,7 +1832,7 @@ defmodule Visor.Agent do
       jobs_wake: Map.get(state, :jobs_wake, true),
       think: Map.get(state, :think),
       spent: spent(state),
-      limits: Map.get(state, :limits) || default_limits(),
+      limits: limits(state),
       status: state.status,
       messages: length(surface(state)),
       provider: Model.current().info()
@@ -1751,6 +1872,103 @@ defmodule Visor.Agent do
     end
   end
 
+  defp user_label(name), do: "[The user's picture: #{name}]"
+
+  # The user's pictures, kept in the session's table by name (the newest
+  # Visor.Limits.pictures_kept/0) for V.image("picture:NAME") once their
+  # prompt has ended (retire_pictures/1). A name used before gets a
+  # number: pasted pictures are all called image.png.
+  # The pictures that fit in the next model call with those already
+  # waiting (Visor.Limits.images_per_call/0), kept for V.image; the rest
+  # are left out, and the console says so.
+  defp fit_pictures(state, pictures) do
+    room = max(Limits.images_per_call() - length(Map.get(state, :pending_images, [])), 0)
+    {taken, left_out} = Enum.split(pictures, room)
+
+    if left_out != [] do
+      names = Enum.map_join(left_out, ", ", &elem(&1, 0))
+
+      note(
+        state,
+        :error,
+        "At most #{Limits.images_per_call()} pictures go with one model call, so " <>
+          "#{names} #{if length(left_out) == 1, do: "was", else: "were"} left out."
+      )
+    end
+
+    keep_pictures(state, taken)
+  end
+
+  defp keep_pictures(%{store: nil}, pictures), do: pictures
+  defp keep_pictures(_state, []), do: []
+
+  defp keep_pictures(state, pictures) do
+    {kept, names} =
+      case :ets.lookup(state.store, :pictures) do
+        [{:pictures, kept, names}] -> {kept, names}
+        [] -> {[], MapSet.new()}
+      end
+
+    {named, names} =
+      Enum.map_reduce(pictures, names, fn {name, part}, names ->
+        name = unique_name(name, names)
+        {{name, part}, MapSet.put(names, name)}
+      end)
+
+    :ets.insert(state.store, {:pictures, trim_kept(kept ++ named), names})
+    named
+  end
+
+  # The newest, within Visor.Limits.pictures_kept/0 and
+  # pictures_kept_bytes/0. A part kept is the conversation's own binary,
+  # shared, until its prompt ends and the conversation leaves it out.
+  defp trim_kept([_oldest | newer] = kept) do
+    bytes = kept |> Enum.map(fn {_name, part} -> Visor.Content.bytes(part) end) |> Enum.sum()
+
+    if length(kept) > Limits.pictures_kept() or bytes > Limits.pictures_kept_bytes(),
+      do: trim_kept(newer),
+      else: kept
+  end
+
+  defp trim_kept([]), do: []
+
+  defp unique_name(name, names, n \\ 1) do
+    candidate = if n == 1, do: name, else: "#{Path.rootname(name)}-#{n}#{Path.extname(name)}"
+    if MapSet.member?(names, candidate), do: unique_name(name, names, n + 1), else: candidate
+  end
+
+  @picture_left_out "[A picture left out once its prompt ended. V.image shows it again: by " <>
+                      "its path in the project, or as \"picture:NAME\" for one the user sent.]"
+
+  # A picture goes with the model calls of the prompt it came with. From
+  # the next prompt on it is left out, or every request would carry again
+  # the megabytes of each picture the model has already answered about.
+  # Done as a prompt starts, so what the provider has cached changes once,
+  # not at every call. One the model hasn't answered yet (in the prompt a
+  # failed call left unanswered) stays.
+  defp retire_pictures(%{messages: messages} = state) do
+    answered =
+      messages
+      |> Enum.with_index()
+      |> Enum.reduce(nil, fn {message, i}, last ->
+        if message["role"] == "assistant", do: i, else: last
+      end)
+
+    {messages, changed?} =
+      messages
+      |> Enum.with_index()
+      |> Enum.map_reduce(false, fn {message, i}, changed? ->
+        if answered != nil and i < answered and Visor.Content.images(message["content"]) > 0 do
+          content = Visor.Content.leave_out_images(message["content"], @picture_left_out)
+          {%{message | "content" => content}, true}
+        else
+          {message, changed?}
+        end
+      end)
+
+    if changed?, do: put_messages(state, messages), else: state
+  end
+
   # The prompt as the console shows it: its pictures by name.
   defp with_names(text, []), do: text
 
@@ -1767,6 +1985,79 @@ defmodule Visor.Agent do
     }
   end
 
+  defp limits(state), do: Map.get(state, :limits) || default_limits()
+
+  # This agent's limits, and a sub-agent's no more than its parent has
+  # left: it asks before each model call, after its own calls' costs have
+  # reached the parent (spend/3; messages between two processes keep their
+  # order), so the two together stop at the parent's limit and one call
+  # (proofs/budget.ts). It rises when the parent's limit does.
+  #
+  # The answer is kept as caps on the sub-agent's own spending. When the
+  # parent doesn't answer in time (it is busy, or its session is ending),
+  # the sub-agent holds to them, so to the parent's last answer less what
+  # it has spent since: only what the parent and its other sub-agents
+  # spent since that answer can pass the limit (the slow parent in
+  # proofs/budget.ts). Before any answer it holds to the limits it started
+  # with, what the parent had left then. Returns the limits, and the state
+  # with the answer kept.
+  defp budget_limits(state) do
+    limits = limits(state)
+
+    case Map.get(state, :budget_parent) do
+      nil ->
+        {limits, state}
+
+      parent ->
+        case parent_allowance(parent) do
+          %{} = left ->
+            spent = spent(state)
+
+            caps = %{
+              prompt: spent.prompt + left.prompt,
+              session: spent.session + left.session,
+              tokens: spent.tokens + left.tokens
+            }
+
+            {lowest(limits, caps), Map.put(state, :parent_cap, caps)}
+
+          nil ->
+            caps = Map.get(state, :parent_cap)
+            held = lowest(limits, caps || limits)
+            note(state, :info, unanswered(state, held, caps != nil))
+            {held, state}
+        end
+    end
+  end
+
+  defp lowest(limits, caps),
+    do: Map.new(limits, fn {key, limit} -> {key, min(limit, Map.fetch!(caps, key))} end)
+
+  defp unanswered(state, held, answered?) do
+    left = max(held.prompt - spent(state).prompt, 0.0)
+
+    "Its parent session didn't say in time what it has left, so this sub-agent holds to " <>
+      if(answered?, do: "its last answer", else: "what it started with") <>
+      ": #{Visor.Format.dollars(left)} more for this prompt."
+  end
+
+  # A new prompt's spending starts from nothing, and so do the caps the
+  # parent's last answer put on it, keeping what they left.
+  defp rebase_parent_cap(state) do
+    with %{} = caps <- Map.get(state, :parent_cap) do
+      spent = spent(state)
+      %{caps | prompt: caps.prompt - spent.prompt, tokens: caps.tokens - spent.tokens}
+    end
+  end
+
+  # Briefly: a sub-agent's prompt waits for this, and its job's task
+  # waits for the prompt (Agent.prompt/2's 5 s).
+  defp parent_allowance(parent) do
+    GenServer.call(via(parent), :allowance, 1_000)
+  catch
+    :exit, _reason -> nil
+  end
+
   defp spent(state), do: Map.get(state, :spent) || %{prompt: 0.0, session: 0.0, tokens: 0}
 
   defp spend_usage(state, usage) do
@@ -1776,24 +2067,35 @@ defmodule Visor.Agent do
     end
   end
 
+  # A sub-agent's spending is its parent's too, passed on as it comes, so
+  # the parent has counted it when the sub-agent next asks what is left
+  # (budget_limits/1).
   defp spend(state, cost, tokens) do
     spent = spent(state)
     cost = cost || 0.0
+    tokens = tokens || 0
+
+    if (parent = Map.get(state, :budget_parent)) && (cost != 0 or tokens != 0),
+      do: spent(parent, cost, tokens)
 
     Map.put(state, :spent, %{
       spent
       | prompt: spent.prompt + cost,
         session: spent.session + cost,
-        tokens: spent.tokens + (tokens || 0)
+        tokens: spent.tokens + tokens
     })
   end
 
-  defp over_budget(state) do
+  defp over_budget(state, limits) do
     spent = spent(state)
-    limits = Map.get(state, :limits) || default_limits()
     dollars = &Visor.Format.dollars/1
 
     cond do
+      Map.get(state, :budget_parent) &&
+          (spent.session >= limits.session or spent.prompt >= limits.prompt) ->
+        "This sub-agent has spent #{dollars.(spent.prompt)}, all its parent's limit leaves " <>
+          "it, so it stops here."
+
       spent.session >= limits.session ->
         "This session has spent #{dollars.(spent.session)}, its limit of " <>
           "#{dollars.(limits.session)}, so no more model calls are made (/budget raises it)."
@@ -1856,18 +2158,19 @@ defmodule Visor.Agent do
     # prompt rather than starting one, and monitored jobs stop, as
     # pi-fabric's do: what they would tell is for an agent that goes on.
     state =
-      if reason in [:interrupted, :model_error, :model_crashed, :budget] do
+      if Wakes.holds?(reason) do
         Jobs.stop_monitored(state.id)
-        Map.put(state, :wakes_held, true)
+        # The pictures the model was to get go with what was sent.
+        state |> Wakes.hold() |> Map.put(:pending_images, [])
       else
         state
       end
 
-    case {Map.get(state, :queued, []), reason} do
-      {[], _reason} ->
+    case {Map.get(state, :queued, []), Wakes.holds?(reason)} do
+      {[], _held} ->
         schedule_wake(state)
 
-      {texts, reason} when reason in [:interrupted, :model_error, :model_crashed, :budget] ->
+      {texts, true} ->
         why =
           case reason do
             :interrupted -> "was stopped"
@@ -1878,7 +2181,7 @@ defmodule Visor.Agent do
         note(state, :info, "Not sent, since the prompt #{why}: " <> Enum.join(texts, "\n\n"))
         save(Map.put(state, :queued, []))
 
-      {texts, _reason} ->
+      {texts, false} ->
         start_prompt(Map.put(state, :queued, []), Enum.join(texts, "\n\n"))
     end
   end

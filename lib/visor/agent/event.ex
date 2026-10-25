@@ -173,13 +173,47 @@ defmodule Visor.Agent.Event do
           | {:job_start, map()}
           | {:job_end, map()}
 
-  @doc "Subscribes the caller to session `id`'s events."
-  @spec subscribe(term()) :: :ok | {:error, term()}
-  def subscribe(id), do: Phoenix.PubSub.subscribe(Visor.PubSub, topic(id))
+  @doc """
+  Subscribes the caller to session `id`'s events, as `{:agent, event}`.
+  With `tagged: true` they come as `{:agent, id, event}`, for a process
+  that watches several sessions and must tell them apart.
+  """
+  @spec subscribe(term(), keyword()) :: :ok | {:error, term()}
+  def subscribe(id, opts \\ []) do
+    metadata = if Keyword.get(opts, :tagged, false), do: {:tagged, id}
+    Phoenix.PubSub.subscribe(Visor.PubSub, topic(id), metadata: metadata)
+  end
+
+  @doc """
+  Subscribes the caller to every session's events, as `{:agent, id,
+  event}`: those of sessions that start later too, each from its first
+  event, sub-agents' included. For a process that records them all
+  (`mix visor.example`'s recorder), which can't subscribe to a session
+  before it knows the id.
+  """
+  @spec subscribe_all() :: :ok | {:error, term()}
+  def subscribe_all, do: Phoenix.PubSub.subscribe(Visor.PubSub, all_topic())
 
   @doc "Publishes an event of session `id`."
   @spec broadcast(term(), t()) :: :ok | {:error, term()}
-  def broadcast(id, event), do: Phoenix.PubSub.broadcast(Visor.PubSub, topic(id), {:agent, event})
+  def broadcast(id, event) do
+    # This node's sessions, for this node's subscribers: nothing crosses
+    # nodes when no one listens, as is the rule.
+    Phoenix.PubSub.local_broadcast(Visor.PubSub, all_topic(), {:agent, id, event})
+    Phoenix.PubSub.broadcast(Visor.PubSub, topic(id), {:agent, event}, __MODULE__)
+  end
+
+  @doc false
+  # Phoenix.PubSub's dispatcher for these topics: a tagged subscriber
+  # (subscribe/2) gets the session's id with each event.
+  def dispatch(entries, _from, {:agent, event} = message) do
+    Enum.each(entries, fn
+      {pid, {:tagged, id}} -> send(pid, {:agent, id, event})
+      {pid, _metadata} -> send(pid, message)
+    end)
+  end
 
   defp topic(id), do: "agent:#{id}"
+
+  defp all_topic, do: "agents"
 end

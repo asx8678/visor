@@ -46,3 +46,6 @@ npm-debug.log
 
 # gdp-wired proofs (bun install in proofs/)
 /proofs/node_modules/
+
+# pi's own session state when pi works on this project.
+/.pi/
